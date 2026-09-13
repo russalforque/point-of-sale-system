@@ -1,4 +1,6 @@
-import type { PaymentBreakdown, PaymentMethod, Product } from '../types'
+import type { PaymentBreakdown, Product } from '../types'
+
+export type PaymentMethod = 0 | 1 | 2 | 3
 
 export type CartLine = {
   product: Product

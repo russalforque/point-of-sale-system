@@ -1,1 +1,11 @@
-{"Version":1,"Hash":"vszvkvEzLRML3Dz0sKIoECdCiDuGbQm7khVxdf5HkEM=","Source":"Sellix.Api","BasePath":"/","Mode":"Root","ManifestType":"Build","ReferencedProjectsConfiguration":[],"DiscoveryPatterns":[],"Assets":[],"Endpoints":[]}
+{
+  "Version": 1,
+  "Hash": "8h27yRtvw8z+ZpiJFeAyQdfgCSXcd045jgLVcdKYogQ=",
+  "Source": "Sellix.Api",
+  "BasePath": "_content/Sellix.Api",
+  "Mode": "Default",
+  "ManifestType": "Build",
+  "ReferencedProjectsConfiguration": [],
+  "DiscoveryPatterns": [],
+  "Assets": []
+}

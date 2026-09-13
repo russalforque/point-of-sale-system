@@ -1,4 +1,4 @@
-import { X } from 'lucide-react'
+import { X } from './Icons'
 import type { ReactNode } from 'react'
 import { Button } from './Button'
 

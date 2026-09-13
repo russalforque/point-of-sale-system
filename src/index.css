@@ -1,7 +1,9 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: Inter, "Segoe UI", system-ui, sans-serif;
+  --font-sans: "DM Sans", "Segoe UI", system-ui, sans-serif;
+  --font-display: Manrope, "DM Sans", "Segoe UI", system-ui, sans-serif;
   --color-brand: #2563eb;
   --color-brand-hover: #1d4ed8;
   --color-ink: #111827;
@@ -27,6 +29,12 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+}
+
 button,
 input,
 select,
@@ -35,17 +43,41 @@ textarea {
 }
 
 @media print {
+  @page {
+    size: 80mm auto;
+    margin: 4mm;
+  }
+
+  html,
+  body {
+    height: auto;
+    background: white;
+  }
+
   body * {
     visibility: hidden;
   }
+
   #receipt,
   #receipt * {
     visibility: visible;
   }
+
   #receipt {
     position: absolute;
     left: 0;
     top: 0;
-    width: 100%;
+    width: 72mm;
+    margin: 0;
+    padding: 0;
+    color: #000;
+    background: #fff;
+    font-family: Arial, sans-serif;
+  }
+
+  #receipt * {
+    border-color: #d1d5db !important;
+    box-shadow: none !important;
+    color: #000 !important;
   }
 }

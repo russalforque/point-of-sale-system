@@ -12,7 +12,7 @@ import {
   ConfirmDialog,
   Modal,
 } from '../../components/ui/Modal'
-import { Card, PageHeader } from '../../components/ui/Page'
+import { PageHeader } from '../../components/ui/Page'
 import {
   EmptyState,
   ErrorState,
@@ -31,14 +31,15 @@ const emptyForm: CategoryPayload = {
 
 type SortField = 'name' | 'productCount' | 'status'
 type SortOrder = 'asc' | 'desc'
+type StatusFilter = 'all' | 'active' | 'inactive'
 
 export function CategoriesPage() {
   const { notify } = useToast()
 
   const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [sortBy, setSortBy] = useState<SortField>('name')
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc')
-  const [showInactive, setShowInactive] = useState(false)
 
   const [editing, setEditing] = useState<Category | null>(null)
   const [open, setOpen] = useState(false)
@@ -51,28 +52,37 @@ export function CategoriesPage() {
     [],
   )
 
+  const totalCategories = data?.length ?? 0
+  const activeCount = data?.filter((c) => c.isActive).length ?? 0
+  const inactiveCount = totalCategories - activeCount
+  const totalProducts =
+    data?.reduce((sum, category) => sum + category.productCount, 0) ?? 0
+
+  const hasActiveFilters = search.trim() !== '' || statusFilter !== 'all'
+
   const filteredAndSortedCategories = useMemo(() => {
     if (!data) return []
 
     let result = [...data]
 
-    // Filter by search
+    // 1. Search keyword filter
     if (search.trim()) {
       const keyword = search.trim().toLowerCase()
-      result = result.filter((category) => {
-        return (
-          category.name.toLowerCase().includes(keyword) ||
-          (category.description ?? '').toLowerCase().includes(keyword)
-        )
-      })
+      result = result.filter(
+        (c) =>
+          c.name.toLowerCase().includes(keyword) ||
+          (c.description ?? '').toLowerCase().includes(keyword),
+      )
     }
 
-    // Filter by active status
-    if (!showInactive) {
+    // 2. Status pill filter
+    if (statusFilter === 'active') {
       result = result.filter((c) => c.isActive)
+    } else if (statusFilter === 'inactive') {
+      result = result.filter((c) => !c.isActive)
     }
 
-    // Sort
+    // 3. Sorting
     result.sort((a, b) => {
       let aVal: string | number = ''
       let bVal: string | number = ''
@@ -90,13 +100,32 @@ export function CategoriesPage() {
 
       if (sortOrder === 'asc') {
         return aVal < bVal ? -1 : aVal > bVal ? 1 : 0
-      } else {
-        return aVal > bVal ? -1 : aVal < bVal ? 1 : 0
       }
+      return aVal > bVal ? -1 : aVal < bVal ? 1 : 0
     })
 
     return result
-  }, [data, search, sortBy, sortOrder, showInactive])
+  }, [data, search, statusFilter, sortBy, sortOrder])
+
+  function handleStatusFilter(status: StatusFilter) {
+    setStatusFilter(status)
+  }
+
+  function handleSortChange(field: SortField) {
+    if (sortBy === field) {
+      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortBy(field)
+      setSortOrder(field === 'productCount' ? 'desc' : 'asc')
+    }
+  }
+
+  function resetFilters() {
+    setSearch('')
+    setStatusFilter('all')
+    setSortBy('name')
+    setSortOrder('asc')
+  }
 
   function updateForm<K extends keyof CategoryPayload>(
     field: K,
@@ -190,172 +219,169 @@ export function CategoriesPage() {
     }
   }
 
-  const totalProducts = data?.reduce((sum, category) => sum + category.productCount, 0) ?? 0
-  const activeCount = data?.filter((category) => category.isActive).length ?? 0
-  const inactiveCount = (data?.length ?? 0) - activeCount
-
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <div className="mx-auto max-w-7xl px-4 pb-6 pt-4 sm:px-5 lg:px-6">
-        <PageHeader
-          title="Categories"
-          subtitle="Organize product groups and catalog structure"
-          actions={
-            <Button
-              onClick={openCreate}
-              className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-900 px-3.5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-slate-200/50 transition-all duration-150 hover:-translate-y-0.5 hover:bg-slate-700 active:translate-y-0"
+    <div className="min-h-screen bg-[#091413]/[0.02] text-[#091413] antialiased">
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 md:px-8">
+        {/* Header */}
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <PageHeader
+            title="Categories"
+            subtitle="Organize product groups, department trees, and catalog structure"
+          />
+          <button
+            type="button"
+            onClick={openCreate}
+            className="inline-flex items-center justify-center gap-2 self-start rounded-lg bg-[#285A48] px-3.5 py-2 text-xs font-medium text-white shadow-xs transition-colors hover:bg-[#1e4537] active:scale-[0.98] sm:self-auto"
+          >
+            <PlusIcon size={15} />
+            <span>Add category</span>
+          </button>
+        </div>
+
+        {/* Minimalist Metric Cards */}
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+          <MetricCard
+            label="Total categories"
+            value={totalCategories}
+            isSelected={statusFilter === 'all' && sortBy === 'name'}
+            onClick={() => {
+              setStatusFilter('all')
+              setSortBy('name')
+            }}
+          />
+          <MetricCard
+            label="Active"
+            value={activeCount}
+            indicator="pine"
+            isSelected={statusFilter === 'active'}
+            onClick={() => handleStatusFilter('active')}
+          />
+          <MetricCard
+            label="Inactive"
+            value={inactiveCount}
+            indicator="neutral"
+            isSelected={statusFilter === 'inactive'}
+            onClick={() => handleStatusFilter('inactive')}
+          />
+          <MetricCard
+            label="Products linked"
+            value={totalProducts}
+            isSelected={sortBy === 'productCount'}
+            onClick={() => {
+              setSortBy('productCount')
+              setSortOrder('desc')
+            }}
+          />
+        </div>
+
+        {/* Filters Toolbar */}
+        <div className="mt-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          {/* Status Segmented Pills */}
+          <div className="flex items-center gap-1 rounded-lg border border-[#091413]/10 bg-[#091413]/[0.04] p-0.5 self-start">
+            <button
+              type="button"
+              onClick={() => handleStatusFilter('all')}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+                statusFilter === 'all'
+                  ? 'bg-white text-[#091413] shadow-xs'
+                  : 'text-[#091413]/60 hover:text-[#091413]'
+              }`}
             >
-              + Add category
-            </Button>
-          }
-        />
-
-        <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <Card className="overflow-hidden border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/50 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                Total categories
-              </p>
-              <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-sm shadow-emerald-200" />
-            </div>
-            <p className="mt-4 text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
-              {data?.length ?? 0}
-            </p>
-            <div className="mt-3 flex items-center gap-2 text-[11px] text-slate-500">
-              <span className="rounded-full bg-slate-100 px-2 py-1 font-medium text-slate-600">
-                Catalog
-              </span>
-              <span>Updated now</span>
-            </div>
-          </Card>
-
-          <Card className="overflow-hidden border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/50 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                Active
-              </p>
-              <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-sm shadow-emerald-200" />
-            </div>
-            <p className="mt-4 text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
-              {activeCount}
-            </p>
-            <div className="mt-3 flex items-center gap-2 text-[11px] text-slate-500">
-              <span className="rounded-full bg-emerald-50 px-2 py-1 font-medium text-emerald-700">
-                Live
-              </span>
-              <span>Visible</span>
-            </div>
-          </Card>
-
-          <Card className="overflow-hidden border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/50 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                Inactive
-              </p>
-              <span className="h-2.5 w-2.5 rounded-full bg-slate-300" />
-            </div>
-            <p className="mt-4 text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
-              {inactiveCount}
-            </p>
-            <div className="mt-3 flex items-center gap-2 text-[11px] text-slate-500">
-              <span className="rounded-full bg-slate-100 px-2 py-1 font-medium text-slate-600">
-                Hidden
-              </span>
-              <span>Out of stock</span>
-            </div>
-          </Card>
-
-          <Card className="overflow-hidden border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/50 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                Products linked
-              </p>
-              <span className="h-2.5 w-2.5 rounded-full bg-violet-400 shadow-sm shadow-violet-200" />
-            </div>
-            <p className="mt-4 text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
-              {totalProducts}
-            </p>
-            <div className="mt-3 flex items-center gap-2 text-[11px] text-slate-500">
-              <span className="rounded-full bg-violet-50 px-2 py-1 font-medium text-violet-700">
-                Items
-              </span>
-              <span>Across all groups</span>
-            </div>
-          </Card>
-        </section>
-
-        <section className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-200/50">
-          <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div className="relative w-full md:max-w-md">
-                <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-400">
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-4 w-4"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="m21 21-4.35-4.35m1.35-5.65a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z"
-                    />
-                  </svg>
-                </span>
-                <Input
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search categories"
-                  className="h-11 w-full appearance-none rounded-full border border-slate-200 bg-white pl-10 pr-10 text-sm text-slate-700 shadow-sm shadow-slate-200/60 outline-none transition-all duration-150 focus:border-slate-900 focus:ring-2 focus:ring-slate-200"
-                />
-                {search && (
-                  <button
-                    type="button"
-                    onClick={() => setSearch('')}
-                    aria-label="Clear search"
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-
-              <div className="flex items-center gap-2 sm:justify-end">
-                <label className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm shadow-slate-200/50">
-                  <input
-                    type="checkbox"
-                    checked={showInactive}
-                    onChange={(event) => setShowInactive(event.target.checked)}
-                    className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
-                  />
-                  Show inactive
-                </label>
-
-                <div className="rounded-full border border-slate-200 bg-white px-3 py-2 shadow-sm shadow-slate-200/50">
-                  <select
-                    value={sortBy}
-                    onChange={(event) => {
-                      const value = event.target.value as SortField
-                      setSortBy(value)
-                      if (value !== sortBy) {
-                        setSortOrder(value === 'name' ? 'asc' : 'desc')
-                      }
-                    }}
-                    className="bg-transparent text-sm text-slate-700 outline-none"
-                  >
-                    <option value="name">Name</option>
-                    <option value="productCount">Products</option>
-                    <option value="status">Status</option>
-                  </select>
-                </div>
-              </div>
-            </div>
+              All ({totalCategories})
+            </button>
+            <button
+              type="button"
+              onClick={() => handleStatusFilter('active')}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+                statusFilter === 'active'
+                  ? 'bg-white text-[#091413] shadow-xs'
+                  : 'text-[#091413]/60 hover:text-[#091413]'
+              }`}
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-[#285A48]" />
+              Active ({activeCount})
+            </button>
+            <button
+              type="button"
+              onClick={() => handleStatusFilter('inactive')}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+                statusFilter === 'inactive'
+                  ? 'bg-white text-[#091413] shadow-xs'
+                  : 'text-[#091413]/60 hover:text-[#091413]'
+              }`}
+            >
+              Inactive ({inactiveCount})
+            </button>
           </div>
 
+          {/* Search, Sort Dropdown & Reset */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1 lg:max-w-lg lg:justify-end">
+            {/* Sort Selector */}
+            <div className="relative w-full sm:w-36 shrink-0">
+              <select
+                value={`${sortBy}-${sortOrder}`}
+                onChange={(e) => {
+                  const [field, order] = e.target.value.split('-') as [
+                    SortField,
+                    SortOrder,
+                  ]
+                  setSortBy(field)
+                  setSortOrder(order)
+                }}
+                className="h-9 w-full appearance-none rounded-lg border border-[#091413]/15 bg-white px-3 pr-8 text-xs text-[#091413] outline-none transition-colors focus:border-[#285A48] focus:ring-1 focus:ring-[#285A48]"
+              >
+                <option value="name-asc">Name (A–Z)</option>
+                <option value="name-desc">Name (Z–A)</option>
+                <option value="productCount-desc">Products (High–Low)</option>
+                <option value="productCount-asc">Products (Low–High)</option>
+                <option value="status-desc">Status (Active first)</option>
+              </select>
+              <ChevronDownIcon
+                size={13}
+                className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[#091413]/40"
+              />
+            </div>
+
+            {/* Search Input */}
+            <div className="relative w-full">
+              <SearchIcon
+                size={14}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#091413]/40"
+              />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search categories..."
+                className="h-9 w-full rounded-lg border border-[#091413]/15 bg-white pl-8.5 pr-8 text-xs text-[#091413] placeholder-[#091413]/40 outline-none transition-colors focus:border-[#285A48] focus:ring-1 focus:ring-[#285A48]"
+              />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => setSearch('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-[#091413]/40 hover:text-[#091413]"
+                  title="Clear search"
+                >
+                  <ClearIcon size={13} />
+                </button>
+              )}
+            </div>
+
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={resetFilters}
+                className="shrink-0 rounded-lg border border-[#091413]/15 bg-white px-3 py-2 text-xs font-medium text-[#091413]/70 transition-colors hover:bg-[#091413]/[0.03] hover:text-[#091413]"
+              >
+                Reset
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Directory Table Container */}
+        <main className="mt-4 overflow-hidden rounded-xl border border-[#091413]/10 bg-white shadow-xs">
           {loading && (
-            <div className="flex min-h-72 items-center justify-center p-6">
+            <div className="py-16">
               <Spinner />
             </div>
           )}
@@ -366,121 +392,143 @@ export function CategoriesPage() {
             </div>
           )}
 
-          {!loading && !error && filteredAndSortedCategories.length === 0 ? (
-            <div className="p-8">
+          {!loading && !error && filteredAndSortedCategories.length === 0 && (
+            <div className="p-8 text-center">
               <EmptyState
-                title={search ? 'No categories found' : 'No categories yet'}
+                title={search ? 'No matching categories' : 'No categories found'}
                 hint={
                   search
-                    ? 'Try another keyword or filter.'
-                    : 'Create the first category to start organizing your catalog.'
+                    ? 'Try adjusting your search terms or clearing active filters.'
+                    : 'Get started by creating your first product category.'
                 }
               />
-              {!search && (
-                <div className="mt-5 flex justify-center">
-                  <Button onClick={openCreate} className="bg-slate-900 text-white hover:bg-slate-700">
-                    + Add category
-                  </Button>
+              {hasActiveFilters ? (
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-[#285A48] underline hover:text-[#1e4537]"
+                >
+                  Clear filters
+                </button>
+              ) : (
+                <div className="mt-4 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={openCreate}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#285A48] px-3.5 py-2 text-xs font-medium text-white transition-colors hover:bg-[#1e4537]"
+                  >
+                    <PlusIcon size={14} />
+                    <span>Create category</span>
+                  </button>
                 </div>
               )}
             </div>
-          ) : (
+          )}
+
+          {!loading && !error && filteredAndSortedCategories.length > 0 && (
             <>
-              <div className="hidden overflow-x-auto md:block">
-                <table className="w-full min-w-[680px] border-separate border-spacing-0 text-left text-sm">
-                  <thead className="bg-white">
+              {/* Tablet & Desktop Fluid Table */}
+              <div className="hidden md:block w-full overflow-x-auto">
+                <table className="w-full text-left text-xs text-[#091413]/80">
+                  <thead className="border-b border-[#091413]/10 bg-[#091413]/[0.02] text-[11px] font-medium uppercase tracking-wider text-[#091413]/50">
                     <tr>
-                      <th className="border-b border-slate-200 px-4 py-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                      <th className="py-3 pl-4 pr-3 sm:pl-6 font-medium">
                         <button
                           type="button"
-                          onClick={() => {
-                            if (sortBy === 'name') {
-                              setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')
-                            } else {
-                              setSortBy('name')
-                              setSortOrder('asc')
-                            }
-                          }}
-                          className="inline-flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 hover:text-slate-800"
+                          onClick={() => handleSortChange('name')}
+                          className="group inline-flex items-center gap-1 font-medium hover:text-[#091413] uppercase"
                         >
                           Name
-                          {sortBy === 'name' && <span>{sortOrder === 'asc' ? '↑' : '↓'}</span>}
+                          {sortBy === 'name' && (
+                            <span className="text-[#285A48] font-bold">
+                              {sortOrder === 'asc' ? '↑' : '↓'}
+                            </span>
+                          )}
                         </button>
                       </th>
-                      <th className="border-b border-slate-200 px-4 py-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                        Description
-                      </th>
-                      <th className="border-b border-slate-200 px-4 py-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                      <th className="py-3 px-3 font-medium">Description</th>
+                      <th className="py-3 px-3 text-center font-medium">
                         <button
                           type="button"
-                          onClick={() => {
-                            if (sortBy === 'productCount') {
-                              setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')
-                            } else {
-                              setSortBy('productCount')
-                              setSortOrder('desc')
-                            }
-                          }}
-                          className="inline-flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 hover:text-slate-800"
+                          onClick={() => handleSortChange('productCount')}
+                          className="group inline-flex items-center gap-1 font-medium hover:text-[#091413] uppercase"
                         >
                           Products
-                          {sortBy === 'productCount' && <span>{sortOrder === 'asc' ? '↑' : '↓'}</span>}
+                          {sortBy === 'productCount' && (
+                            <span className="text-[#285A48] font-bold">
+                              {sortOrder === 'asc' ? '↑' : '↓'}
+                            </span>
+                          )}
                         </button>
                       </th>
-                      <th className="border-b border-slate-200 px-4 py-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                      <th className="py-3 px-3 text-center font-medium">
                         <button
                           type="button"
-                          onClick={() => {
-                            if (sortBy === 'status') {
-                              setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')
-                            } else {
-                              setSortBy('status')
-                              setSortOrder('desc')
-                            }
-                          }}
-                          className="inline-flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 hover:text-slate-800"
+                          onClick={() => handleSortChange('status')}
+                          className="group inline-flex items-center gap-1 font-medium hover:text-[#091413] uppercase"
                         >
                           Status
-                          {sortBy === 'status' && <span>{sortOrder === 'asc' ? '↑' : '↓'}</span>}
+                          {sortBy === 'status' && (
+                            <span className="text-[#285A48] font-bold">
+                              {sortOrder === 'asc' ? '↑' : '↓'}
+                            </span>
+                          )}
                         </button>
                       </th>
-                      <th className="border-b border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                      <th className="py-3 pl-3 pr-4 sm:pr-6 text-right font-medium">
                         Actions
                       </th>
                     </tr>
                   </thead>
-                  <tbody>
+
+                  <tbody className="divide-y divide-[#091413]/5 font-normal">
                     {filteredAndSortedCategories.map((category) => (
-                      <tr key={category.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                        <td className="px-4 py-3 text-[13px] font-medium text-slate-800">
+                      <tr
+                        key={category.id}
+                        className="transition-colors hover:bg-[#285A48]/[0.03]"
+                      >
+                        <td className="py-3.5 pl-4 pr-3 sm:pl-6 font-medium text-[#091413]">
                           {category.name}
                         </td>
-                        <td className="max-w-[260px] truncate px-4 py-3 text-[13px] text-slate-600" title={category.description ?? ''}>
+
+                        <td
+                          className="py-3.5 px-3 max-w-xs truncate text-[#091413]/60"
+                          title={category.description ?? ''}
+                        >
                           {category.description || '—'}
                         </td>
-                        <td className="px-4 py-3 text-[13px] font-medium text-slate-700">
-                          <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
+
+                        <td className="py-3.5 px-3 text-center">
+                          <span className="inline-flex font-mono text-xs px-2 py-0.5 rounded bg-[#091413]/[0.05] text-[#091413]/80">
                             {category.productCount}
                           </span>
                         </td>
-                        <td className="px-4 py-3">
-                          <Badge tone={category.isActive ? 'green' : 'gray'}>
+
+                        <td className="py-3.5 px-3 text-center">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${
+                              category.isActive
+                                ? 'bg-[#285A48]/10 text-[#285A48] border border-[#285A48]/20'
+                                : 'bg-[#091413]/[0.05] text-[#091413]/60 border border-[#091413]/10'
+                            }`}
+                          >
                             {category.isActive ? 'Active' : 'Inactive'}
-                          </Badge>
+                          </span>
                         </td>
-                        <td className="px-4 py-3 text-right">
-                          <div className="flex items-center justify-end gap-2">
+
+                        <td className="py-3.5 pl-3 pr-4 sm:pr-6 text-right">
+                          <div className="flex items-center justify-end gap-1">
                             <button
                               type="button"
                               onClick={() => openEdit(category)}
-                              className="rounded-lg px-2.5 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+                              className="rounded px-2 py-1 text-xs font-medium text-[#091413]/70 transition-colors hover:bg-[#285A48]/10 hover:text-[#285A48] active:scale-95"
                             >
                               Edit
                             </button>
                             <button
                               type="button"
                               onClick={() => setRemove(category)}
-                              className="rounded-lg px-2.5 py-1.5 text-sm font-medium text-red-600 transition hover:bg-red-50"
+                              className="rounded px-2 py-1 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-50 active:scale-95"
                             >
                               Delete
                             </button>
@@ -492,40 +540,50 @@ export function CategoriesPage() {
                 </table>
               </div>
 
-              <div className="space-y-3 p-3 md:hidden">
+              {/* Mobile Card List (<md) */}
+              <div className="divide-y divide-[#091413]/5 md:hidden">
                 {filteredAndSortedCategories.map((category) => (
-                  <div key={category.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5">
+                  <div key={category.id} className="p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
-                        <h3 className="truncate text-base font-semibold text-slate-900">
+                        <h3 className="truncate text-sm font-medium text-[#091413]">
                           {category.name}
                         </h3>
-                        <p className="mt-1 text-sm text-slate-600">
-                          {category.description || 'No description'}
+                        <p className="mt-0.5 text-xs text-[#091413]/60 line-clamp-2">
+                          {category.description || 'No description provided'}
                         </p>
                       </div>
-                      <Badge tone={category.isActive ? 'green' : 'gray'}>
+
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${
+                          category.isActive
+                            ? 'bg-[#285A48]/10 text-[#285A48] border border-[#285A48]/20'
+                            : 'bg-[#091413]/[0.05] text-[#091413]/60 border border-[#091413]/10'
+                        }`}
+                      >
                         {category.isActive ? 'Active' : 'Inactive'}
-                      </Badge>
+                      </span>
                     </div>
 
-                    <div className="mt-3 flex items-center justify-between border-t border-slate-200 pt-3 text-sm">
-                      <span className="text-slate-500">Products</span>
-                      <span className="font-semibold text-slate-900">{category.productCount}</span>
+                    <div className="mt-3 flex items-center justify-between pt-2.5 border-t border-[#091413]/5 text-xs">
+                      <span className="text-[#091413]/50">Products assigned</span>
+                      <span className="font-mono font-medium text-[#091413]">
+                        {category.productCount}
+                      </span>
                     </div>
 
-                    <div className="mt-3 grid grid-cols-2 gap-2">
+                    <div className="mt-3 flex items-center gap-2">
                       <button
                         type="button"
                         onClick={() => openEdit(category)}
-                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700"
+                        className="flex-1 rounded-lg border border-[#091413]/15 bg-white py-1.5 text-xs font-medium text-[#091413] shadow-xs hover:bg-[#091413]/[0.02]"
                       >
                         Edit
                       </button>
                       <button
                         type="button"
                         onClick={() => setRemove(category)}
-                        className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700"
+                        className="flex-1 rounded-lg border border-rose-200 bg-rose-50/50 py-1.5 text-xs font-medium text-rose-700 shadow-xs hover:bg-rose-50"
                       >
                         Delete
                       </button>
@@ -535,47 +593,39 @@ export function CategoriesPage() {
               </div>
             </>
           )}
-        </section>
+        </main>
       </div>
 
-      {/* Modal */}
-      {open ? (
+      {/* =====================================================
+          ADD / EDIT CATEGORY MODAL
+      ====================================================== */}
+      {open && (
         <Modal
-          title={
-            editing ? 'Edit category' : 'Add category'
-          }
+          title={editing ? 'Edit category' : 'Add category'}
           onClose={closeModal}
           footer={
-            <div className="flex w-full flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-              <Button
-                variant="secondary"
-                onClick={closeModal}
-                disabled={busy}
-              >
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button variant="secondary" onClick={closeModal} disabled={busy}>
                 Cancel
               </Button>
-              <Button
+              <button
+                type="button"
                 onClick={() => void save()}
                 disabled={busy || !form.name.trim()}
+                className="inline-flex items-center justify-center rounded-lg bg-[#285A48] px-4 py-2 text-xs font-medium text-white shadow-xs transition-colors hover:bg-[#1e4537] disabled:opacity-50"
               >
-                {busy
-                  ? 'Saving…'
-                  : editing
-                    ? 'Save changes'
-                    : 'Create category'}
-              </Button>
+                {busy ? 'Saving…' : editing ? 'Save changes' : 'Create category'}
+              </button>
             </div>
           }
         >
-          <div className="space-y-5">
+          <div className="space-y-4 text-xs">
             <Field label="Category name">
               <Input
                 value={form.name}
-                onChange={(event) =>
-                  updateForm('name', event.target.value)
-                }
-                placeholder="e.g. Beverages"
-                className="min-h-11"
+                onChange={(e) => updateForm('name', e.target.value)}
+                placeholder="e.g. Hot Drinks, Accessories..."
+                required
                 autoFocus
               />
             </Field>
@@ -583,55 +633,165 @@ export function CategoriesPage() {
             <Field label="Description">
               <Textarea
                 value={form.description}
-                onChange={(event) =>
-                  updateForm(
-                    'description',
-                    event.target.value,
-                  )
-                }
-                placeholder="Describe this category..."
-                className="min-h-28"
+                onChange={(e) => updateForm('description', e.target.value)}
+                placeholder="Optional description of items in this group..."
               />
             </Field>
 
-            <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-gray-200 p-4">
+            <label className="flex items-center gap-2 text-xs font-medium text-[#091413]/80 cursor-pointer pt-1">
               <input
                 type="checkbox"
                 checked={form.isActive}
-                onChange={(event) =>
-                  updateForm(
-                    'isActive',
-                    event.target.checked,
-                  )
-                }
-                className="h-5 w-5"
+                onChange={(e) => updateForm('isActive', e.target.checked)}
+                className="h-4 w-4 rounded border-[#091413]/20 text-[#285A48] focus:ring-[#285A48]"
               />
-              <span className="text-sm font-medium text-gray-900">
-                Active category
-              </span>
+              Active category
             </label>
           </div>
         </Modal>
-      ) : null}
+      )}
 
-      {/* Delete Confirmation */}
-      {remove ? (
+      {/* =====================================================
+          DELETE CONFIRMATION
+      ====================================================== */}
+      {remove && (
         <ConfirmDialog
           title="Delete category"
           message={
             remove.productCount > 0
-              ? `${remove.name} is currently used by ${remove.productCount} product(s) and cannot be deleted.`
-              : `Delete ${remove.name}? This action cannot be undone.`
+              ? `"${remove.name}" is currently linked to ${remove.productCount} product(s) and cannot be deleted.`
+              : `Are you sure you want to delete "${remove.name}"? This action cannot be undone.`
           }
-          confirmLabel="Delete"
-          danger
+          confirmLabel={remove.productCount > 0 ? 'Understood' : 'Delete'}
+          danger={remove.productCount === 0}
           busy={busy}
           onCancel={() => {
             if (!busy) setRemove(null)
           }}
-          onConfirm={() => void confirmDelete()}
+          onConfirm={() => {
+            if (remove.productCount > 0) {
+              setRemove(null)
+            } else {
+              void confirmDelete()
+            }
+          }}
         />
-      ) : null}
+      )}
     </div>
+  )
+}
+
+/* =============================================================
+   STAT CARD & ICONS
+============================================================= */
+
+function MetricCard({
+  label,
+  value,
+  indicator,
+  isSelected = false,
+  onClick,
+}: {
+  label: string
+  value: string | number
+  indicator?: 'pine' | 'neutral'
+  isSelected?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group relative rounded-xl border p-3.5 sm:p-4 text-left transition-all active:scale-[0.99] ${
+        isSelected
+          ? 'border-[#285A48] bg-white ring-1 ring-[#285A48] shadow-xs'
+          : 'border-[#091413]/10 bg-white hover:border-[#285A48]/50'
+      }`}
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-medium uppercase tracking-wider text-[#091413]/50">
+          {label}
+        </span>
+        {indicator === 'pine' && (
+          <span className="h-1.5 w-1.5 rounded-full bg-[#285A48]" />
+        )}
+      </div>
+      <p className="mt-2 text-xl font-semibold tracking-tight text-[#091413] sm:text-2xl">
+        {value}
+      </p>
+    </button>
+  )
+}
+
+function PlusIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  )
+}
+
+function SearchIcon({ size = 14, className }: { size?: number; className?: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  )
+}
+
+function ChevronDownIcon({ size = 13, className }: { size?: number; className?: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  )
+}
+
+function ClearIcon({ size = 13 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
   )
 }

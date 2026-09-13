@@ -8,6 +8,7 @@ using Sellix.Api.Data;
 using Sellix.Api.Middleware;
 using Sellix.Api.Models;
 using Sellix.Api.Services;
+using Sellix.Api.Services.Printing;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -115,6 +116,7 @@ builder.Services.AddScoped<SalesService>();
 builder.Services.AddScoped<DashboardService>();
 builder.Services.AddScoped<ReportService>();
 builder.Services.AddScoped<SettingsService>();
+builder.Services.AddScoped<IReceiptPrintService, ReceiptPrintService>();
 
 var app = builder.Build();
 

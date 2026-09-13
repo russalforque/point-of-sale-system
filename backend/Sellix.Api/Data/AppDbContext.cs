@@ -19,6 +19,7 @@ public class AppDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<Payment> Payments => Set<Payment>();
     public DbSet<InventoryTransaction> InventoryTransactions => Set<InventoryTransaction>();
     public DbSet<StoreSetting> StoreSettings => Set<StoreSetting>();
+    public DbSet<PrintJob> PrintJobs => Set<PrintJob>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -116,6 +117,15 @@ public class AppDbContext : IdentityDbContext<ApplicationUser>
             e.Property(x => x.CurrencySymbol).HasMaxLength(8);
             e.Property(x => x.TaxRate).HasPrecision(5, 4);
             e.Property(x => x.ReceiptFooter).HasMaxLength(400);
+        });
+
+        builder.Entity<PrintJob>(e =>
+        {
+            e.Property(x => x.ReceiptNumber).HasMaxLength(80).IsRequired();
+            e.Property(x => x.DataBase64).IsRequired();
+            e.Property(x => x.LastError).HasMaxLength(500);
+            e.HasIndex(x => x.PrintJobId).IsUnique();
+            e.HasIndex(x => new { x.Status, x.CreatedAt });
         });
     }
 }

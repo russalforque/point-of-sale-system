@@ -1,45 +1,46 @@
 import {
-  BarChart3,
-  LayoutDashboard,
-  LogOut,
-  Package,
-  Settings,
-  ShoppingCart,
-  Store,
-  Tags,
-  Truck,
-  Users,
-  Warehouse,
-  X,
-} from 'lucide-react'
+  faBox,
+  faBoxesStacked,
+  faChartLine,
+  faCartShopping,
+  faGear,
+  faHouse,
+  faRightFromBracket,
+  faStore,
+  faTags,
+  faTruck,
+  faUsers,
+  faXmark,
+  faChevronLeft,
+} from '@fortawesome/free-solid-svg-icons'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { useEffect, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 
-
-type NavItem = { to: string; label: string; icon: typeof LayoutDashboard }
+type NavItem = { to: string; label: string; icon: typeof faHouse }
 
 const groups: { title: string; items: NavItem[] }[] = [
-  { title: 'MAIN', items: [{ to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard }] },
+  { title: 'MAIN', items: [{ to: '/dashboard', label: 'Dashboard', icon: faHouse }] },
   {
     title: 'SALES',
     items: [
-      { to: '/sales', label: 'Order Process', icon: ShoppingCart },
-      { to: '/customers', label: 'Customers', icon: Users },
+      { to: '/sales', label: 'Order Process', icon: faCartShopping },
+      { to: '/customers', label: 'Customers', icon: faUsers },
     ],
   },
   {
     title: 'INVENTORY',
     items: [
-      { to: '/inventory', label: 'Inventory', icon: Warehouse },
-      { to: '/products', label: 'Products', icon: Package },
-      { to: '/categories', label: 'Categories', icon: Tags },
-      { to: '/suppliers', label: 'Suppliers', icon: Truck },
+      { to: '/inventory', label: 'Inventory', icon: faBoxesStacked },
+      { to: '/products', label: 'Products', icon: faBox },
+      { to: '/categories', label: 'Categories', icon: faTags },
+      { to: '/suppliers', label: 'Suppliers', icon: faTruck },
     ],
   },
   {
     title: 'MANAGEMENT',
-    items: [{ to: '/reports', label: 'Reports', icon: BarChart3 }],
+    items: [{ to: '/reports', label: 'Reports', icon: faChartLine }],
   },
 ]
 
@@ -57,10 +58,18 @@ export function Sidebar({
   const { user, logout } = useAuth()
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const profileMenuRef = useRef<HTMLDivElement | null>(null)
+  const profileTriggerRef = useRef<HTMLButtonElement | null>(null)
 
+  // Close profile popover when clicking outside
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
-      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target as Node)) {
+      const target = event.target as Node
+      if (
+        profileMenuRef.current &&
+        !profileMenuRef.current.contains(target) &&
+        profileTriggerRef.current &&
+        !profileTriggerRef.current.contains(target)
+      ) {
         setProfileMenuOpen(false)
       }
     }
@@ -69,9 +78,37 @@ export function Sidebar({
     return () => document.removeEventListener('mousedown', handlePointerDown)
   }, [])
 
+  // Lock body scroll on mobile when drawer is open
+  useEffect(() => {
+    if (mobileOpen) {
+      const originalStyle = document.body.style.overflow
+      document.body.style.overflow = 'hidden'
+      return () => {
+        document.body.style.overflow = originalStyle
+      }
+    }
+  }, [mobileOpen])
+
+  // Handle Escape key to close mobile drawer or popover
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (profileMenuOpen) {
+          setProfileMenuOpen(false)
+        } else if (mobileOpen) {
+          onCloseMobile()
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [mobileOpen, profileMenuOpen, onCloseMobile])
+
   const initials =
     user?.fullName
       ?.split(' ')
+      .filter(Boolean)
       .map((n) => n[0])
       .join('')
       .toUpperCase()
@@ -81,14 +118,16 @@ export function Sidebar({
     profileMenuOpen ? (
       <div
         ref={profileMenuRef}
-        className="absolute bottom-[calc(100%+0.75rem)] left-3 right-3 z-50 rounded-2xl border border-gray-200 bg-white p-2 shadow-[0_12px_30px_rgba(15,23,42,0.12)]"
+        role="dialog"
+        aria-label="Account options"
+        className="fixed bottom-[calc(4.5rem+env(safe-area-inset-bottom,0px))] left-3.5 z-[70] w-[min(18rem,calc(100vw-2rem))] rounded-2xl border border-gray-200 bg-white p-2.5 shadow-[0_12px_30px_rgba(15,23,42,0.15)] animate-in fade-in zoom-in-95 duration-150"
       >
-        <div className="flex items-center gap-3 rounded-xl border border-gray-100 bg-gray-50 p-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-gray-100 to-gray-200 text-xs font-semibold text-gray-700 ring-1 ring-gray-200">
+        <div className="flex items-center gap-3 rounded-xl border border-gray-100 bg-gray-50/80 p-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-gray-100 to-gray-200 text-xs font-semibold text-gray-700 ring-1 ring-gray-200">
             {initials}
           </div>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-gray-900">{user?.fullName}</p>
+            <p className="truncate text-sm font-semibold text-gray-900">{user?.fullName || 'Admin'}</p>
             <p className="truncate text-xs text-gray-500">{user?.email}</p>
           </div>
         </div>
@@ -97,156 +136,211 @@ export function Sidebar({
           type="button"
           onClick={() => {
             setProfileMenuOpen(false)
+            onCloseMobile()
             void logout()
           }}
-          className="mt-2 flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-neutral-400 transition-all duration-100 ease-out hover:bg-neutral-50 hover:text-neutral-900 active:bg-neutral-100"
+          className="mt-2 flex w-full min-h-[44px] items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-medium text-rose-600 transition-colors duration-150 hover:bg-rose-50 active:bg-rose-100 touch-manipulation"
         >
-          <LogOut size={15} />
+          <FontAwesomeIcon icon={faRightFromBracket} className="h-4 w-4" />
           <span>Log out</span>
         </button>
       </div>
     ) : null
 
-  const body = (
-    <div className="flex h-full flex-col bg-white text-neutral-700">
-      <div className={`flex h-14 items-center justify-between border-b border-gray-200 px-4 pt-[env(safe-area-inset-top)] transition-all duration-200 ease-out ${collapsed ? 'justify-center px-2' : 'gap-2 px-4'}`}>
-        {collapsed ? (
-          <button
-            type="button"
-            title="Expand sidebar"
-            onClick={onToggle}
-            className="flex h-10 w-10 items-center justify-center rounded-lg text-gray-600 transition-all duration-100 ease-out active:bg-neutral-100 will-change-transform"
-          >
-            <Store size={18} />
-          </button>
-        ) : (
-          <>
-            <div className="flex items-center gap-2">
-              <Store size={20} className="text-gray-900 transition-colors duration-150 ease-out" />
-              <span className="text-[11px] font-semibold tracking-[0.15em] text-gray-900 transition-opacity duration-150 ease-out">SELLIX</span>
-            </div>
+  // Renders the internal sidebar structure (isMobile forces expanded layout)
+  const renderSidebarContent = (isMobile = false) => {
+    const isCollapsed = isMobile ? false : collapsed
+
+    return (
+      <div className="flex h-full flex-col bg-white text-neutral-700 select-none">
+        {/* Header with Safe Area top padding */}
+        <div
+          className={`flex shrink-0 items-center border-b border-gray-200 px-4 transition-all duration-200 ease-out ${
+            isMobile
+              ? 'h-[calc(3.5rem+env(safe-area-inset-top,0px))] pt-[env(safe-area-inset-top,0px)] justify-between'
+              : `h-14 ${isCollapsed ? 'justify-center px-2' : 'justify-between px-4'}`
+          }`}
+        >
+          {isCollapsed ? (
             <button
               type="button"
-              aria-label={mobileOpen ? 'Close sidebar' : 'Open sidebar'}
-              title={mobileOpen ? 'Close sidebar' : 'Open sidebar'}
+              title="Expand sidebar"
+              aria-label="Expand sidebar"
               onClick={onToggle}
-              className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-600 transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:bg-neutral-100 active:text-neutral-900 will-change-transform"
+              className="flex h-10 w-10 items-center justify-center rounded-xl text-gray-700 hover:bg-gray-100 active:scale-95 transition-all duration-150 touch-manipulation"
             >
-              <X size={16} className={`transition-transform duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] ${mobileOpen ? 'rotate-0' : 'rotate-90'}`} />
+              <FontAwesomeIcon icon={faStore} className="h-4 w-4" />
             </button>
-          </>
-        )}
-      </div>
-      <nav className="flex-1 overflow-y-auto py-4">
-        {groups.map((group) => (
-          <div key={group.title} className="mb-4">
-            {!collapsed ? (
-              <p className="px-5 pb-2 text-[11px] font-semibold tracking-[0.15em] text-gray-500 transition-colors duration-150 ease-out uppercase">{group.title}</p>
-            ) : (
-              <div className="mx-2 mb-2 border-t border-gray-200 transition-all duration-150 ease-out" />
-            )}
-            {group.items.map((item) => {
-              const Icon = item.icon
-              return (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  title={collapsed ? item.label : undefined}
-                  onClick={onCloseMobile}
-                  className={({ isActive }) =>
-                    `group relative mx-2 mb-1 flex items-center gap-3 rounded-xl px-5 py-4 text-sm transition-all duration-100 ease-out active:bg-neutral-100 ${
-                      isActive
-                        ? 'bg-gray-50 font-medium text-neutral-900 shadow-[0_1px_2px_rgba(0,0,0,0.03)]'
-                        : 'text-neutral-400 active:text-neutral-900'
-                    } ${collapsed ? 'justify-center' : ''}`
-                  }
-                >
-                  {({ isActive }) => (
-                    <>
-                      {isActive ? (
-                        <span className="absolute inset-y-2 left-0 w-1 rounded-r-md bg-gray-900 opacity-100 transition-opacity duration-150 ease-out" />
-                      ) : (
-                        <span className="absolute inset-y-2 left-0 w-1 rounded-r-md bg-gray-900 opacity-0 transition-opacity duration-150 ease-out" />
+          ) : (
+            <>
+              <div className="flex items-center gap-2.5">
+               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#285A48] text-white shadow-xs">
+  <FontAwesomeIcon icon={faStore} className="h-4 w-4" />
+</div>
+                <span className="text-xs font-bold tracking-[0.16em] text-gray-900">
+                  SELLIX
+                </span>
+              </div>
+
+              {/* Close Button on Mobile / Collapse Button on Desktop */}
+              <button
+                type="button"
+                aria-label={isMobile ? 'Close sidebar' : 'Collapse sidebar'}
+                title={isMobile ? 'Close sidebar' : 'Collapse sidebar'}
+                onClick={isMobile ? onCloseMobile : onToggle}
+                className="flex h-9 w-9 items-center justify-center rounded-xl text-gray-500 hover:bg-gray-100 hover:text-gray-900 active:scale-95 transition-all duration-150 touch-manipulation"
+              >
+                <FontAwesomeIcon
+  icon={isMobile ? faXmark : faChevronLeft}
+  className="h-4 w-4 text-[#091413]/70 transition-colors hover:text-[#285A48]"
+/>
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* Navigation Item List */}
+        <nav className="flex-1 overflow-y-auto overscroll-contain py-3.5 px-2">
+          {groups.map((group) => (
+            <div key={group.title} className="mb-4">
+              {!isCollapsed ? (
+                <p className="px-3 pb-2 text-[10px] font-bold tracking-[0.15em] text-gray-400 uppercase">
+                  {group.title}
+                </p>
+              ) : (
+                <div className="mx-2 mb-2 border-t border-gray-100" />
+              )}
+
+              <div className="space-y-1">
+                {group.items.map((item) => {
+                  const Icon = item.icon
+                  return (
+                    <NavLink
+                      key={item.to}
+                      to={item.to}
+                      title={isCollapsed ? item.label : undefined}
+                      onClick={() => {
+                        if (isMobile) onCloseMobile()
+                      }}
+                      className={({ isActive }) =>
+                        `group relative flex min-h-[44px] items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150 touch-manipulation active:scale-[0.98] ${
+                          isActive
+                            ? 'bg-gray-100 text-gray-950 font-semibold shadow-xs'
+                            : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 active:bg-gray-100'
+                        } ${isCollapsed ? 'justify-center px-0' : ''}`
+                      }
+                    >
+                      {({ isActive }) => (
+                        <>
+                          {isActive && (
+                            <span className="absolute left-0 top-2 bottom-2 w-1 rounded-r-md bg-gray-900" />
+                          )}
+                          <FontAwesomeIcon
+  icon={Icon}
+  className={`h-4 w-4 shrink-0 transition-colors duration-150 ${
+    isActive ? 'text-[#285A48]' : 'text-[#091413]/40 group-hover:text-[#285A48]'
+  }`}
+/>
+                          {!isCollapsed && <span className="truncate">{item.label}</span>}
+                        </>
                       )}
-                      <Icon size={18} className="relative z-10 transition-all duration-150 ease-out" />
-                      {!collapsed ? <span className="relative z-10 transition-colors duration-150 ease-out">{item.label}</span> : null}
-                    </>
-                  )}
-                </NavLink>
-              )
-            })}
-          </div>
-        ))}
-      </nav>
+                    </NavLink>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+        </nav>
 
-      <div className="relative border-t border-gray-200 p-3 transition-all duration-150 ease-out">
-        <div className={`flex items-center justify-between gap-2 ${collapsed ? 'justify-center' : ''}`}>
-          <NavLink
-            to="/settings"
-            title={collapsed ? 'Settings' : undefined}
-            onClick={onCloseMobile}
-            className={({ isActive }) =>
-              `group flex items-center gap-3 rounded-xl px-3 py-3 text-sm transition-all duration-100 ease-out active:bg-neutral-100 ${
-                isActive ? 'bg-gray-50 font-medium text-neutral-900' : 'text-neutral-400 active:text-neutral-900'
-              } ${collapsed ? 'justify-center px-2.5' : 'flex-1'}`
-            }
-          >
-            {({ isActive }) => (
-              <>
-                {isActive ? (
-                  <span className="absolute inset-y-2 left-0 w-1 rounded-r-md bg-gray-900 opacity-100 transition-opacity duration-150 ease-out" />
-                ) : (
-                  <span className="absolute inset-y-2 left-0 w-1 rounded-r-md bg-gray-900 opacity-0 transition-opacity duration-150 ease-out" />
-                )}
-                <Settings size={18} className="relative z-10 transition-all duration-150 ease-out" />
-                {!collapsed ? <span className="relative z-10 transition-colors duration-150 ease-out">Settings</span> : null}
-              </>
+        {/* Footer Area with Safe Area bottom padding */}
+        <div
+          className={`shrink-0 border-t border-gray-200 p-2.5 transition-all duration-150 ${
+            isMobile ? 'pb-[max(0.75rem,env(safe-area-inset-bottom,0.75rem))]' : ''
+          }`}
+        >
+          <div className={`flex items-center gap-1.5 ${isCollapsed ? 'justify-center' : 'justify-between'}`}>
+            <button
+              ref={profileTriggerRef}
+              type="button"
+              title="Account options"
+              aria-label="Open account options"
+              aria-haspopup="dialog"
+              aria-expanded={profileMenuOpen}
+              onClick={() => setProfileMenuOpen((open) => !open)}
+              className={`flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl text-gray-500 hover:bg-gray-100 hover:text-gray-900 active:scale-95 transition-all duration-150 touch-manipulation ${
+                profileMenuOpen ? 'bg-gray-100 text-gray-900' : ''
+              }`}
+            >
+              <FontAwesomeIcon icon={faGear} className="h-4 w-4" />
+            </button>
+
+            {!isCollapsed && (
+              <NavLink
+                to="/settings"
+                onClick={() => {
+                  if (isMobile) onCloseMobile()
+                }}
+                className={({ isActive }) =>
+                  `flex min-h-[44px] flex-1 items-center rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150 touch-manipulation ${
+                    isActive
+                      ? 'bg-gray-100 text-gray-950 font-semibold'
+                      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 active:bg-gray-100'
+                  }`
+                }
+              >
+                Settings
+              </NavLink>
             )}
-          </NavLink>
-
-          <button
-            type="button"
-            title="Account options"
-            onClick={() => setProfileMenuOpen((open) => !open)}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-gray-100 to-gray-200 text-xs font-semibold text-gray-700 shadow-sm ring-1 ring-gray-200 transition-all duration-150 ease-out hover:bg-gray-100 active:scale-[0.98]"
-          >
-            {initials}
-          </button>
+          </div>
         </div>
       </div>
-    </div>
-  )
+    )
+  }
 
   return (
     <>
-      <div className="relative">
-        <aside
-          className={`hidden h-full shrink-0 overflow-hidden border-r border-gray-200 bg-white transition-transform duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] will-change-transform md:block ${
-            collapsed ? 'w-[72px]' : 'w-[280px] max-w-[80vw]'
-          }`}
-        >
-          {body}
-        </aside>
-        <ProfilePopover />
-      </div>
+      {/* Desktop Persistent Sidebar */}
+      <aside
+        className={`hidden md:block h-full shrink-0 border-r border-gray-200 bg-white transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] ${
+          collapsed ? 'w-18' : 'w-64 lg:w-70'
+        }`}
+      >
+        {renderSidebarContent(false)}
+      </aside>
 
-      <div className={`fixed inset-0 z-40 md:hidden ${mobileOpen ? '' : 'pointer-events-none'}`}>
+      {/* Mobile Sliding Drawer & Backdrop */}
+      <div
+        className={`fixed inset-0 z-50 md:hidden transition-all duration-300 ${
+          mobileOpen ? 'visible pointer-events-auto' : 'invisible pointer-events-none'
+        }`}
+        aria-hidden={!mobileOpen}
+      >
+        {/* Soft Dimmed Overlay */}
         <div
-          className={`fixed inset-0 z-40 bg-black/30 backdrop-blur-xs transition-all duration-300 ease-out ${mobileOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
+          className={`fixed inset-0 bg-black/40 backdrop-blur-xs transition-opacity duration-300 ease-out ${
+            mobileOpen ? 'opacity-100' : 'opacity-0'
+          }`}
           onClick={onCloseMobile}
+          aria-hidden="true"
         />
 
+        {/* Mobile Slide-in Panel */}
         <aside
-          className={`fixed inset-y-0 left-0 z-50 w-[85vw] max-w-[320px] -translate-x-full transform bg-white transition-transform duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] will-change-transform sm:w-[320px] ${
+          className={`fixed inset-y-0 left-0 flex h-full w-[82vw] max-w-[320px] flex-col bg-white shadow-2xl transition-transform duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] will-change-transform ${
             mobileOpen ? 'translate-x-0' : '-translate-x-full'
           }`}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Navigation Menu"
         >
-          {body}
+          {renderSidebarContent(true)}
         </aside>
-
-        <ProfilePopover />
       </div>
+
+      {/* Global Profile Popover */}
+      <ProfilePopover />
     </>
   )
 }
 
+export default Sidebar

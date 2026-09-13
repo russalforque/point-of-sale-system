@@ -1,3 +1,9 @@
+
+## ESC/POS printing
+
+Sellix sends completed receipt data to `POST /api/printing/receipt`. The API formats the data as raw ESC/POS bytes and stores each job in the `PrintJobs` queue. The Windows agent polls the deployed API and prints locally, so the cloud API never needs to reach into the store network.
+
+Apply the generated EF migration during deployment. Build and run `Sellix.PrintAgent` on each POS computer, then set `Printer:PrinterName` to the exact Windows printer queue name, `Printer:ApiUrl` to the deployed API URL, and use the same strong random value for `Printer:AgentKey` and the API's `Printing:AgentKey`. The agent uses the Windows spooler RAW path and never replaces the USB Printing Support driver.
 # React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.

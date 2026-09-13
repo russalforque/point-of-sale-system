@@ -1,29 +1,12 @@
-import { Menu } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
-
-const titles: Record<string, string> = {
-  '/dashboard': 'Dashboard',
-  '/sales': 'Sales',
-  '/customers': 'Customers',
-  '/inventory': 'Inventory',
-  '/products': 'Products',
-  '/categories': 'Categories',
-  '/suppliers': 'Suppliers',
-  '/reports': 'Reports',
-  '/settings': 'Settings',
-}
-
-function titleFromPath(pathname: string): string {
-  const match = Object.keys(titles)
-    .sort((a, b) => b.length - a.length)
-    .find((key) => pathname === key || pathname.startsWith(`${key}/`))
-  return match ? titles[match] ?? 'Sellix POS' : 'Sellix POS'
-}
+import { MobileBottomNav } from '../../pages/mobile/MobileButtomNav'
 
 export function MainLayout() {
   const location = useLocation()
+  const [pageLoading, setPageLoading] = useState(false)
+
   const shouldAutoHideSidebar = () =>
     window.innerWidth >= 1000 && window.innerHeight >= 800
 
@@ -35,6 +18,18 @@ export function MainLayout() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [hoveredSidebar, setHoveredSidebar] = useState(false)
   const manualToggleLockRef = useRef(false)
+
+  // Progress bar indicator on page change
+  useEffect(() => {
+    setPageLoading(true)
+    const id = window.setTimeout(() => setPageLoading(false), 120)
+    return () => window.clearTimeout(id)
+  }, [location.pathname])
+
+  // Automatically close mobile menu drawer when route changes
+  useEffect(() => {
+    setMobileOpen(false)
+  }, [location.pathname])
 
   useEffect(() => {
     const handleResize = () => {
@@ -70,41 +65,52 @@ export function MainLayout() {
   }
 
   return (
-    <div 
-      className="flex h-full bg-white"
+    <div
+      className="flex h-screen h-[100dvh] w-full overflow-hidden bg-white selection:bg-[#285A48] selection:text-white"
       onPointerMove={handlePointerMove}
       onPointerLeave={() => {
         setHoveredSidebar(false)
         manualToggleLockRef.current = false
       }}
     >
+      {/* Brand Top Page Loading Bar */}
+      <div
+        aria-hidden="true"
+        className={`pointer-events-none fixed inset-x-0 top-0 z-[100] h-0.5 origin-left bg-[#285A48] transition-transform duration-300 ease-out ${
+          pageLoading ? 'scale-x-100 opacity-100' : 'scale-x-0 opacity-0'
+        }`}
+      />
+
+      {/* Desktop Persistent Sidebar & Slide-in Mobile Drawer */}
       <Sidebar
         collapsed={!sidebarExpanded}
         mobileOpen={mobileOpen}
         onCloseMobile={() => setMobileOpen(false)}
         onToggle={toggle}
       />
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="flex items-center gap-3 border-b border-gray-200 bg-white px-3 py-3 md:hidden">
-          <button
-            type="button"
-            aria-label="Open sidebar"
-            onClick={() => setMobileOpen(true)}
-            className="flex h-10 w-10 items-center justify-center rounded-lg border border-gray-200 text-gray-700 transition-all duration-100 ease-out active:bg-gray-100"
-          >
-            <Menu size={18} />
-          </button>
-          <span className="text-sm font-semibold tracking-tight text-gray-900">
-            {titleFromPath(location.pathname)}
-          </span>
-        </div>
 
-        <main className="min-h-0 flex-1 overflow-auto bg-gray-50/50">
-          <div className="mx-auto h-full max-w-screen-2xl">
-            <Outlet />
-          </div>
-        </main>
+      {/* Main Canvas Area */}
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/*
+          Top mobile header removed.
+          On mobile, navigation is now handled exclusively via MobileBottomNav.
+        */}
+
+        {/* Scrollable Content Area:
+            - pt accounts for iOS status bar / notch
+            - pb accounts for the fixed MobileBottomNav height + safe area
+        */}
+     <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#F6F8F7] pt-[env(safe-area-inset-top,0px)] md:pt-0">
+  <div className="mx-auto flex min-h-full max-w-screen-2xl flex-col pb-[calc(5rem+env(safe-area-inset-bottom,0px))] md:pb-0">
+    <Outlet />
+  </div>
+</main>
+
+        {/* Bottom Navigation (Only visible on mobile screens) */}
+        <MobileBottomNav onOpenMenu={() => setMobileOpen(true)} />
       </div>
     </div>
   )
 }
+
+export default MainLayout

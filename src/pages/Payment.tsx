@@ -4,16 +4,15 @@ import { useNavigate } from 'react-router-dom'
 import { salesApi } from '../api/salesApi'
 
 import { Button } from '../components/ui/Button'
-import { Input } from '../components/ui/Field'
 import { Modal } from '../components/ui/Modal'
-import { PageHeader } from '../components/ui/Page'
 
+import { useCheckout } from '../context/CheckoutContext'
 import { useSettings } from '../context/SettingsContext'
 import { useToast } from '../context/ToastContext'
-import { useCheckout } from '../context/CheckoutContext'
+import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
 
 import type { PaymentMethod, Sale } from '../types'
-
+import { getErrorMessage } from '../utils/errors'
 import { formatMoney } from '../utils/format'
 import {
   buildPaymentBreakdown,
@@ -22,36 +21,34 @@ import {
   getPaymentReceived,
   PAYMENT_OPTIONS,
 } from '../utils/pos'
-import { getErrorMessage } from '../utils/errors'
 
 export function PaymentPage() {
   const navigate = useNavigate()
   const { notify } = useToast()
   const { settings } = useSettings()
-  const { state: checkout, clearCheckout } =
-    useCheckout()
+  const { state: checkout, clearCheckout } = useCheckout()
+  const { printReceipt: sendReceiptToPrinter, isPrinting, lastPrintError } =
+    useReceiptPrinter()
 
   const [isMounted, setIsMounted] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [receipt, setReceipt] =
-    useState<Sale | null>(null)
+  const [receipt, setReceipt] = useState<Sale | null>(null)
+  const [summaryExpanded, setSummaryExpanded] = useState(false)
+  const [showVoidConfirm, setShowVoidConfirm] = useState(false)
 
-  // Local payment state
-  const [method, setMethod] =
-    useState<PaymentMethod>(checkout.method)
+  // Payment inputs
+  const [method, setMethod] = useState<PaymentMethod>(checkout.method)
   const [cash, setCash] = useState(checkout.cash)
-  const [paymentReference, setPaymentReference] =
-    useState(checkout.paymentReference)
+  const [paymentReference, setPaymentReference] = useState(
+    checkout.paymentReference,
+  )
 
   useEffect(() => {
-    const id = window.setTimeout(
-      () => setIsMounted(true),
-      40,
-    )
+    const id = window.setTimeout(() => setIsMounted(true), 40)
     return () => window.clearTimeout(id)
   }, [])
 
-  // Redirect if no cart
+  // Guard: Redirect if no items in checkout
   useEffect(() => {
     if (!isMounted) return
     if (checkout.cart.length === 0) {
@@ -80,23 +77,64 @@ export function PaymentPage() {
     method === 0
       ? Math.max(cashValue - totals.total, 0)
       : calculateChange(totals.total, paymentBreakdown)
+
+  // Real-time remaining balance for partial cash
+  const remainingDue = Math.max(totals.total - cashValue, 0)
+  const isCashSufficient = cashValue >= totals.total
+
+  // Smart Cash Denomination Shortcuts
+  const quickCashOptions = useMemo(() => {
+    const t = totals.total
+    if (t <= 0) return []
+    const opts = new Set<number>()
+    opts.add(Math.ceil(t * 100) / 100) // Exact
+    const next10 = Math.ceil(t / 10) * 10
+    if (next10 > t) opts.add(next10)
+    const next20 = Math.ceil(t / 20) * 20
+    if (next20 > t) opts.add(next20)
+    const next50 = Math.ceil(t / 50) * 50
+    if (next50 > t) opts.add(next50)
+    const next100 = Math.ceil(t / 100) * 100
+    if (next100 > t) opts.add(next100)
+    const next500 = Math.ceil(t / 500) * 500
+    if (next500 > t) opts.add(next500)
+    const next1000 = Math.ceil(t / 1000) * 1000
+    if (next1000 > t) opts.add(next1000)
+    return Array.from(opts).slice(0, 4)
+  }, [totals.total])
+
+  function handleNumpadPress(digit: string) {
+    if (digit === '.') {
+      if (!cash.includes('.')) {
+        setCash((prev) => (prev === '' ? '0.' : `${prev}.`))
+      }
+      return
+    }
+
+    if (digit === '00') {
+      if (cash !== '' && !cash.includes('.')) {
+        setCash((prev) => `${prev}00`)
+      }
+      return
+    }
+
+    // Safely check decimal length without TypeScript undefined error
+    const decimalPart = cash.split('.')[1]
+    if (decimalPart && decimalPart.length >= 2) {
+      return
+    }
+
+    setCash((prev) => (prev === '0' ? digit : `${prev}${digit}`))
+  }
+
   async function completeSale() {
-    if (
-      method === 0 &&
-      cashValue < totals.total
-    ) {
-      notify(
-        'Cash received is less than the total.',
-        'error',
-      )
+    if (method === 0 && !isCashSufficient) {
+      notify('Tendered cash is less than the balance due.', 'error')
       return
     }
 
     if (method !== 0 && !paymentReference.trim()) {
-      notify(
-        'Add a payment reference or note before completing a non-cash sale.',
-        'error',
-      )
+      notify('Please enter a payment reference or auth code.', 'error')
       return
     }
 
@@ -107,10 +145,8 @@ export function PaymentPage() {
         customerId: checkout.customerId,
         discount: totals.discount,
         paymentMethod: method,
-        amountReceived:
-          method === 0 ? cashValue : amountReceived,
-        reference:
-          paymentReference.trim() || undefined,
+        amountReceived: method === 0 ? cashValue : amountReceived,
+        reference: paymentReference.trim() || undefined,
         items: checkout.cart.map((line) => ({
           productId: line.product.id,
           quantity: line.quantity,
@@ -119,7 +155,11 @@ export function PaymentPage() {
 
       setReceipt(sale)
       clearCheckout()
-      notify('Sale completed.')
+      notify('Sale completed successfully.')
+      void sendReceiptToPrinter(sale, settings).then(
+        () => notify('Receipt printed successfully.'),
+        () => notify('Sale saved, but printer could not be reached.', 'error'),
+      )
     } catch (err) {
       notify(getErrorMessage(err), 'error')
     } finally {
@@ -128,7 +168,11 @@ export function PaymentPage() {
   }
 
   function printReceipt() {
-    window.print()
+    if (!receipt) return
+    void sendReceiptToPrinter(receipt, settings).then(
+      () => notify('Receipt printed successfully.'),
+      () => notify('Receipt print failed. Please retry.', 'error'),
+    )
   }
 
   function goBack() {
@@ -141,119 +185,514 @@ export function PaymentPage() {
     })
   }
 
+  function confirmVoidTransaction() {
+    clearCheckout()
+    setShowVoidConfirm(false)
+    navigate('/sales', { replace: true })
+  }
+
+  const selectedMethodOption = PAYMENT_OPTIONS.find(
+    (opt) => opt.value === method,
+  )
+
+  const isFormValid =
+    (method === 0 && isCashSufficient) ||
+    (method !== 0 && paymentReference.trim().length > 0)
+
   return (
-    <div className="min-h-screen overflow-x-hidden bg-slate-50 text-slate-900">
-      <div className="mx-auto max-w-7xl px-4 pb-6 pt-4 sm:px-5 lg:px-6">
-        <PageHeader
-          title="Payment"
-          subtitle={`${checkout.cart.length} item${checkout.cart.length !== 1 ? 's' : ''} ready to complete`}
-          actions={
+    <div className="min-h-screen bg-[#F6F8F7] text-[#091413] pb-28 md:pb-12 antialiased selection:bg-[#285A48] selection:text-white">
+      <div className="mx-auto max-w-6xl px-3.5 pt-4 sm:px-6 md:px-8">
+
+        {/* =======================================================
+            HEADER ROW
+            ======================================================= */}
+        <div className="flex items-center justify-between pb-3.5">
+          <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={goBack}
-              className="inline-flex min-h-11 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm shadow-slate-200/50 transition hover:border-slate-300 hover:bg-slate-50"
+              aria-label="Return to cart"
+              className="flex h-11 w-11 items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white text-[#285A48] shadow-xs transition-all hover:bg-[#EAF1EE] active:scale-95 touch-manipulation"
             >
-              Back to sale
+              <ArrowLeftIcon size={18} />
             </button>
-          }
-        />
-
-        <div className="grid min-h-0 gap-3 md:h-[calc(100vh-8.5rem)] md:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.8fr)_132px]">
-          <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-200/50">
-            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-4 py-3">
-              <div className="grid grid-cols-[72px_minmax(0,1fr)_100px_90px] gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                <span>Item #</span><span>Title</span><span>Original price</span><span>Price</span>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-lg font-black tracking-tight text-[#091413]">
+                  Settlement
+                </h1>
+                <span className="rounded-full bg-[#EAF1EE] px-2 py-0.5 text-[10px] font-bold text-[#285A48]">
+                  Register
+                </span>
               </div>
-              <span className="ml-3 shrink-0 rounded-full bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-600">{checkout.cart.length} items</span>
+              <p className="text-xs text-slate-500 font-medium">
+                {checkout.cart.length} line item{checkout.cart.length !== 1 ? 's' : ''} in cart
+              </p>
             </div>
+          </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              {checkout.cart.map((line, index) => (
-                <div key={line.product.id} className="grid grid-cols-[72px_minmax(0,1fr)_100px_90px] gap-2 border-b border-slate-100 px-3 py-3 text-[11px] text-slate-700">
-                  <span className="text-slate-400">{String(index + 1).padStart(2, '0')}</span>
-                  <div className="min-w-0">
-                    <p className="truncate font-semibold text-slate-800" title={line.product.name}>{line.product.name}</p>
-                    <p className="mt-0.5 truncate text-[10px] text-slate-400">Qty {line.quantity}</p>
+          <button
+            type="button"
+            onClick={() => setShowVoidConfirm(true)}
+            className="flex items-center gap-1.5 rounded-2xl border border-rose-200/80 bg-white px-3.5 py-2.5 text-xs font-bold text-rose-600 shadow-xs transition-all hover:bg-rose-50 active:scale-95 touch-manipulation"
+          >
+            <TrashIcon size={13} />
+            <span className="hidden sm:inline">Void Order</span>
+          </button>
+        </div>
+
+        {/* =======================================================
+            MAIN INTERFACE: SUMMARY (LEFT) + PAYMENT PAD (RIGHT)
+            ======================================================= */}
+        <div
+          className={`grid min-h-0 gap-4 transition-all duration-300 ease-out lg:grid-cols-12 lg:items-start ${
+            isMounted ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'
+          }`}
+        >
+
+          {/* =======================================================
+              LEFT / TOP: ORDER SUMMARY
+              ======================================================= */}
+          <section className="rounded-3xl border border-[#E5EBE7] bg-white shadow-sm lg:col-span-5 flex flex-col overflow-hidden">
+            {/* Header / Mobile Toggle Bar */}
+            <button
+              type="button"
+              onClick={() => setSummaryExpanded((prev) => !prev)}
+              className="flex w-full items-center justify-between p-4 text-left border-b border-[#E5EBE7] hover:bg-[#F9FAF9] transition-colors lg:cursor-default"
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-[#EAF1EE] text-[#285A48]">
+                  <ShoppingBagIcon size={16} />
+                </div>
+                <div>
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                    Order Items
+                  </h2>
+                  <p className="text-[11px] text-slate-400 lg:hidden">
+                    {summaryExpanded ? 'Tap to hide items' : 'Tap to inspect items'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="rounded-full bg-[#EAF1EE] px-2.5 py-0.5 text-[11px] font-bold text-[#285A48]">
+                  {checkout.cart.length} items
+                </span>
+                <span className="text-slate-400 lg:hidden">
+                  <ChevronDownIcon
+                    size={16}
+                    className={`transition-transform duration-200 ${
+                      summaryExpanded ? 'rotate-180' : ''
+                    }`}
+                  />
+                </span>
+              </div>
+            </button>
+
+            {/* Line Items List */}
+            <div
+              className={`divide-y divide-slate-100 overflow-y-auto overscroll-contain px-4 py-1 transition-all duration-300 lg:block lg:max-h-[360px] ${
+                summaryExpanded ? 'block max-h-72' : 'hidden lg:block'
+              }`}
+            >
+              {checkout.cart.map((line) => (
+                <div
+                  key={line.product.id}
+                  className="flex items-center justify-between gap-3 py-3"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-bold text-[#091413]">
+                      {line.product.name}
+                    </p>
+                    <p className="mt-0.5 text-[11px] font-medium text-slate-400">
+                      {line.quantity} ×{' '}
+                      {formatMoney(
+                        line.product.sellingPrice,
+                        settings.currencySymbol,
+                      )}
+                    </p>
                   </div>
-                  <span>{formatMoney(line.product.sellingPrice, settings.currencySymbol)}</span>
-                  <span className="font-semibold text-slate-900">{formatMoney(line.product.sellingPrice * line.quantity, settings.currencySymbol)}</span>
+                  <span className="shrink-0 text-xs font-extrabold text-[#091413]">
+                    {formatMoney(
+                      line.product.sellingPrice * line.quantity,
+                      settings.currencySymbol,
+                    )}
+                  </span>
                 </div>
               ))}
             </div>
 
-            <div className="border-t border-slate-200 px-4 py-3">
-              <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-[11px] text-slate-600 sm:grid-cols-4">
-                <span>Total items <b className="ml-2 text-slate-900">{checkout.cart.length}</b></span>
-                <span>Discount <b className="ml-2 text-slate-900">{formatMoney(totals.discount, settings.currencySymbol)}</b></span>
-                <span>Tax <b className="ml-2 text-slate-900">{formatMoney(totals.tax, settings.currencySymbol)}</b></span>
-                <span>Subtotal <b className="ml-2 text-slate-900">{formatMoney(totals.subtotal, settings.currencySymbol)}</b></span>
+            {/* Breakdown Totals */}
+            <div className="border-t border-[#E5EBE7] bg-[#FBFDFB] p-4 space-y-2">
+              <div className="flex justify-between text-xs font-medium text-slate-500">
+                <span>Subtotal</span>
+                <span className="font-semibold text-[#091413]">
+                  {formatMoney(totals.subtotal, settings.currencySymbol)}
+                </span>
               </div>
-              <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
-                <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Total due</span>
-                <span className="text-xl font-black text-sky-600">{formatMoney(totals.total, settings.currencySymbol)}</span>
+
+              <div className="flex justify-between text-xs font-medium text-slate-500">
+                <span>Tax ({settings.taxRate}%)</span>
+                <span className="font-semibold text-[#091413]">
+                  {formatMoney(totals.tax, settings.currencySymbol)}
+                </span>
               </div>
-            </div>
-          </section>
 
-          <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-200/50">
-            <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50/80 px-4 py-3">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Payment method</p>
-              <div className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-right text-sm font-semibold text-slate-900 shadow-inner">{cash ? formatMoney(Number(cash), settings.currencySymbol) : formatMoney(totals.total, settings.currencySymbol)}</div>
-              <button type="button" onClick={() => setCash('')} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50">Clear</button>
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              {method !== 0 && (
-                <div className="mb-3">
-                  <label className="mb-1 block text-[11px] font-semibold text-slate-600">{PAYMENT_OPTIONS.find((option) => option.value === method)?.label ?? 'Payment'} reference</label>
-                  <Input className="h-9 w-full rounded-md text-sm" value={paymentReference} onChange={(e) => setPaymentReference(e.target.value)} placeholder="Enter payment reference" />
+              {totals.discount > 0 && (
+                <div className="flex justify-between text-xs font-medium text-emerald-700">
+                  <span>Discount</span>
+                  <span className="font-bold">
+                    -{formatMoney(totals.discount, settings.currencySymbol)}
+                  </span>
                 </div>
               )}
 
-              <div className="grid grid-cols-3 gap-1.5">
-                {['7', '8', '9', '4', '5', '6', '1', '2', '3', '.', '0', '00'].map((num) => (
-                  <button key={num} type="button" onClick={() => method === 0 && setCash((current) => (current === '' ? num : `${current}${num}`))} className="flex h-12 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-base font-semibold text-slate-800 transition hover:border-slate-300 hover:bg-white touch-manipulation">{num}</button>
-                ))}
-                <button type="button" onClick={() => method === 0 && setCash((current) => current.slice(0, -1))} className="col-span-3 flex h-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-500 hover:bg-slate-50">Backspace</button>
+              {/* Total Banner */}
+              <div className="mt-3 flex items-baseline justify-between border-t border-[#E5EBE7] pt-3">
+                <div>
+                  <span className="text-xs font-extrabold uppercase tracking-wider text-[#285A48]">
+                    Total Due
+                  </span>
+                  <p className="text-[10px] text-slate-400">Amount to collect</p>
+                </div>
+                <span className="text-3xl font-black tracking-tight text-[#091413]">
+                  {formatMoney(totals.total, settings.currencySymbol)}
+                </span>
               </div>
-
-              <div className="mt-3 grid grid-cols-3 gap-1.5 border-t border-slate-100 pt-3">
-                {PAYMENT_OPTIONS.map((option) => (
-                  <button key={option.value} type="button" onClick={() => setMethod(Number(option.value) as PaymentMethod)} className={`rounded-xl border px-2 py-2 text-[10px] font-semibold transition-colors ${method === option.value ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'}`}>{option.label}</button>
-                ))}
-              </div>
-
-              <div className="mt-3 flex items-center justify-between rounded border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs">
-                <span className="font-semibold text-emerald-700">Change</span>
-                <span className="font-bold text-emerald-700">{formatMoney(change, settings.currencySymbol)}</span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 border-t border-slate-200 p-3">
-              <button type="button" onClick={goBack} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-white">Suspend</button>
-              <button type="button" disabled={busy || (method === 0 && cashValue < totals.total) || (method !== 0 && !paymentReference.trim())} onClick={() => void completeSale()} className="rounded-xl bg-slate-900 px-3 py-2.5 text-xs font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300">{busy ? 'Processing...' : 'Checkout'}</button>
             </div>
           </section>
 
-          <aside className="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm shadow-slate-200/50">
-            <p className="px-1 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Quick options</p>
-            <button type="button" onClick={goBack} className="rounded-xl border border-slate-200 bg-slate-50 px-2 py-2.5 text-[10px] font-medium text-slate-700 transition hover:border-slate-300 hover:bg-white">Add item</button>
-            <button type="button" onClick={goBack} className="rounded-xl border border-slate-200 bg-slate-50 px-2 py-2.5 text-[10px] font-medium text-slate-700 transition hover:border-slate-300 hover:bg-white">New order</button>
-            <button type="button" onClick={() => setCash('')} className="rounded-xl border border-slate-200 bg-slate-50 px-2 py-2.5 text-[10px] font-medium text-slate-700 transition hover:border-slate-300 hover:bg-white">Clear payment</button>
-            <button type="button" onClick={() => notify('Use the payment buttons to select a method.')} className="rounded-xl border border-slate-200 bg-slate-50 px-2 py-2.5 text-[10px] font-medium text-slate-700 transition hover:border-slate-300 hover:bg-white">More</button>
-          </aside>
+          {/* =======================================================
+              RIGHT: PAYMENT METHOD PAD & TENDER
+              ======================================================= */}
+          <section className="rounded-3xl border border-[#E5EBE7] bg-white p-4 sm:p-5 shadow-sm lg:col-span-7 flex flex-col justify-between">
+            <div>
+              {/* Payment Method Selector Tabs */}
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                  Payment Method
+                </label>
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  {PAYMENT_OPTIONS.map((option) => {
+                    const isSelected = method === option.value
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => {
+                          setMethod(Number(option.value) as PaymentMethod)
+                          setCash('')
+                        }}
+                        className={`flex min-h-[48px] items-center justify-center rounded-2xl px-3 py-2 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
+                          isSelected
+                            ? 'bg-[#285A48] text-white shadow-md shadow-[#285A48]/20'
+                            : 'border border-[#E5EBE7] bg-white text-slate-600 hover:bg-[#F0F5F2]'
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* CASH TENDER SECTION */}
+              {method === 0 ? (
+                <div className="mt-4 space-y-3">
+                  {/* Tender Display */}
+                  <div className="rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] p-3.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-500">
+                        Cash Tendered
+                      </span>
+                      {cash && (
+                        <button
+                          type="button"
+                          onClick={() => setCash('')}
+                          className="flex items-center gap-1 rounded-xl bg-white px-2 py-1 text-[11px] font-bold text-slate-600 border border-slate-200/80 shadow-2xs hover:text-rose-600 transition-colors"
+                        >
+                          <RotateCcwIcon size={12} />
+                          <span>Clear</span>
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="mt-1 flex items-baseline justify-between">
+                      <span className="text-2xl font-black text-[#091413] tracking-tight sm:text-3xl">
+                        {cash
+                          ? formatMoney(cashValue, settings.currencySymbol)
+                          : formatMoney(0, settings.currencySymbol)}
+                      </span>
+                      <span className="text-xs font-semibold text-[#285A48]">
+                        Exact: {formatMoney(totals.total, settings.currencySymbol)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Quick Bill Shortcuts */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                        Quick Bills
+                      </span>
+                      <span className="text-[10px] text-slate-400">One-tap tender</span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2">
+                      {quickCashOptions.map((amount) => {
+                        const isExact = amount === totals.total
+                        const isSelected = cashValue === amount
+
+                        return (
+                          <button
+                            key={amount}
+                            type="button"
+                            onClick={() => setCash(String(amount))}
+                            className={`flex min-h-[44px] flex-col items-center justify-center rounded-2xl text-xs font-bold transition-all active:scale-95 touch-manipulation ${
+                              isSelected
+                                ? 'bg-[#285A48] text-white shadow-sm'
+                                : isExact
+                                ? 'border-2 border-[#285A48] bg-[#EAF1EE] text-[#285A48]'
+                                : 'border border-[#E5EBE7] bg-white text-[#285A48] hover:bg-[#EAF1EE]'
+                            }`}
+                          >
+                            <span>{formatMoney(amount, settings.currencySymbol)}</span>
+                            {isExact && (
+                              <span className="text-[9px] font-medium opacity-80">
+                                Exact
+                              </span>
+                            )}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Standard 4x3 POS Numpad */}
+                  <div className="space-y-2 pt-1">
+                    <div className="grid grid-cols-3 gap-2">
+                      {['7', '8', '9', '4', '5', '6', '1', '2', '3'].map((num) => (
+                        <button
+                          key={num}
+                          type="button"
+                          onClick={() => handleNumpadPress(num)}
+                          className="flex min-h-[50px] items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white text-base font-extrabold text-[#091413] shadow-2xs transition hover:bg-[#F2F6F4] active:bg-[#EAF1EE] active:scale-95 touch-manipulation"
+                        >
+                          {num}
+                        </button>
+                      ))}
+
+                      {/* Row 4: Clear, 0, Backspace */}
+                      <button
+                        type="button"
+                        onClick={() => setCash('')}
+                        className="flex min-h-[50px] items-center justify-center rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] text-xs font-black text-rose-600 hover:bg-rose-50 active:scale-95 touch-manipulation"
+                      >
+                        C
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleNumpadPress('0')}
+                        className="flex min-h-[50px] items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white text-base font-extrabold text-[#091413] shadow-2xs hover:bg-[#F2F6F4] active:bg-[#EAF1EE] active:scale-95 touch-manipulation"
+                      >
+                        0
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCash((prev) => prev.slice(0, -1))}
+                        className="flex min-h-[50px] items-center justify-center rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] text-[#091413] hover:bg-slate-200/70 active:scale-95 touch-manipulation"
+                        aria-label="Backspace"
+                      >
+                        <DeleteIcon size={18} />
+                      </button>
+                    </div>
+
+                    {/* Secondary row for decimals / double zero */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleNumpadPress('.')}
+                        className="flex min-h-[44px] items-center justify-center rounded-2xl border border-[#E5EBE7] bg-[#FBFDFB] text-sm font-black text-slate-700 hover:bg-slate-100 active:scale-95 touch-manipulation"
+                      >
+                        . (decimal)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleNumpadPress('00')}
+                        className="flex min-h-[44px] items-center justify-center rounded-2xl border border-[#E5EBE7] bg-[#FBFDFB] text-sm font-black text-slate-700 hover:bg-slate-100 active:scale-95 touch-manipulation"
+                      >
+                        00
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* DYNAMIC SYSTEM FEEDBACK: CHANGE DUE vs STILL NEEDED */}
+                  {cashValue > 0 && (
+                    <div
+                      className={`flex items-center justify-between rounded-2xl p-3.5 border transition-all ${
+                        isCashSufficient
+                          ? 'border-[#285A48]/20 bg-[#EAF1EE]'
+                          : 'border-amber-200 bg-amber-50'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <div
+                          className={`flex h-7 w-7 items-center justify-center rounded-full text-white ${
+                            isCashSufficient ? 'bg-[#285A48]' : 'bg-amber-500'
+                          }`}
+                        >
+                          {isCashSufficient ? (
+                            <CheckIcon size={13} />
+                          ) : (
+                            <span className="text-xs font-bold">!</span>
+                          )}
+                        </div>
+                        <span
+                          className={`text-xs font-bold ${
+                            isCashSufficient ? 'text-[#285A48]' : 'text-amber-800'
+                          }`}
+                        >
+                          {isCashSufficient ? 'Change Due' : 'Still Needed'}
+                        </span>
+                      </div>
+                      <span
+                        className={`text-xl font-black ${
+                          isCashSufficient ? 'text-[#285A48]' : 'text-amber-800'
+                        }`}
+                      >
+                        {formatMoney(
+                          isCashSufficient ? change : remainingDue,
+                          settings.currencySymbol,
+                        )}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* NON-CASH (CARD / DIGITAL WALLET) SECTION */
+                <div className="mt-4 space-y-4">
+                  <div className="rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] p-4 text-center">
+                    <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                      Amount to Charge
+                    </p>
+                    <p className="mt-1 text-3xl font-black text-[#091413]">
+                      {formatMoney(totals.total, settings.currencySymbol)}
+                    </p>
+                    <p className="mt-1 text-[11px] font-medium text-slate-500">
+                      Charge via external {selectedMethodOption?.label} terminal
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="mb-1.5 block text-xs font-bold text-slate-700">
+                      {selectedMethodOption?.label} Reference or Approval Code <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      autoFocus
+                      value={paymentReference}
+                      onChange={(e) => setPaymentReference(e.target.value)}
+                      placeholder="e.g., Auth Code, Approval #, GCash Ref"
+                      className="h-12 w-full rounded-2xl border border-[#E5EBE7] bg-white px-4 text-xs font-semibold text-[#091413] placeholder-slate-400 outline-none transition focus:border-[#285A48] focus:ring-2 focus:ring-[#285A48]/15"
+                    />
+                    <p className="mt-1.5 text-[11px] text-slate-400">
+                      Enter the authorization code from the payment terminal receipt
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Desktop Action Buttons */}
+            <div className="mt-6 hidden sm:grid sm:grid-cols-2 gap-2.5 pt-4 border-t border-[#E5EBE7]">
+              <button
+                type="button"
+                onClick={goBack}
+                className="flex min-h-[48px] items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 active:scale-95 touch-manipulation"
+              >
+                Back to Register
+              </button>
+
+              <button
+                type="button"
+                disabled={busy || !isFormValid}
+                onClick={() => void completeSale()}
+                className="flex min-h-[48px] items-center justify-center gap-2 rounded-2xl bg-[#285A48] text-xs font-bold text-white shadow-md shadow-[#285A48]/25 transition hover:bg-[#1e4437] active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 touch-manipulation"
+              >
+                <CheckIcon size={16} />
+                <span>{busy ? 'Finalizing Ticket…' : 'Complete Checkout'}</span>
+              </button>
+            </div>
+          </section>
         </div>
       </div>
 
+      {/* =======================================================
+          MOBILE STICKY BOTTOM ACTION BAR (Ergonomic Thumb Reach)
+          ======================================================= */}
+      <div
+        className="fixed inset-x-0 bottom-0 z-30 border-t border-[#E5EBE7] bg-white/95 p-3 backdrop-blur-md sm:hidden"
+        style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom, 0.75rem))' }}
+      >
+        <button
+          type="button"
+          disabled={busy || !isFormValid}
+          onClick={() => void completeSale()}
+          className="flex min-h-[50px] w-full items-center justify-center gap-2 rounded-2xl bg-[#285A48] text-sm font-extrabold text-white shadow-lg shadow-[#285A48]/25 transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 touch-manipulation"
+        >
+          <CheckIcon size={18} />
+          <span>
+            {busy
+              ? 'Processing…'
+              : method === 0 && isCashSufficient && change > 0
+              ? `Done • Give ${formatMoney(change, settings.currencySymbol)} Change`
+              : `Settle ${formatMoney(totals.total, settings.currencySymbol)}`}
+          </span>
+        </button>
+      </div>
+
+      {/* =======================================================
+          VOID CONFIRMATION MODAL (Nielsen #5 Error Prevention)
+          ======================================================= */}
+      {showVoidConfirm && (
+        <Modal
+          title="Void Entire Order?"
+          onClose={() => setShowVoidConfirm(false)}
+          footer={
+            <div className="flex gap-2 justify-end">
+              <Button variant="secondary" onClick={() => setShowVoidConfirm(false)}>
+                Cancel
+              </Button>
+              <button
+                type="button"
+                onClick={confirmVoidTransaction}
+                className="rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-rose-700 active:scale-95"
+              >
+                Yes, Void Order
+              </button>
+            </div>
+          }
+        >
+          <div className="py-2 text-xs text-slate-600">
+            <p>
+              Are you sure you want to cancel and clear all{' '}
+              <strong className="text-slate-900">{checkout.cart.length} items</strong> from this order? This action cannot be undone.
+            </p>
+          </div>
+        </Modal>
+      )}
+
+      {/* =======================================================
+          RECEIPT / SUCCESS MODAL
+          ======================================================= */}
       {receipt && (
         <Modal
-          title="Sale complete"
+          title="Order Settled"
           onClose={() => {
             setReceipt(null)
             navigate('/sales', { replace: true })
           }}
           footer={
-            <>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <Button
                 variant="secondary"
                 onClick={() => {
@@ -261,164 +700,113 @@ export function PaymentPage() {
                   navigate('/sales', { replace: true })
                 }}
               >
-                Close
+                New Order
               </Button>
-
-              <Button onClick={printReceipt}>
-                Print receipt
+              <Button onClick={printReceipt} disabled={isPrinting}>
+                {isPrinting ? (
+                  'Printing…'
+                ) : (
+                  <span className="inline-flex items-center gap-1.5">
+                    <PrinterIcon size={14} />
+                    <span>{lastPrintError ? 'Retry Print' : 'Print Receipt'}</span>
+                  </span>
+                )}
               </Button>
-            </>
+            </div>
           }
         >
-          <div
-            id="receipt"
-            className="
-              space-y-2
-              text-sm
-            "
-          >
-            <div className="space-y-1 text-center">
+          <div className="space-y-3.5 text-xs text-[#091413]">
+            {/* Header branding */}
+            <div className="space-y-1 text-center border-b border-[#E5EBE7] pb-3">
               {settings.showLogoOnReceipt && (
-                <div className="mb-2 flex items-center justify-center">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-900 text-sm font-bold text-white">
-                    {settings.storeName
-                      .slice(0, 1)
-                      .toUpperCase() || 'S'}
-                  </div>
+                <div className="mx-auto mb-2 flex h-11 w-11 items-center justify-center rounded-2xl bg-[#EAF1EE] text-sm font-black text-[#285A48]">
+                  {settings.storeName.slice(0, 1).toUpperCase() || 'S'}
                 </div>
               )}
-
-              <p className="text-center text-lg font-bold tracking-tight text-gray-900">
+              <h3 className="text-base font-extrabold text-[#091413]">
                 {settings.storeName}
-              </p>
-
-              {(settings.phone ||
-                settings.email ||
-                settings.address) && (
-                <div className="space-y-0.5 text-center text-[11px] text-gray-500">
-                  {settings.address && (
-                    <p>{settings.address}</p>
-                  )}
-                  {settings.phone && (
-                    <p>{settings.phone}</p>
-                  )}
-                  {settings.email && (
-                    <p>{settings.email}</p>
-                  )}
+              </h3>
+              {(settings.phone || settings.email || settings.address) && (
+                <div className="space-y-0.5 text-[11px] text-slate-400">
+                  {settings.address && <p>{settings.address}</p>}
+                  {settings.phone && <p>{settings.phone}</p>}
+                  {settings.email && <p>{settings.email}</p>}
                 </div>
               )}
-
-              <p
-                className="
-                  text-center
-                  text-[11px]
-                  text-gray-500
-                "
-              >
-                {receipt.invoiceNumber}
+              <p className="pt-1 text-[11px] font-bold text-[#285A48]">
+                Invoice #{receipt.invoiceNumber}
               </p>
             </div>
 
-            <ul
-              className="
-                divide-y
-                divide-gray-100
-              "
-            >
+            {/* Line items */}
+            <div className="divide-y divide-slate-100 py-1 max-h-48 overflow-y-auto overscroll-contain">
               {receipt.items.map((item) => (
-                <li
-                  key={item.productId}
-                  className="
-                    flex
-                    justify-between
-                    gap-3
-                    py-1
-                  "
-                >
-                  <span
-                    className="
-                      min-w-0
-                      truncate
-                    "
-                  >
-                    {item.productName} ×
-                    {item.quantity}
+                <div key={item.productId} className="flex justify-between py-2">
+                  <span className="text-slate-700 font-medium">
+                    {item.productName}{' '}
+                    <span className="text-slate-400 font-bold">× {item.quantity}</span>
                   </span>
-
-                  <span className="shrink-0">
-                    {formatMoney(
-                      item.lineTotal,
-                      settings.currencySymbol,
-                    )}
+                  <span className="font-extrabold text-[#091413]">
+                    {formatMoney(item.lineTotal, settings.currencySymbol)}
                   </span>
-                </li>
+                </div>
               ))}
-            </ul>
+            </div>
 
-            <CheckoutRow
-              label="Subtotal"
-              value={formatMoney(
-                receipt.subtotal,
-                settings.currencySymbol,
+            {/* Financial Summary */}
+            <div className="space-y-1.5 border-t border-[#E5EBE7] pt-2.5 text-slate-500">
+              <div className="flex justify-between text-xs">
+                <span>Subtotal</span>
+                <span className="font-bold text-[#091413]">
+                  {formatMoney(receipt.subtotal, settings.currencySymbol)}
+                </span>
+              </div>
+              {receipt.discount > 0 && (
+                <div className="flex justify-between text-xs">
+                  <span>Discount</span>
+                  <span className="font-bold text-emerald-700">
+                    -{formatMoney(receipt.discount, settings.currencySymbol)}
+                  </span>
+                </div>
               )}
-            />
+              <div className="flex justify-between text-xs">
+                <span>Tax</span>
+                <span className="font-bold text-[#091413]">
+                  {formatMoney(receipt.tax, settings.currencySymbol)}
+                </span>
+              </div>
+              <div className="flex justify-between border-t border-[#E5EBE7] pt-2 text-sm font-black text-[#091413]">
+                <span>Total Paid</span>
+                <span className="text-[#285A48]">
+                  {formatMoney(receipt.total, settings.currencySymbol)}
+                </span>
+              </div>
+            </div>
 
-            <CheckoutRow
-              label="Discount"
-              value={formatMoney(
-                receipt.discount,
-                settings.currencySymbol,
+            {/* Tender Detail Badge */}
+            <div className="rounded-2xl bg-[#EAF1EE] p-3 text-[11px] text-[#285A48] space-y-1">
+              <div className="flex justify-between">
+                <span>Payment Method</span>
+                <span className="font-bold uppercase">{receipt.paymentMethod}</span>
+              </div>
+              {receipt.amountReceived != null && (
+                <div className="flex justify-between">
+                  <span>Tendered</span>
+                  <span className="font-bold">
+                    {formatMoney(receipt.amountReceived, settings.currencySymbol)}
+                  </span>
+                </div>
               )}
-            />
-
-            <CheckoutRow
-              label="Tax"
-              value={formatMoney(
-                receipt.tax,
-                settings.currencySymbol,
+              {receipt.change != null && (
+                <div className="flex justify-between font-bold">
+                  <span>Change Given</span>
+                  <span>{formatMoney(receipt.change, settings.currencySymbol)}</span>
+                </div>
               )}
-            />
-
-            <CheckoutRow
-              label="Total"
-              value={formatMoney(
-                receipt.total,
-                settings.currencySymbol,
-              )}
-              strong
-            />
-
-            <p
-              className="
-                text-xs
-                text-gray-500
-              "
-            >
-              {receipt.paymentMethod}
-
-              {receipt.amountReceived !=
-                null &&
-                ` · Received ${formatMoney(
-                  receipt.amountReceived,
-                  settings.currencySymbol,
-                )}`}
-
-              {receipt.change != null &&
-                ` · Change ${formatMoney(
-                  receipt.change,
-                  settings.currencySymbol,
-                )}`}
-            </p>
+            </div>
 
             {settings.receiptFooter && (
-              <p
-                className="
-                  pt-2
-                  text-center
-                  text-xs
-                  text-gray-500
-                "
-              >
+              <p className="pt-2 text-center text-[11px] text-slate-400 italic">
                 {settings.receiptFooter}
               </p>
             )}
@@ -429,45 +817,82 @@ export function PaymentPage() {
   )
 }
 
-function CheckoutRow({
-  label,
-  value,
-  strong = false,
-}: {
-  label: string
-  value: string
-  strong?: boolean
-}) {
+/* ===============================================================
+   MINIMAL SVG ICON COMPONENTS
+   =============================================================== */
+
+function ArrowLeftIcon({ size = 16 }: { size?: number }) {
   return (
-    <div
-      className={`
-        flex
-        min-w-0
-        items-center
-        justify-between
-        gap-3
-
-        ${strong ? 'text-base font-bold' : 'text-sm'}
-      `}
-    >
-      <span
-        className="
-          min-w-0
-          truncate
-          text-gray-600
-        "
-      >
-        {label}
-      </span>
-
-      <span
-        className="
-          shrink-0
-          text-right
-        "
-      >
-        {value}
-      </span>
-    </div>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="19" y1="12" x2="5" y2="12" />
+      <polyline points="12 19 5 12 12 5" />
+    </svg>
   )
 }
+
+function RotateCcwIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+    </svg>
+  )
+}
+
+function DeleteIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 4H8l-7 8 7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z" />
+      <line x1="18" y1="9" x2="12" y2="15" />
+      <line x1="12" y1="9" x2="18" y2="15" />
+    </svg>
+  )
+}
+
+function CheckIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  )
+}
+
+function TrashIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6h18" />
+      <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+      <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+    </svg>
+  )
+}
+
+function ShoppingBagIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z" />
+      <line x1="3" y1="6" x2="21" y2="6" />
+      <path d="M16 10a4 4 0 0 1-8 0" />
+    </svg>
+  )
+}
+
+function ChevronDownIcon({ size = 16, className }: { size?: number; className?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  )
+}
+
+function PrinterIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="6 9 6 2 18 2 18 9" />
+      <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+      <rect x="6" y="14" width="12" height="8" />
+    </svg>
+  )
+}
+
+export default PaymentPage
