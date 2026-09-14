@@ -198,8 +198,7 @@ export function MobilePayment() {
     (method !== 0 && paymentReference.trim().length > 0)
 
   return (
-    // 🟢 1. fixed inset-0 z-50 ensures this entire checkout experience sits above MobileBottomNav (z-40)
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-[#F6F8F7] text-[#091413] pb-36 pt-[env(safe-area-inset-top,0px)] font-sans antialiased selection:bg-[#285A48] selection:text-white">
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-[#F6F8F7] text-[#091413] pb-48 pt-[env(safe-area-inset-top,0px)] font-sans antialiased selection:bg-[#285A48] selection:text-white">
       <div className="mx-auto max-w-md px-4 pt-3">
 
         {/* =========================================================
@@ -482,6 +481,25 @@ export function MobilePayment() {
                 </span>
               </div>
             )}
+
+            {/* 🟢 INLINE SETTLE BUTTON (Always visible directly below keypad) */}
+            <div className="pt-2">
+              <button
+                type="button"
+                disabled={busy || !isReadyToSettle}
+                onClick={() => void completeSale()}
+                className="flex h-[52px] w-full items-center justify-center gap-2 rounded-2xl bg-[#285A48] text-sm font-extrabold text-white shadow-lg shadow-[#285A48]/25 transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 touch-manipulation"
+              >
+                <CheckIcon size={18} />
+                <span className="truncate">
+                  {busy
+                    ? 'Finalizing Transaction…'
+                    : isCashSufficient && change > 0
+                    ? `Done • Give ${formatMoney(change, settings.currencySymbol)}`
+                    : `Settle ${formatMoney(totals.total, settings.currencySymbol)}`}
+                </span>
+              </button>
+            </div>
           </div>
         ) : (
           /* =========================================================
@@ -513,23 +531,40 @@ export function MobilePayment() {
                 className="h-12 w-full rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] px-4 text-xs font-semibold text-[#091413] placeholder-slate-400 outline-none transition focus:border-[#285A48] focus:bg-white focus:ring-2 focus:ring-[#285A48]/15"
               />
             </div>
+
+            {/* 🟢 INLINE SETTLE BUTTON */}
+            <div className="pt-2">
+              <button
+                type="button"
+                disabled={busy || !isReadyToSettle}
+                onClick={() => void completeSale()}
+                className="flex h-[52px] w-full items-center justify-center gap-2 rounded-2xl bg-[#285A48] text-sm font-extrabold text-white shadow-lg shadow-[#285A48]/25 transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 touch-manipulation"
+              >
+                <CheckIcon size={18} />
+                <span className="truncate">
+                  {busy
+                    ? 'Finalizing Transaction…'
+                    : `Settle ${formatMoney(totals.total, settings.currencySymbol)}`}
+                </span>
+              </button>
+            </div>
           </div>
         )}
 
       </div>
 
       {/* =========================================================
-          🟢 2. FIXED MOBILE ACTION BAR (z-50 + Back to Register & Settle)
+          🟢 FLOATING BOTTOM ACTION BAR (Raised above Bottom Nav with bottom-20)
       ========================================================= */}
       <div
-        className="fixed inset-x-0 bottom-0 z-50 border-t border-[#E5EBE7] bg-white/95 px-4 pt-2.5 pb-[max(0.85rem,env(safe-area-inset-bottom,0.85rem))] backdrop-blur-md shadow-lg"
+        className="fixed inset-x-0 bottom-20 sm:bottom-0 z-[9999] border-t border-[#E5EBE7] bg-white/95 px-4 py-2.5 shadow-xl backdrop-blur-md"
       >
         <div className="mx-auto flex max-w-md items-center gap-2.5">
           {/* Direct "Back to Register" action button */}
           <button
             type="button"
             onClick={goBack}
-            className="flex h-[52px] items-center justify-center gap-1.5 rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] px-4 text-xs font-bold text-[#091413] shadow-xs active:scale-95 touch-manipulation transition hover:bg-[#EAF1EE]"
+            className="flex h-[50px] items-center justify-center gap-1.5 rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] px-4 text-xs font-bold text-[#091413] shadow-xs active:scale-95 touch-manipulation transition hover:bg-[#EAF1EE]"
           >
             <ArrowLeftIcon size={16} />
             <span>Register</span>
@@ -540,7 +575,7 @@ export function MobilePayment() {
             type="button"
             disabled={busy || !isReadyToSettle}
             onClick={() => void completeSale()}
-            className="flex h-[52px] flex-1 items-center justify-center gap-2 rounded-2xl bg-[#285A48] text-sm font-extrabold text-white shadow-lg shadow-[#285A48]/25 transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 touch-manipulation"
+            className="flex h-[50px] flex-1 items-center justify-center gap-2 rounded-2xl bg-[#285A48] text-sm font-extrabold text-white shadow-lg shadow-[#285A48]/25 transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 touch-manipulation"
           >
             <CheckIcon size={18} />
             <span className="truncate">
@@ -597,7 +632,6 @@ export function MobilePayment() {
           }}
           footer={
             <div className="flex flex-col-reverse gap-2 w-full sm:flex-row sm:justify-end">
-              {/* 🟢 3. Explicit Back to Register action */}
               <Button
                 variant="secondary"
                 onClick={() => {

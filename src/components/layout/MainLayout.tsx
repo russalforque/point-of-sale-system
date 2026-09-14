@@ -7,6 +7,9 @@ export function MainLayout() {
   const location = useLocation()
   const [pageLoading, setPageLoading] = useState(false)
 
+  // 🟢 Detect if we are on the payment/checkout screen
+  const isPaymentPage = location.pathname.startsWith('/payment')
+
   const shouldAutoHideSidebar = () =>
     window.innerWidth >= 1000 && window.innerHeight >= 800
 
@@ -91,23 +94,23 @@ export function MainLayout() {
 
       {/* Main Canvas Area */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {/*
-          Top mobile header removed.
-          On mobile, navigation is now handled exclusively via MobileBottomNav.
-        */}
+        {/* Scrollable Content Area */}
+        <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#F6F8F7] pt-[env(safe-area-inset-top,0px)] md:pt-0">
+          <div
+            className={`mx-auto flex min-h-full max-w-screen-2xl flex-col ${
+              isPaymentPage
+                ? 'pb-0'
+                : 'pb-[calc(5rem+env(safe-area-inset-bottom,0px))]'
+            } md:pb-0`}
+          >
+            <Outlet />
+          </div>
+        </main>
 
-        {/* Scrollable Content Area:
-            - pt accounts for iOS status bar / notch
-            - pb accounts for the fixed MobileBottomNav height + safe area
-        */}
-     <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#F6F8F7] pt-[env(safe-area-inset-top,0px)] md:pt-0">
-  <div className="mx-auto flex min-h-full max-w-screen-2xl flex-col pb-[calc(5rem+env(safe-area-inset-bottom,0px))] md:pb-0">
-    <Outlet />
-  </div>
-</main>
-
-        {/* Bottom Navigation (Only visible on mobile screens) */}
-        <MobileBottomNav onOpenMenu={() => setMobileOpen(true)} />
+        {/* 🟢 Bottom Navigation: Hidden on the payment screen to leave room for Pay/Settle */}
+        {!isPaymentPage && (
+          <MobileBottomNav onOpenMenu={() => setMobileOpen(true)} />
+        )}
       </div>
     </div>
   )

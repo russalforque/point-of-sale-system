@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Sellix.Api")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+68fb612da2c095570e16d84a1f47d7527ceabc84")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+367c290157ebb5ec5a8154d17806e28e3dbeddcc")]
 [assembly: System.Reflection.AssemblyProductAttribute("Sellix.Api")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Sellix.Api")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
