@@ -30,6 +30,8 @@ import {
   Textarea,
 } from '../../components/ui/Field'
 
+import { FormSection } from '../../components/ui/FormSection'
+
 import { Pagination } from '../../components/ui/Pagination'
 
 import {
@@ -38,11 +40,14 @@ import {
   Spinner,
 } from '../../components/ui/States'
 
+import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
+import { useIsMobile } from '../../hooks/useIsMobile'
 import type { Customer } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
 import { formatDate } from '../../utils/format'
+import { MobileCustomers } from '../mobile/MobileCustomers'
 
 const emptyForm: CustomerPayload = {
   fullName: '',
@@ -53,7 +58,15 @@ const emptyForm: CustomerPayload = {
 }
 
 export function CustomersPage() {
+  const isMobile = useIsMobile()
+  if (isMobile) return <MobileCustomers />
+  return <DesktopCustomersPage />
+}
+
+function DesktopCustomersPage() {
   const { notify } = useToast()
+  const { can } = useAuth()
+  const canManage = can('customers.manage')
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -125,6 +138,11 @@ export function CustomersPage() {
       return
     }
 
+    if (editMatch && !canManage) {
+      navigate('/customers', { replace: true })
+      return
+    }
+
     void customerApi
       .get(Number(id))
       .then((customer) => {
@@ -148,7 +166,7 @@ export function CustomersPage() {
         notify(getErrorMessage(err), 'error')
         navigate('/customers')
       })
-  }, [location.pathname, navigate, notify])
+  }, [location.pathname, navigate, notify, canManage])
 
   function closeModals() {
     setOpen(false)
@@ -436,13 +454,15 @@ export function CustomersPage() {
                           >
                             <Eye size={15} />
                           </IconAction>
-                          <IconAction
-                            title="Edit customer"
-                            onClick={() => openEdit(customer)}
-                          >
-                            <Pencil size={15} />
-                          </IconAction>
-                          {customer.isActive && (
+                          {canManage && (
+                            <IconAction
+                              title="Edit customer"
+                              onClick={() => openEdit(customer)}
+                            >
+                              <Pencil size={15} />
+                            </IconAction>
+                          )}
+                          {canManage && customer.isActive && (
                             <IconAction
                               title="Deactivate customer"
                               danger
@@ -535,14 +555,16 @@ export function CustomersPage() {
                               <Eye size={15} />
                             </IconAction>
 
-                            <IconAction
-                              title="Edit profile"
-                              onClick={() => openEdit(customer)}
-                            >
-                              <Pencil size={15} />
-                            </IconAction>
+                            {canManage && (
+                              <IconAction
+                                title="Edit profile"
+                                onClick={() => openEdit(customer)}
+                              >
+                                <Pencil size={15} />
+                              </IconAction>
+                            )}
 
-                            {customer.isActive && (
+                            {canManage && customer.isActive && (
                               <IconAction
                                 title="Deactivate account"
                                 danger
@@ -578,7 +600,13 @@ export function CustomersPage() {
       {open && (
         <Modal
           title={editing ? 'Edit Customer Profile' : 'Add New Customer'}
+          description={
+            editing
+              ? 'Update contact details and account status.'
+              : 'Register a new customer to the directory.'
+          }
           onClose={closeModals}
+          preventClose={busy}
           footer={
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end w-full">
               <Button variant="secondary" onClick={closeModals}>
@@ -597,42 +625,42 @@ export function CustomersPage() {
             </div>
           }
         >
-          <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 text-xs">
-            <div className="sm:col-span-2">
-              <Field label="Full Name">
-                <Input
-                  value={form.fullName}
-                  placeholder="e.g., Jane Doe"
-                  onChange={(e) =>
-                    setForm({ ...form, fullName: e.target.value })
-                  }
-                  required
-                />
-              </Field>
-            </div>
-
-            <Field label="Mobile Phone">
+          <div className="space-y-5 text-xs">
+            <Field label="Full Name" required>
               <Input
-                value={form.phone}
-                placeholder="e.g., +63 912 345 6789"
+                value={form.fullName}
+                placeholder="e.g., Jane Doe"
                 onChange={(e) =>
-                  setForm({ ...form, phone: e.target.value })
+                  setForm({ ...form, fullName: e.target.value })
                 }
+                required
               />
             </Field>
 
-            <Field label="Email Address">
-              <Input
-                type="email"
-                placeholder="e.g., customer@email.com"
-                value={form.email}
-                onChange={(e) =>
-                  setForm({ ...form, email: e.target.value })
-                }
-              />
-            </Field>
+            <FormSection title="Contact Information">
+              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+                <Field label="Mobile Phone">
+                  <Input
+                    value={form.phone}
+                    placeholder="e.g., +63 912 345 6789"
+                    onChange={(e) =>
+                      setForm({ ...form, phone: e.target.value })
+                    }
+                  />
+                </Field>
 
-            <div className="sm:col-span-2">
+                <Field label="Email Address">
+                  <Input
+                    type="email"
+                    placeholder="e.g., customer@email.com"
+                    value={form.email}
+                    onChange={(e) =>
+                      setForm({ ...form, email: e.target.value })
+                    }
+                  />
+                </Field>
+              </div>
+
               <Field label="Physical Address / Delivery Notes">
                 <Textarea
                   value={form.address}
@@ -642,9 +670,9 @@ export function CustomersPage() {
                   }
                 />
               </Field>
-            </div>
+            </FormSection>
 
-            <label className="flex items-center gap-2 text-xs font-bold text-slate-700 sm:col-span-2 cursor-pointer pt-1">
+            <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer pt-1">
               <input
                 type="checkbox"
                 checked={form.isActive}

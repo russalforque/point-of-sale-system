@@ -11,13 +11,16 @@ import { supplierApi, type SupplierPayload } from '../../api/supplierApi'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { Field, Input, Textarea } from '../../components/ui/Field'
+import { FormSection } from '../../components/ui/FormSection'
 import { ConfirmDialog, Modal } from '../../components/ui/Modal'
 import { PageHeader } from '../../components/ui/Page'
 import { EmptyState, ErrorState, Spinner } from '../../components/ui/States'
 import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
+import { useIsMobile } from '../../hooks/useIsMobile'
 import type { Supplier } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
+import { MobileSuppliers } from '../mobile/MobileSuppliers'
 
 type StatusFilter = '' | 'active' | 'inactive'
 
@@ -31,6 +34,12 @@ const emptyForm: SupplierPayload = {
 }
 
 export function SuppliersPage() {
+  const isMobile = useIsMobile()
+  if (isMobile) return <MobileSuppliers />
+  return <DesktopSuppliersPage />
+}
+
+function DesktopSuppliersPage() {
   const { notify } = useToast()
 
   const [search, setSearch] = useState('')
@@ -141,7 +150,7 @@ export function SuppliersPage() {
         </div>
 
         {/* Interactive KPI Cards */}
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <div className="mt-4 grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-3">
           <MetricCard
             label="Total"
             value={totalSuppliers}
@@ -165,16 +174,16 @@ export function SuppliersPage() {
         </div>
 
         {/* Filter Toolbar */}
-        <div className="mt-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="mt-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           {/* Segmented Status Pills */}
-          <div className="flex flex-wrap items-center gap-1 rounded-lg border border-[#091413]/10 bg-[#091413]/[0.04] p-0.5 self-start">
+          <div className="flex flex-wrap items-center gap-1 rounded-2xl border border-[#E5EBE7] bg-white p-1 self-start shadow-2xs">
             <button
               type="button"
               onClick={() => handleFilterStatus('')}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+              className={`rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
                 status === ''
-                  ? 'bg-white text-[#091413] shadow-xs'
-                  : 'text-[#091413]/60 hover:text-[#091413]'
+                  ? 'bg-[#285A48] text-white shadow-xs'
+                  : 'text-slate-500 hover:text-[#091413]'
               }`}
             >
               All
@@ -182,25 +191,25 @@ export function SuppliersPage() {
             <button
               type="button"
               onClick={() => handleFilterStatus('active')}
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
                 status === 'active'
-                  ? 'bg-white text-[#091413] shadow-xs'
-                  : 'text-[#091413]/60 hover:text-[#091413]'
+                  ? 'bg-[#285A48] text-white shadow-xs'
+                  : 'text-slate-500 hover:text-[#091413]'
               }`}
             >
-              <span className="h-1.5 w-1.5 rounded-full bg-[#285A48]" />
+              <span className={`h-1.5 w-1.5 rounded-full ${status === 'active' ? 'bg-white/80' : 'bg-[#285A48]'}`} />
               Active
             </button>
             <button
               type="button"
               onClick={() => handleFilterStatus('inactive')}
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
                 status === 'inactive'
-                  ? 'bg-white text-[#091413] shadow-xs'
-                  : 'text-[#091413]/60 hover:text-[#091413]'
+                  ? 'bg-[#285A48] text-white shadow-xs'
+                  : 'text-slate-500 hover:text-[#091413]'
               }`}
             >
-              <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+              <span className={`h-1.5 w-1.5 rounded-full ${status === 'inactive' ? 'bg-white/80' : 'bg-rose-500'}`} />
               Inactive
             </button>
           </div>
@@ -209,23 +218,23 @@ export function SuppliersPage() {
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1 lg:max-w-md lg:justify-end">
             <div className="relative w-full">
               <Search
-                size={14}
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#091413]/40"
+                size={16}
+                className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
               />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search company, contact, or code..."
-                className="h-9 w-full rounded-lg border border-[#091413]/15 bg-white pl-8.5 pr-8 text-xs text-[#091413] placeholder-[#091413]/40 outline-none transition-colors focus:border-[#285A48] focus:ring-1 focus:ring-[#285A48]"
+                className="h-11 w-full rounded-2xl border border-[#E5EBE7] bg-white pl-10 pr-9 text-xs font-semibold text-[#091413] placeholder-slate-400 outline-none transition focus:border-[#285A48] focus:ring-2 focus:ring-[#285A48]/15"
               />
               {search && (
                 <button
                   type="button"
                   onClick={() => setSearch('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-[#091413]/40 hover:text-[#091413]"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-1 text-slate-400 hover:text-slate-700"
                   title="Clear search"
                 >
-                  <ClearIcon size={13} />
+                  <ClearIcon size={14} />
                 </button>
               )}
             </div>
@@ -234,7 +243,7 @@ export function SuppliersPage() {
               <button
                 type="button"
                 onClick={resetFilters}
-                className="shrink-0 rounded-lg border border-[#091413]/15 bg-white px-3 py-2 text-xs font-medium text-[#091413]/70 transition-colors hover:bg-[#091413]/[0.03] hover:text-[#091413]"
+                className="flex h-11 shrink-0 items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white px-3.5 text-xs font-bold text-slate-600 shadow-2xs hover:bg-[#F0F5F2] hover:text-[#091413] active:scale-95 touch-manipulation"
               >
                 Reset
               </button>
@@ -365,8 +374,14 @@ export function SuppliersPage() {
       {open && (
         <Modal
           title={editing ? 'Edit supplier' : 'Add supplier'}
+          description={
+            editing
+              ? 'Update vendor contact details and status.'
+              : 'Onboard a new vendor account.'
+          }
           wide
           onClose={closeModals}
+          preventClose={busy}
           footer={
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <Button variant="secondary" onClick={closeModals}>
@@ -383,9 +398,9 @@ export function SuppliersPage() {
             </div>
           }
         >
-          <div className="grid gap-4 sm:grid-cols-2 text-xs">
-            <div className="sm:col-span-2">
-              <Field label="Company name">
+          <div className="space-y-5 text-xs">
+            <FormSection title="Company Details">
+              <Field label="Company name" required>
                 <Input
                   value={form.companyName}
                   onChange={(e) =>
@@ -394,35 +409,35 @@ export function SuppliersPage() {
                   required
                 />
               </Field>
-            </div>
 
-            <Field label="Contact person">
-              <Input
-                value={form.contactPerson}
-                onChange={(e) =>
-                  setForm({ ...form, contactPerson: e.target.value })
-                }
-              />
-            </Field>
-
-            <Field label="Phone">
-              <Input
-                value={form.phone}
-                onChange={(e) => setForm({ ...form, phone: e.target.value })}
-              />
-            </Field>
-
-            <div className="sm:col-span-2">
-              <Field label="Email">
+              <Field label="Contact person">
                 <Input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  value={form.contactPerson}
+                  onChange={(e) =>
+                    setForm({ ...form, contactPerson: e.target.value })
+                  }
                 />
               </Field>
-            </div>
+            </FormSection>
 
-            <div className="sm:col-span-2">
+            <FormSection title="Contact Information">
+              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+                <Field label="Phone">
+                  <Input
+                    value={form.phone}
+                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                  />
+                </Field>
+
+                <Field label="Email">
+                  <Input
+                    type="email"
+                    value={form.email}
+                    onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  />
+                </Field>
+              </div>
+
               <Field label="Address">
                 <Textarea
                   value={form.address}
@@ -431,9 +446,9 @@ export function SuppliersPage() {
                   }
                 />
               </Field>
-            </div>
+            </FormSection>
 
-            <label className="flex items-center gap-2 text-xs font-medium text-[#091413]/80 sm:col-span-2 cursor-pointer pt-1">
+            <label className="flex items-center gap-2 text-xs font-medium text-[#091413]/80 cursor-pointer pt-1">
               <input
                 type="checkbox"
                 checked={form.isActive}
@@ -526,19 +541,19 @@ function MetricCard({
     <button
       type="button"
       onClick={onClick}
-      className={`group relative rounded-xl border p-3.5 sm:p-4 text-left transition-all active:scale-[0.99] ${
+      className={`group relative rounded-3xl border p-4 text-left transition-all active:scale-[0.98] touch-manipulation ${
         isSelected
-          ? 'border-[#285A48] bg-white ring-1 ring-[#285A48] shadow-xs'
-          : 'border-[#091413]/10 bg-white hover:border-[#285A48]/50'
+          ? 'border-[#285A48] bg-white ring-2 ring-[#285A48]/20 shadow-sm'
+          : 'border-[#E5EBE7] bg-white hover:border-slate-300'
       }`}
     >
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-[#091413]/50">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
           {label}
         </span>
-        {dotColor && <span className={`h-1.5 w-1.5 rounded-full ${dotColor}`} />}
+        {dotColor && <span className={`h-2 w-2 rounded-full ${dotColor} animate-pulse`} />}
       </div>
-      <p className="mt-2 text-xl font-semibold tracking-tight text-[#091413] sm:text-2xl">
+      <p className="mt-2 text-xl font-black tracking-tight text-[#091413] sm:text-2xl">
         {value}
       </p>
     </button>

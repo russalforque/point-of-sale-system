@@ -1,9 +1,19 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&family=Noto+Sans:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "DM Sans", "Segoe UI", system-ui, sans-serif;
-  --font-display: Manrope, "DM Sans", "Segoe UI", system-ui, sans-serif;
+  /*
+   * DM Sans / Manrope / the default monospace stack don't map a glyph for the
+   * Philippine peso sign (₱, U+20B1) - it renders as a blank/tofu box instead
+   * of silently falling back. Noto Sans (Google's pan-Unicode font) is
+   * inserted right after each of them so the browser's per-character font
+   * fallback picks up the peso glyph from it everywhere money is displayed -
+   * including the many `font-mono` price/total cells across the app - without
+   * touching every formatMoney() call site.
+   */
+  --font-sans: "DM Sans", "Noto Sans", "Segoe UI", system-ui, sans-serif;
+  --font-display: Manrope, "DM Sans", "Noto Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Noto Sans", "Courier New", monospace;
   --color-brand: #2563eb;
   --color-brand-hover: #1d4ed8;
   --color-ink: #111827;
@@ -72,7 +82,7 @@ textarea {
     padding: 0;
     color: #000;
     background: #fff;
-    font-family: Arial, sans-serif;
+    font-family: Arial, "Noto Sans", sans-serif;
   }
 
   #receipt * {

@@ -1,7 +1,10 @@
+import type { Role } from '../utils/permissions'
+
 export type User = {
   id: string
   email: string
   fullName: string
+  role: Role
 }
 
 export type LoginResponse = {

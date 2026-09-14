@@ -566,6 +566,7 @@ export function MobileInventory() {
           onClose={() => {
             if (!busy) setAdjust(null)
           }}
+          preventClose={busy}
         >
           <div className="space-y-4 text-xs pb-1">
             {/* Selected Product Hero Card */}

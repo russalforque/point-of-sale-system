@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   Bar,
   BarChart,
@@ -14,6 +15,9 @@ import {
   faReceipt,
   faUsers,
   faBoxesStacked,
+  faCartShopping,
+  faArrowRight,
+  faBoxOpen,
 } from '@fortawesome/free-solid-svg-icons'
 
 import { dashboardApi } from '../api/dashboardApi'
@@ -23,12 +27,22 @@ import {
   ErrorState,
   Spinner,
 } from '../components/ui/States'
+import { useAuth } from '../context/AuthContext'
 import { useSettings } from '../context/SettingsContext'
 import { useAsync } from '../hooks/useAsync'
 import {
   formatDateTime,
   formatMoney,
 } from '../utils/format'
+
+// Compact currency for axis ticks only ("₱1.2k") — the tooltip and every other
+// money value on this page still uses the full formatMoney() precision.
+function formatCompactMoney(amount: number, symbol: string): string {
+  if (Math.abs(amount) >= 1000) {
+    return `${symbol}${(amount / 1000).toLocaleString('en-PH', { maximumFractionDigits: 1 })}k`
+  }
+  return `${symbol}${Math.round(amount).toLocaleString('en-PH')}`
+}
 
 // 1. Import your dedicated Mobile Dashboard component
 import MobileDashboard from "./mobile/MobileDashboard";
@@ -91,12 +105,14 @@ export interface RecentTransaction {
   customerName?: string | null
   total: number
   createdAt: string
+  paymentMethod?: string
 }
 
 export interface TopSellingProduct {
   productId: string | number
   name: string
   quantitySold: number
+  revenue?: number
 }
 
 export interface SalesOverviewItem {
@@ -131,6 +147,7 @@ interface AppNotification {
 
 function DesktopDashboard() {
   const { settings } = useSettings()
+  const { can } = useAuth()
 
   const {
     data,
@@ -283,14 +300,32 @@ function DesktopDashboard() {
         </div>
 
         {/* Metric KPI Cards */}
-        <div className="mt-2 grid grid-cols-2 gap-3.5 lg:grid-cols-4">
-          <MetricCard
-            icon={faArrowTrendUp}
-            label="Today's Sales"
-            value={formatMoney(data.todaysSales, settings.currencySymbol)}
-            indicator="brand"
-            sublabel="Real-time revenue"
-          />
+        <div className="mt-2 grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-5">
+          {/* Today's Sales — emphasized hero metric, the primary business number */}
+          <div className="group relative flex flex-col justify-between overflow-hidden rounded-xl border border-[#091413] bg-[#091413] p-4 shadow-xs sm:col-span-2 sm:p-5 lg:col-span-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-white/60">
+                Today's Sales
+              </span>
+              <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/15 bg-white/10 text-white">
+                <FontAwesomeIcon icon={faArrowTrendUp} className="h-3.5 w-3.5" />
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <p className="font-mono text-2xl font-bold tracking-tight text-white sm:text-3xl">
+                {formatMoney(data.todaysSales, settings.currencySymbol)}
+              </p>
+              <p className="mt-1 flex items-center gap-1.5 text-[11px] text-white/50">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                </span>
+                Real-time revenue, updated live
+              </p>
+            </div>
+          </div>
+
           <MetricCard
             icon={faReceipt}
             label="Transactions"
@@ -311,6 +346,23 @@ function DesktopDashboard() {
             sublabel="In-catalog items"
           />
         </div>
+
+        {/* Primary POS Action */}
+        {can('sales.process') && (
+          <div className="mt-3.5 flex flex-col items-start justify-between gap-3 rounded-xl border border-[#285A48]/20 bg-[#285A48]/[0.04] p-4 sm:flex-row sm:items-center">
+            <div>
+              <p className="text-sm font-semibold text-[#091413]">Ready to ring up a customer?</p>
+              <p className="mt-0.5 text-xs text-[#091413]/50">Jump straight into the checkout counter.</p>
+            </div>
+            <Link
+              to="/sales"
+              className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-lg bg-[#285A48] px-5 text-sm font-semibold text-white shadow-xs transition-all hover:bg-[#204639] active:scale-[0.98] sm:w-auto"
+            >
+              <FontAwesomeIcon icon={faCartShopping} className="h-4 w-4" />
+              Start New Sale
+            </Link>
+          </div>
+        )}
 
         {/* Charts Section */}
         <div className="mt-6 grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.8fr)_minmax(320px,1fr)]">
@@ -338,7 +390,7 @@ function DesktopDashboard() {
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart
                     data={data.salesOverview}
-                    margin={{ top: 8, right: 8, left: -16, bottom: 0 }}
+                    margin={{ top: 8, right: 8, left: 4, bottom: 0 }}
                   >
                     <XAxis
                       dataKey="label"
@@ -351,7 +403,9 @@ function DesktopDashboard() {
                       tick={{ fontSize: 11, fill: '#091413', opacity: 0.6 }}
                       tickLine={false}
                       axisLine={false}
-                      width={38}
+                      width={56}
+                      tickFormatter={(value) => formatCompactMoney(Number(value), settings.currencySymbol)}
+                      allowDecimals={false}
                     />
                     <Tooltip
                       cursor={{ fill: 'rgba(40, 90, 72, 0.06)' }}
@@ -364,7 +418,9 @@ function DesktopDashboard() {
                         color: '#091413',
                       }}
                       formatter={(value) => [
-                        formatMoney(Number(value), settings.currencySymbol),
+                        Number(value) > 0
+                          ? formatMoney(Number(value), settings.currencySymbol)
+                          : 'No sales recorded',
                         'Sales',
                       ]}
                     />
@@ -373,6 +429,7 @@ function DesktopDashboard() {
                       fill="#285A48"
                       radius={[4, 4, 0, 0]}
                       maxBarSize={32}
+                      minPointSize={2}
                     />
                   </BarChart>
                 </ResponsiveContainer>
@@ -407,14 +464,19 @@ function DesktopDashboard() {
                       className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0"
                     >
                       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[#285A48]/20 bg-[#285A48]/10 font-mono text-[11px] font-semibold text-[#285A48]">
-                        {index + 1}
+                        #{index + 1}
                       </span>
                       <div className="min-w-0 flex-1 truncate">
                         <p className="truncate text-xs font-medium text-[#091413]" title={p.name}>
                           {p.name}
                         </p>
+                        {typeof p.revenue === 'number' && (
+                          <p className="mt-0.5 truncate text-[11px] text-[#091413]/40">
+                            {formatMoney(p.revenue, settings.currencySymbol)} revenue
+                          </p>
+                        )}
                       </div>
-                      <span className="rounded-md border border-[#091413]/5 bg-[#091413]/[0.03] px-2 py-0.5 font-mono text-xs font-medium text-[#091413]/80">
+                      <span className="shrink-0 rounded-md border border-[#091413]/5 bg-[#091413]/[0.03] px-2 py-0.5 font-mono text-xs font-medium text-[#091413]/80">
                         {p.quantitySold} sold
                       </span>
                     </li>
@@ -436,10 +498,18 @@ function DesktopDashboard() {
                 </h2>
                 <p className="mt-0.5 text-[11px] text-[#091413]/40">Latest store checkout logs</p>
               </div>
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-[#285A48]/20 bg-[#285A48]/10 px-2 py-0.5 text-[11px] font-medium text-[#285A48]">
-                <span className="h-1.5 w-1.5 rounded-full bg-[#285A48]" />
-                Live
-              </span>
+              <div className="flex shrink-0 items-center gap-2.5">
+              
+                {can('reports.view') && (
+                  <Link
+                    to="/reports"
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-[#091413]/50 transition-colors hover:text-[#285A48]"
+                  >
+                    View all
+                    <FontAwesomeIcon icon={faArrowRight} className="h-2.5 w-2.5" />
+                  </Link>
+                )}
+              </div>
             </div>
 
             {data.recentTransactions.length === 0 ? (
@@ -520,7 +590,10 @@ function DesktopDashboard() {
                     <tr>
                       <th className="py-2.5 pl-5 pr-3 font-medium">Product</th>
                       <th className="py-2.5 px-3 font-medium">SKU</th>
-                      <th className="py-2.5 pl-3 pr-5 text-right font-medium">Stock / Reorder</th>
+                      <th className="py-2.5 px-3 text-right font-medium">Stock / Reorder</th>
+                      {can('inventory.manage') && (
+                        <th className="py-2.5 pl-3 pr-5 text-right font-medium">Action</th>
+                      )}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#091413]/5 font-normal">
@@ -532,12 +605,23 @@ function DesktopDashboard() {
                         <td className="py-3 px-3 font-mono text-[11px] text-[#091413]/50 truncate max-w-[100px]" title={row.sku}>
                           {row.sku}
                         </td>
-                        <td className="py-3 pl-3 pr-5 text-right font-mono whitespace-nowrap">
+                        <td className="py-3 px-3 text-right font-mono whitespace-nowrap">
                           <span className="font-semibold text-rose-600">
                             {row.stockQuantity}
                           </span>
                           <span className="text-[#091413]/40"> / {row.reorderLevel}</span>
                         </td>
+                        {can('inventory.manage') && (
+                          <td className="py-3 pl-3 pr-5 text-right whitespace-nowrap">
+                            <Link
+                              to="/inventory"
+                              className="inline-flex items-center gap-1 rounded-md border border-[#285A48]/20 bg-[#285A48]/5 px-2 py-1 text-[11px] font-medium text-[#285A48] transition-colors hover:bg-[#285A48]/10"
+                            >
+                              <FontAwesomeIcon icon={faBoxOpen} className="h-2.5 w-2.5" />
+                              Restock
+                            </Link>
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>

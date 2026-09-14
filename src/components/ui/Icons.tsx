@@ -11,6 +11,7 @@ import {
   faChevronRight,
   faClockRotateLeft,
   faEye,
+  faEyeSlash,
   faGear,
   faHistory,
   faMagnifyingGlass,
@@ -21,6 +22,7 @@ import {
   faStore,
   faTags,
   faTrash,
+  faTriangleExclamation,
   faTruck,
   faUser,
   faUserPlus,
@@ -52,6 +54,7 @@ export const ChevronDown = (props: IconProps) => <Icon icon={faChevronDown} {...
 export const ChevronLeft = (props: IconProps) => <Icon icon={faChevronLeft} {...props} />
 export const ChevronRight = (props: IconProps) => <Icon icon={faChevronRight} {...props} />
 export const Eye = (props: IconProps) => <Icon icon={faEye} {...props} />
+export const EyeOff = (props: IconProps) => <Icon icon={faEyeSlash} {...props} />
 export const History = (props: IconProps) => <Icon icon={faHistory} {...props} />
 export const Search = (props: IconProps) => <Icon icon={faMagnifyingGlass} {...props} />
 export const Minus = (props: IconProps) => <Icon icon={faMinus} {...props} />
@@ -71,3 +74,4 @@ export const X = (props: IconProps) => <Icon icon={faXmark} {...props} />
 export const Barcode = (props: IconProps) => <Icon icon={faBarcode} {...props} />
 export const ClockRotateLeft = (props: IconProps) => <Icon icon={faClockRotateLeft} {...props} />
 export const ShoppingCart = (props: IconProps) => <Icon icon={faCartShopping} {...props} />
+export const TriangleWarning = (props: IconProps) => <Icon icon={faTriangleExclamation} {...props} />

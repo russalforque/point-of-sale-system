@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import {
   Barcode,
   ChevronDown,
@@ -21,6 +20,7 @@ import { Badge, stockTone } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import { PageHeader } from '../components/ui/Page'
 import { Pagination } from '../components/ui/Pagination'
+import { PaymentModal } from '../components/pos/PaymentModal'
 
 import {
   EmptyState,
@@ -28,12 +28,15 @@ import {
   Spinner,
 } from '../components/ui/States'
 
+import { useAuth } from '../context/AuthContext'
 import { useCheckout } from '../context/CheckoutContext'
 import { useSettings } from '../context/SettingsContext'
 import { useToast } from '../context/ToastContext'
 import { useAsync } from '../hooks/useAsync'
 import { useDebounced } from '../hooks/useDebounced'
+import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
 
+import { printerErrorMessage } from '../services/printer'
 import type { Product, Sale } from '../types'
 import { getErrorMessage } from '../utils/errors'
 import { formatDateTime, formatMoney } from '../utils/format'
@@ -93,14 +96,16 @@ export function SalesPage() {
 ============================================================= */
 
 function DesktopSales() {
-  const navigate = useNavigate()
   const { notify } = useToast()
   const { settings } = useSettings()
+  const { user } = useAuth()
   const { state: checkout, setState: setCheckout } = useCheckout()
+  const { printReceipt: reprintReceipt, isPrinting, lastPrintError } = useReceiptPrinter()
 
   const [search, setSearch] = useState('')
   const [categoryId, setCategoryId] = useState('')
   const [isMounted, setIsMounted] = useState(false)
+  const [isPaymentOpen, setIsPaymentOpen] = useState(false)
 
   useEffect(() => {
     const id = window.setTimeout(() => setIsMounted(true), 40)
@@ -143,9 +148,10 @@ function DesktopSales() {
             search: historySearch || undefined,
             page: historyPage,
             pageSize: 8,
+            cashierName: user?.role === 'cashier' ? user.fullName : undefined,
           })
         : Promise.resolve(null),
-    [historySearch, historyPage, showHistory],
+    [historySearch, historyPage, showHistory, user],
   )
 
   const totals = useMemo(
@@ -189,7 +195,14 @@ function DesktopSales() {
       notify('Add items to the cart first.', 'error')
       return
     }
-    navigate('/payment')
+    setIsPaymentOpen(true)
+  }
+
+  function handleReprint(order: Sale) {
+    void reprintReceipt(order, settings).then(
+      () => notify('Receipt printed successfully.'),
+      (err) => notify(printerErrorMessage(err), 'error'),
+    )
   }
 
   return (
@@ -578,6 +591,13 @@ function DesktopSales() {
       </div>
 
       {/* =======================================================
+          PAYMENT MODAL
+          ======================================================= */}
+      {isPaymentOpen && (
+        <PaymentModal onClose={() => setIsPaymentOpen(false)} />
+      )}
+
+      {/* =======================================================
           ORDER HISTORY MODAL
           ======================================================= */}
       {showHistory && (
@@ -745,6 +765,16 @@ function DesktopSales() {
                   {formatMoney(selectedOrder.total, settings.currencySymbol)}
                 </span>
               </div>
+
+              <button
+                type="button"
+                onClick={() => handleReprint(selectedOrder)}
+                disabled={isPrinting}
+                className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#285A48] py-2 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#1e4537] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <PrinterIcon size={13} />
+                {isPrinting ? 'Printing…' : lastPrintError ? 'Retry Print' : 'Reprint Receipt'}
+              </button>
             </div>
           )}
         </Modal>
@@ -834,6 +864,16 @@ function ClearIcon({ size = 13 }: { size?: number }) {
     >
       <line x1="18" y1="6" x2="6" y2="18" />
       <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  )
+}
+
+function PrinterIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="6 9 6 2 18 2 18 9" />
+      <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+      <rect x="6" y="14" width="12" height="8" />
     </svg>
   )
 }

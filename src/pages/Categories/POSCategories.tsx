@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 
 import { categoryApi, type CategoryPayload } from '../../api/categoryApi'
 import { Button } from '../../components/ui/Button'
-import { Input } from '../../components/ui/Field'
+import { Field, Input, Textarea } from '../../components/ui/Field'
 import { Modal } from '../../components/ui/Modal'
 import { PageHeader } from '../../components/ui/Page'
 import {
@@ -402,6 +402,7 @@ export function POSCategories() {
         <Modal
           title="Create category"
           onClose={closeModal}
+          preventClose={busy}
           footer={
             <div className="flex w-full flex-col-reverse gap-3 sm:flex-row sm:justify-end">
               <Button
@@ -424,13 +425,7 @@ export function POSCategories() {
           }
         >
           <div className="space-y-4">
-            <div>
-              <label
-                htmlFor="category-name"
-                className="block text-sm font-medium text-gray-900"
-              >
-                Category name
-              </label>
+            <Field label="Category name" required>
               <Input
                 id="category-name"
                 value={form.name}
@@ -441,19 +436,14 @@ export function POSCategories() {
                   )
                 }
                 placeholder="e.g., Beverages"
-                className="mt-2 min-h-11"
+                className="min-h-11"
+                required
                 autoFocus
               />
-            </div>
+            </Field>
 
-            <div>
-              <label
-                htmlFor="category-desc"
-                className="block text-sm font-medium text-gray-900"
-              >
-                Description (optional)
-              </label>
-              <textarea
+            <Field label="Description" hint="Optional">
+              <Textarea
                 id="category-desc"
                 value={form.description}
                 onChange={(event) =>
@@ -463,9 +453,9 @@ export function POSCategories() {
                   )
                 }
                 placeholder="Brief description..."
-                className="mt-2 min-h-20 w-full rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-900 outline-none transition-colors focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                className="min-h-20"
               />
-            </div>
+            </Field>
 
             <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-gray-200 p-4">
               <input

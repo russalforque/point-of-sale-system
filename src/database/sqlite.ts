@@ -1,3 +1,4 @@
+import { Capacitor } from '@capacitor/core'
 import {
   CapacitorSQLite,
   SQLiteConnection,
@@ -11,6 +12,17 @@ let db: SQLiteDBConnection | null = null
 export async function initDatabase(): Promise<SQLiteDBConnection> {
   if (db) {
     return db
+  }
+
+  if (!Capacitor.isNativePlatform()) {
+    // The @capacitor-community/sqlite web implementation needs a <jeep-sqlite>
+    // element registered in the DOM plus initWebStore() setup this project
+    // doesn't ship - local SQLite is Android-only here. Fail fast with a
+    // clear, catchable error instead of letting the native plugin throw its
+    // "jeep-sqlite element is not present" error, so every existing caller's
+    // try/catch (useAsync's error state, etc.) degrades gracefully instead of
+    // crashing the page.
+    throw new Error('SQLite is only available on the native Android app (no local database in web preview).')
   }
 
   const dbName = 'sellix_pos'

@@ -8,6 +8,7 @@ import {
   Input,
   Textarea,
 } from '../../components/ui/Field'
+import { ChevronDown, Search } from '../../components/ui/Icons'
 import {
   ConfirmDialog,
   Modal,
@@ -20,8 +21,10 @@ import {
 } from '../../components/ui/States'
 import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
+import { useIsMobile } from '../../hooks/useIsMobile'
 import type { Category } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
+import { MobileCategories } from '../mobile/MobileCategories'
 
 const emptyForm: CategoryPayload = {
   name: '',
@@ -34,6 +37,12 @@ type SortOrder = 'asc' | 'desc'
 type StatusFilter = 'all' | 'active' | 'inactive'
 
 export function CategoriesPage() {
+  const isMobile = useIsMobile()
+  if (isMobile) return <MobileCategories />
+  return <DesktopCategoriesPage />
+}
+
+function DesktopCategoriesPage() {
   const { notify } = useToast()
 
   const [search, setSearch] = useState('')
@@ -238,8 +247,8 @@ export function CategoriesPage() {
           </button>
         </div>
 
-        {/* Minimalist Metric Cards */}
-        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+        {/* Interactive KPI Cards */}
+        <div className="mt-4 grid grid-cols-2 gap-2.5 sm:gap-3 md:grid-cols-4">
           <MetricCard
             label="Total categories"
             value={totalCategories}
@@ -274,17 +283,17 @@ export function CategoriesPage() {
           />
         </div>
 
-        {/* Filters Toolbar */}
-        <div className="mt-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        {/* Filter Toolbar */}
+        <div className="mt-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           {/* Status Segmented Pills */}
-          <div className="flex items-center gap-1 rounded-lg border border-[#091413]/10 bg-[#091413]/[0.04] p-0.5 self-start">
+          <div className="flex flex-wrap items-center gap-1 rounded-2xl border border-[#E5EBE7] bg-white p-1 self-start shadow-2xs">
             <button
               type="button"
               onClick={() => handleStatusFilter('all')}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+              className={`rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
                 statusFilter === 'all'
-                  ? 'bg-white text-[#091413] shadow-xs'
-                  : 'text-[#091413]/60 hover:text-[#091413]'
+                  ? 'bg-[#285A48] text-white shadow-xs'
+                  : 'text-slate-500 hover:text-[#091413]'
               }`}
             >
               All ({totalCategories})
@@ -292,32 +301,33 @@ export function CategoriesPage() {
             <button
               type="button"
               onClick={() => handleStatusFilter('active')}
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
                 statusFilter === 'active'
-                  ? 'bg-white text-[#091413] shadow-xs'
-                  : 'text-[#091413]/60 hover:text-[#091413]'
+                  ? 'bg-[#285A48] text-white shadow-xs'
+                  : 'text-slate-500 hover:text-[#091413]'
               }`}
             >
-              <span className="h-1.5 w-1.5 rounded-full bg-[#285A48]" />
+              <span className={`h-1.5 w-1.5 rounded-full ${statusFilter === 'active' ? 'bg-white/80' : 'bg-[#285A48]'}`} />
               Active ({activeCount})
             </button>
             <button
               type="button"
               onClick={() => handleStatusFilter('inactive')}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
                 statusFilter === 'inactive'
-                  ? 'bg-white text-[#091413] shadow-xs'
-                  : 'text-[#091413]/60 hover:text-[#091413]'
+                  ? 'bg-[#285A48] text-white shadow-xs'
+                  : 'text-slate-500 hover:text-[#091413]'
               }`}
             >
+              <span className={`h-1.5 w-1.5 rounded-full ${statusFilter === 'inactive' ? 'bg-white/80' : 'bg-slate-400'}`} />
               Inactive ({inactiveCount})
             </button>
           </div>
 
-          {/* Search, Sort Dropdown & Reset */}
+          {/* Sort, Search & Reset */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1 lg:max-w-lg lg:justify-end">
             {/* Sort Selector */}
-            <div className="relative w-full sm:w-36 shrink-0">
+            <div className="relative w-full sm:w-40 shrink-0">
               <select
                 value={`${sortBy}-${sortOrder}`}
                 onChange={(e) => {
@@ -328,7 +338,7 @@ export function CategoriesPage() {
                   setSortBy(field)
                   setSortOrder(order)
                 }}
-                className="h-9 w-full appearance-none rounded-lg border border-[#091413]/15 bg-white px-3 pr-8 text-xs text-[#091413] outline-none transition-colors focus:border-[#285A48] focus:ring-1 focus:ring-[#285A48]"
+                className="h-11 w-full appearance-none rounded-2xl border border-[#E5EBE7] bg-white px-3.5 pr-9 text-xs font-semibold text-[#091413] outline-none transition focus:border-[#285A48] focus:ring-2 focus:ring-[#285A48]/15"
               >
                 <option value="name-asc">Name (A–Z)</option>
                 <option value="name-desc">Name (Z–A)</option>
@@ -336,32 +346,32 @@ export function CategoriesPage() {
                 <option value="productCount-asc">Products (Low–High)</option>
                 <option value="status-desc">Status (Active first)</option>
               </select>
-              <ChevronDownIcon
-                size={13}
-                className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[#091413]/40"
+              <ChevronDown
+                size={14}
+                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
               />
             </div>
 
-            {/* Search Input */}
+            {/* Search Input with Clear Button */}
             <div className="relative w-full">
-              <SearchIcon
-                size={14}
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#091413]/40"
+              <Search
+                size={16}
+                className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
               />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search categories..."
-                className="h-9 w-full rounded-lg border border-[#091413]/15 bg-white pl-8.5 pr-8 text-xs text-[#091413] placeholder-[#091413]/40 outline-none transition-colors focus:border-[#285A48] focus:ring-1 focus:ring-[#285A48]"
+                className="h-11 w-full rounded-2xl border border-[#E5EBE7] bg-white pl-10 pr-9 text-xs font-semibold text-[#091413] placeholder-slate-400 outline-none transition focus:border-[#285A48] focus:ring-2 focus:ring-[#285A48]/15"
               />
               {search && (
                 <button
                   type="button"
                   onClick={() => setSearch('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-[#091413]/40 hover:text-[#091413]"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-1 text-slate-400 hover:text-slate-700"
                   title="Clear search"
                 >
-                  <ClearIcon size={13} />
+                  <ClearIcon size={14} />
                 </button>
               )}
             </div>
@@ -370,7 +380,7 @@ export function CategoriesPage() {
               <button
                 type="button"
                 onClick={resetFilters}
-                className="shrink-0 rounded-lg border border-[#091413]/15 bg-white px-3 py-2 text-xs font-medium text-[#091413]/70 transition-colors hover:bg-[#091413]/[0.03] hover:text-[#091413]"
+                className="flex h-11 shrink-0 items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white px-3.5 text-xs font-bold text-slate-600 shadow-2xs hover:bg-[#F0F5F2] hover:text-[#091413] active:scale-95 touch-manipulation"
               >
                 Reset
               </button>
@@ -603,6 +613,7 @@ export function CategoriesPage() {
         <Modal
           title={editing ? 'Edit category' : 'Add category'}
           onClose={closeModal}
+          preventClose={busy}
           footer={
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <Button variant="secondary" onClick={closeModal} disabled={busy}>
@@ -620,7 +631,7 @@ export function CategoriesPage() {
           }
         >
           <div className="space-y-4 text-xs">
-            <Field label="Category name">
+            <Field label="Category name" required>
               <Input
                 value={form.name}
                 onChange={(e) => updateForm('name', e.target.value)}
@@ -698,25 +709,25 @@ function MetricCard({
   isSelected?: boolean
   onClick: () => void
 }) {
+  const dotColor = indicator === 'pine' ? 'bg-[#285A48]' : indicator === 'neutral' ? 'bg-slate-400' : null
+
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`group relative rounded-xl border p-3.5 sm:p-4 text-left transition-all active:scale-[0.99] ${
+      className={`group relative rounded-3xl border p-4 text-left transition-all active:scale-[0.98] touch-manipulation ${
         isSelected
-          ? 'border-[#285A48] bg-white ring-1 ring-[#285A48] shadow-xs'
-          : 'border-[#091413]/10 bg-white hover:border-[#285A48]/50'
+          ? 'border-[#285A48] bg-white ring-2 ring-[#285A48]/20 shadow-sm'
+          : 'border-[#E5EBE7] bg-white hover:border-slate-300'
       }`}
     >
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-[#091413]/50">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
           {label}
         </span>
-        {indicator === 'pine' && (
-          <span className="h-1.5 w-1.5 rounded-full bg-[#285A48]" />
-        )}
+        {dotColor && <span className={`h-2 w-2 rounded-full ${dotColor} animate-pulse`} />}
       </div>
-      <p className="mt-2 text-xl font-semibold tracking-tight text-[#091413] sm:text-2xl">
+      <p className="mt-2 text-xl font-black tracking-tight text-[#091413] sm:text-2xl">
         {value}
       </p>
     </button>
@@ -737,43 +748,6 @@ function PlusIcon({ size = 15 }: { size?: number }) {
     >
       <line x1="12" y1="5" x2="12" y2="19" />
       <line x1="5" y1="12" x2="19" y2="12" />
-    </svg>
-  )
-}
-
-function SearchIcon({ size = 14, className }: { size?: number; className?: string }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <circle cx="11" cy="11" r="8" />
-      <line x1="21" y1="21" x2="16.65" y2="16.65" />
-    </svg>
-  )
-}
-
-function ChevronDownIcon({ size = 13, className }: { size?: number; className?: string }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <polyline points="6 9 12 15 18 9" />
     </svg>
   )
 }

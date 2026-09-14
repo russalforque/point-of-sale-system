@@ -7,6 +7,8 @@ import {
 } from '@fortawesome/free-solid-svg-icons'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { useLocation, NavLink } from 'react-router-dom'
+import { useAuth } from '../../context/AuthContext'
+import type { Permission } from '../../utils/permissions'
 
 interface MobileBottomNavProps {
   /** Callback to open the full slide-out mobile drawer (Sidebar) */
@@ -22,17 +24,20 @@ const MORE_ROUTES = [
   '/categories',
   '/suppliers',
   '/settings',
+  '/users',
+  '/printer-settings',
 ]
 
 export function MobileBottomNav({ onOpenMenu, alertCount = 0 }: MobileBottomNavProps) {
   const location = useLocation()
+  const { can } = useAuth()
 
   // Check if current route belongs to one of the secondary "More" pages
   const isMoreActive = MORE_ROUTES.some((path) =>
     location.pathname.startsWith(path)
   )
 
-  const navItems = [
+  const allNavItems: { to: string; label: string; icon: typeof faHouse; permission?: Permission; badge?: number }[] = [
     {
       to: '/dashboard',
       label: 'Home',
@@ -42,19 +47,24 @@ export function MobileBottomNav({ onOpenMenu, alertCount = 0 }: MobileBottomNavP
       to: '/sales',
       label: 'Orders',
       icon: faCartShopping,
+      permission: 'sales.process',
     },
     {
       to: '/inventory',
       label: 'Inventory',
       icon: faBoxesStacked,
+      permission: 'inventory.manage',
       badge: alertCount > 0 ? alertCount : undefined,
     },
     {
       to: '/reports',
       label: 'Reports',
       icon: faChartLine,
+      permission: 'reports.view',
     },
   ]
+
+  const navItems = allNavItems.filter((item) => !item.permission || can(item.permission))
 
   return (
     <>

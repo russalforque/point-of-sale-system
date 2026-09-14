@@ -4,16 +4,19 @@ import { useNavigate } from 'react-router-dom'
 import { salesApi } from '../../api/salesApi'
 
 import { Button } from '../../components/ui/Button'
-import { Modal } from '../../components/ui/Modal'
+import { ConfirmDialog, Modal } from '../../components/ui/Modal'
 
+import { useAuth } from '../../context/AuthContext'
 import { useCheckout } from '../../context/CheckoutContext'
 import { useSettings } from '../../context/SettingsContext'
 import { useToast } from '../../context/ToastContext'
 import { useReceiptPrinter } from '../../hooks/useReceiptPrinter'
 
+import { printerErrorMessage } from '../../services/printer'
 import type { PaymentMethod, Sale } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
 import { formatMoney } from '../../utils/format'
+import { getPrinterConfig } from '../../utils/printerConfig'
 import {
   buildPaymentBreakdown,
   calculateChange,
@@ -22,13 +25,21 @@ import {
   PAYMENT_OPTIONS,
 } from '../../utils/pos'
 
+const CASH_PAYMENT_METHOD: PaymentMethod = 0
+
 export function MobilePayment() {
   const navigate = useNavigate()
   const { notify } = useToast()
   const { settings } = useSettings()
+  const { can } = useAuth()
   const { state: checkout, clearCheckout } = useCheckout()
-  const { printReceipt: sendReceiptToPrinter, isPrinting, lastPrintError } =
-    useReceiptPrinter()
+  const {
+    printReceipt: sendReceiptToPrinter,
+    isPrinting,
+    lastPrintError,
+    openDrawer,
+    isOpeningDrawer,
+  } = useReceiptPrinter()
 
   const [isMounted, setIsMounted] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -155,14 +166,31 @@ export function MobilePayment() {
       clearCheckout()
       notify('Sale completed successfully.')
       void sendReceiptToPrinter(sale, settings).then(
-        () => notify('Receipt printed successfully.'),
-        () => notify('Sale recorded, but printer is unavailable.', 'error'),
+        () => {
+          notify('Receipt printed successfully.')
+          maybeAutoOpenDrawer(method)
+        },
+        () => notify('Sale completed, but receipt printing failed.', 'error'),
       )
     } catch (err) {
       notify(getErrorMessage(err), 'error')
     } finally {
       setBusy(false)
     }
+  }
+
+  /** Cash sales only, and only when the printer settings have auto-open enabled - non-cash payments never trigger the drawer automatically. */
+  function maybeAutoOpenDrawer(paymentMethod: PaymentMethod) {
+    if (paymentMethod !== CASH_PAYMENT_METHOD) return
+    if (!getPrinterConfig().autoOpenDrawerOnCash) return
+    void openDrawer().catch((err) => notify(printerErrorMessage(err), 'error'))
+  }
+
+  function handleOpenDrawer() {
+    void openDrawer().then(
+      () => notify('Cash drawer opened.'),
+      (err) => notify(printerErrorMessage(err), 'error'),
+    )
   }
 
   function printReceipt() {
@@ -229,14 +257,27 @@ export function MobilePayment() {
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setShowVoidConfirm(true)}
-            className="flex h-11 items-center gap-1 rounded-2xl border border-rose-200/80 bg-white px-3 text-xs font-bold text-rose-600 shadow-xs active:scale-95 touch-manipulation hover:bg-rose-50"
-          >
-            <TrashIcon size={14} />
-            <span>Void</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {can('drawer.open') && (
+              <button
+                type="button"
+                onClick={handleOpenDrawer}
+                disabled={isOpeningDrawer}
+                aria-label="Open cash drawer"
+                className="flex h-11 w-11 items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white text-[#285A48] shadow-xs active:scale-95 touch-manipulation hover:bg-[#EAF1EE] disabled:opacity-50"
+              >
+                <DrawerIcon size={16} />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowVoidConfirm(true)}
+              className="flex h-11 items-center gap-1 rounded-2xl border border-rose-200/80 bg-white px-3 text-xs font-bold text-rose-600 shadow-xs active:scale-95 touch-manipulation hover:bg-rose-50"
+            >
+              <TrashIcon size={14} />
+              <span>Void</span>
+            </button>
+          </div>
         </header>
 
         {/* =========================================================
@@ -593,31 +634,14 @@ export function MobilePayment() {
           VOID ORDER CONFIRMATION MODAL
       ========================================================= */}
       {showVoidConfirm && (
-        <Modal
-          title="Void Current Ticket?"
-          onClose={() => setShowVoidConfirm(false)}
-          footer={
-            <div className="flex gap-2 justify-end">
-              <Button variant="secondary" onClick={() => setShowVoidConfirm(false)}>
-                Cancel
-              </Button>
-              <button
-                type="button"
-                onClick={confirmVoid}
-                className="rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-rose-700 active:scale-95"
-              >
-                Yes, Void Cart
-              </button>
-            </div>
-          }
-        >
-          <div className="py-2 text-xs text-slate-600">
-            <p>
-              Are you sure you want to discard this sale with{' '}
-              <strong className="text-slate-900">{checkout.cart.length} items</strong>? The register will reset to an empty ticket.
-            </p>
-          </div>
-        </Modal>
+        <ConfirmDialog
+          title="Void current ticket?"
+          message={`This will discard this sale with ${checkout.cart.length} item${checkout.cart.length !== 1 ? 's' : ''} and reset the register to an empty ticket.`}
+          confirmLabel="Void Cart"
+          danger
+          onCancel={() => setShowVoidConfirm(false)}
+          onConfirm={confirmVoid}
+        />
       )}
 
       {/* =========================================================
@@ -798,6 +822,16 @@ function TrashIcon({ size = 14 }: { size?: number }) {
       <path d="M3 6h18" />
       <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
       <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+    </svg>
+  )
+}
+
+function DrawerIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="4" width="20" height="16" rx="1" />
+      <line x1="2" y1="11" x2="22" y2="11" />
+      <line x1="10" y1="15.5" x2="14" y2="15.5" />
     </svg>
   )
 }

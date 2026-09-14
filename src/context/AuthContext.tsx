@@ -3,12 +3,14 @@ import { authApi } from '../api/authApi'
 import type { User } from '../types'
 import { getErrorMessage } from '../utils/errors'
 import { clearSession, getStoredUser, getToken, persistSession } from '../utils/session'
+import { hasPermission, type Permission } from '../utils/permissions'
 
 type AuthContextValue = {
   user: User | null
   ready: boolean
   login: (email: string, password: string) => Promise<void>
   logout: () => Promise<void>
+  can: (permission: Permission) => boolean
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
@@ -54,7 +56,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null)
   }, [])
 
-  const value = useMemo(() => ({ user, ready, login, logout }), [user, ready, login, logout])
+  const can = useCallback((permission: Permission) => hasPermission(user?.role, permission), [user])
+
+  const value = useMemo(() => ({ user, ready, login, logout, can }), [user, ready, login, logout, can])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

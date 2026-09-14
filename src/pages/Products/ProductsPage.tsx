@@ -21,6 +21,7 @@ import {
   Select,
   Textarea,
 } from '../../components/ui/Field'
+import { FormSection } from '../../components/ui/FormSection'
 
 import { ConfirmDialog, Modal } from '../../components/ui/Modal'
 import { PageHeader } from '../../components/ui/Page'
@@ -32,13 +33,16 @@ import {
   Spinner,
 } from '../../components/ui/States'
 
+import { useAuth } from '../../context/AuthContext'
 import { useSettings } from '../../context/SettingsContext'
 import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
+import { useIsMobile } from '../../hooks/useIsMobile'
 
 import type { Product } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
 import { formatMoney } from '../../utils/format'
+import { MobileProducts } from '../mobile/MobileProducts'
 
 type StockFilter = '' | 'In Stock' | 'Low Stock' | 'Out of Stock'
 
@@ -57,8 +61,17 @@ const emptyForm = (): ProductPayload => ({
 })
 
 export function ProductsPage() {
+  const isMobile = useIsMobile()
+  if (isMobile) return <MobileProducts />
+  return <DesktopProductsPage />
+}
+
+function DesktopProductsPage() {
   const { notify } = useToast()
   const { settings } = useSettings()
+  const { can } = useAuth()
+  const canManage = can('products.manage')
+  const canDelete = can('products.delete')
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -94,6 +107,10 @@ export function ProductsPage() {
   useEffect(() => {
     const path = location.pathname
     if (path === '/products/create') {
+      if (!canManage) {
+        navigate('/products', { replace: true })
+        return
+      }
       const first = categories.data?.[0]
       setEditing(null)
       setForm({ ...emptyForm(), categoryId: first?.id ?? 0 })
@@ -107,6 +124,10 @@ export function ProductsPage() {
     if (!id) {
       setOpen(false)
       setView(null)
+      return
+    }
+    if (editMatch && !canManage) {
+      navigate('/products', { replace: true })
       return
     }
     void productApi
@@ -123,7 +144,7 @@ export function ProductsPage() {
         navigate('/products')
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname, navigate, notify])
+  }, [location.pathname, navigate, notify, canManage])
 
   function closeModals() {
     setOpen(false)
@@ -249,14 +270,16 @@ export function ProductsPage() {
             title="Products"
             subtitle="Catalog inventory, pricing, and stock status"
           />
-          <button
-            type="button"
-            onClick={openCreate}
-            className="inline-flex min-h-[44px] items-center justify-center gap-2 self-start rounded-2xl bg-[#285A48] px-4 py-2.5 text-xs font-bold text-white shadow-md shadow-[#285A48]/20 transition-all hover:bg-[#1f4739] active:scale-95 touch-manipulation sm:self-auto"
-          >
-            <Plus size={16} />
-            <span>Add Product</span>
-          </button>
+          {canManage && (
+            <button
+              type="button"
+              onClick={openCreate}
+              className="inline-flex min-h-[44px] items-center justify-center gap-2 self-start rounded-2xl bg-[#285A48] px-4 py-2.5 text-xs font-bold text-white shadow-md shadow-[#285A48]/20 transition-all hover:bg-[#1f4739] active:scale-95 touch-manipulation sm:self-auto"
+            >
+              <Plus size={16} />
+              <span>Add Product</span>
+            </button>
+          )}
         </div>
 
         {/* =========================================================
@@ -526,7 +549,8 @@ export function ProductsPage() {
                             onView={() => navigate(`/products/${product.id}`)}
                             onEdit={() => openEdit(product)}
                             onDeactivate={() => setDeactivate(product)}
-                            showDeactivate={product.isActive}
+                            showEdit={canManage}
+                            showDeactivate={canDelete && product.isActive}
                           />
                         </td>
                       </tr>
@@ -547,6 +571,8 @@ export function ProductsPage() {
                     onEdit={() => openEdit(product)}
                     onView={() => navigate(`/products/${product.id}`)}
                     onDeactivate={() => setDeactivate(product)}
+                    canManage={canManage}
+                    canDelete={canDelete}
                   />
                 ))}
               </div>
@@ -572,6 +598,7 @@ export function ProductsPage() {
           title={editing ? 'Edit Product' : 'Add New Product'}
           wide
           onClose={closeModals}
+          preventClose={busy}
           footer={
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end w-full">
               <Button variant="secondary" onClick={closeModals}>
@@ -591,131 +618,64 @@ export function ProductsPage() {
             </div>
           }
         >
-          <div className="grid gap-4 sm:grid-cols-2 text-xs">
-            <Field label="SKU / Barcode">
-              <Input
-                value={form.sku}
-                placeholder="e.g. BEV-001"
-                onChange={(e) => setForm({ ...form, sku: e.target.value })}
-                required
-              />
-            </Field>
+          <div className="space-y-5 text-xs">
+            <FormSection title="Basic Information">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Product Name" required>
+                  <Input
+                    value={form.name}
+                    placeholder="e.g. Matcha Latte"
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    required
+                  />
+                </Field>
 
-            <Field label="Product Name">
-              <Input
-                value={form.name}
-                placeholder="e.g. Matcha Latte"
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                required
-              />
-            </Field>
+                <Field label="SKU / Barcode" required>
+                  <Input
+                    value={form.sku}
+                    placeholder="e.g. BEV-001"
+                    onChange={(e) => setForm({ ...form, sku: e.target.value })}
+                    required
+                  />
+                </Field>
 
-            <Field label="Category">
-              <Select
-                value={form.categoryId || ''}
-                onChange={(e) =>
-                  setForm({ ...form, categoryId: Number(e.target.value) })
-                }
-              >
-                <option value="">Select Category</option>
-                {(categories.data ?? []).map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-
-            <Field label="Supplier (Optional)">
-              <Select
-                value={form.supplierId ?? ''}
-                onChange={(e) =>
-                  setForm({
-                    ...form,
-                    supplierId: e.target.value ? Number(e.target.value) : null,
-                  })
-                }
-              >
-                <option value="">None / Internal</option>
-                {(suppliers.data ?? []).map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.companyName}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-
-            <div>
-              <Field label="Cost Price">
-                <Input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={form.costPrice}
-                  onChange={(e) =>
-                    setForm({ ...form, costPrice: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            </div>
-
-            <div>
-              <Field label="Selling Price">
-                <Input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={form.sellingPrice}
-                  onChange={(e) =>
-                    setForm({ ...form, sellingPrice: Number(e.target.value) })
-                  }
-                />
-              </Field>
-
-              {/* Real-time Margin Preview */}
-              {form.sellingPrice > 0 && (
-                <div className="mt-1 flex items-center justify-between text-[11px]">
-                  <span className="text-slate-400 font-medium">Gross Margin:</span>
-                  <span
-                    className={`font-black ${
-                      profitMargin >= 40
-                        ? 'text-[#285A48]'
-                        : profitMargin > 0
-                        ? 'text-amber-600'
-                        : 'text-rose-600'
-                    }`}
+                <Field label="Category" required>
+                  <Select
+                    value={form.categoryId || ''}
+                    onChange={(e) =>
+                      setForm({ ...form, categoryId: Number(e.target.value) })
+                    }
+                    required
                   >
-                    {profitMargin}% ({formatMoney(form.sellingPrice - form.costPrice, settings.currencySymbol)} profit)
-                  </span>
-                </div>
-              )}
-            </div>
+                    <option value="">Select Category</option>
+                    {(categories.data ?? []).map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
 
-            {!editing && (
-              <Field label="Initial Stock Quantity">
-                <Input
-                  type="number"
-                  min={0}
-                  value={form.stockQuantity}
-                  onChange={(e) =>
-                    setForm({ ...form, stockQuantity: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            )}
+                <Field label="Supplier" hint="Optional">
+                  <Select
+                    value={form.supplierId ?? ''}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        supplierId: e.target.value ? Number(e.target.value) : null,
+                      })
+                    }
+                  >
+                    <option value="">None / Internal</option>
+                    {(suppliers.data ?? []).map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.companyName}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
 
-            <Field label="Reorder Level (Par Threshold)">
-              <Input
-                type="number"
-                min={0}
-                value={form.reorderLevel}
-                onChange={(e) =>
-                  setForm({ ...form, reorderLevel: Number(e.target.value) })
-                }
-              />
-            </Field>
-
-            <div className="sm:col-span-2">
               <Field label="Product Description">
                 <Textarea
                   value={form.description}
@@ -725,105 +685,183 @@ export function ProductsPage() {
                   }
                 />
               </Field>
-            </div>
 
-            {/* Media Uploader Box */}
-            <div className="sm:col-span-2 space-y-2">
-              <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
-                Product Image
-              </label>
+              {/* Media Uploader Box */}
+              <div className="space-y-2">
+                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                  Product Image
+                </label>
 
-              <div
-                role="button"
-                tabIndex={0}
-                onClick={() => fileInputRef.current?.click()}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => fileInputRef.current?.click()}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      fileInputRef.current?.click()
+                    }
+                  }}
+                  onDragOver={(event) => {
                     event.preventDefault()
-                    fileInputRef.current?.click()
+                    setIsDraggingImage(true)
+                  }}
+                  onDragLeave={() => setIsDraggingImage(false)}
+                  onDrop={(event) => {
+                    event.preventDefault()
+                    setIsDraggingImage(false)
+                    const file = event.dataTransfer.files?.[0]
+                    if (file) readImageFile(file)
+                  }}
+                  className={`flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-4 text-center transition-all ${
+                    isDraggingImage
+                      ? 'border-[#285A48] bg-[#EAF1EE]'
+                      : 'border-[#E5EBE7] bg-[#F6F8F7] hover:border-[#285A48]/50 hover:bg-[#EAF1EE]/50'
+                  }`}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleImageUpload}
+                  />
+
+                  {form.imageUrl ? (
+                    <div className="relative group">
+                      <img
+                        src={form.imageUrl}
+                        alt="Product preview"
+                        className="h-32 w-32 rounded-2xl object-cover border border-[#E5EBE7] shadow-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setForm((prev) => ({ ...prev, imageUrl: '' }))
+                        }}
+                        className="absolute -top-2 -right-2 rounded-full bg-rose-600 p-1 text-white shadow hover:bg-rose-700"
+                        title="Remove image"
+                      >
+                        <ClearIcon size={12} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-2 text-slate-500 py-2">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white text-[#285A48] shadow-2xs border border-[#E5EBE7]">
+                        ↑
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold text-[#091413]">
+                          Upload Product Photo
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                          Drag and drop or browse from device
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <Input
+                  placeholder="Or paste an image web URL"
+                  value={form.imageUrl}
+                  onChange={(e) =>
+                    setForm({ ...form, imageUrl: e.target.value })
                   }
-                }}
-                onDragOver={(event) => {
-                  event.preventDefault()
-                  setIsDraggingImage(true)
-                }}
-                onDragLeave={() => setIsDraggingImage(false)}
-                onDrop={(event) => {
-                  event.preventDefault()
-                  setIsDraggingImage(false)
-                  const file = event.dataTransfer.files?.[0]
-                  if (file) readImageFile(file)
-                }}
-                className={`flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-4 text-center transition-all ${
-                  isDraggingImage
-                    ? 'border-[#285A48] bg-[#EAF1EE]'
-                    : 'border-[#E5EBE7] bg-[#F6F8F7] hover:border-[#285A48]/50 hover:bg-[#EAF1EE]/50'
-                }`}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={handleImageUpload}
                 />
-
-                {form.imageUrl ? (
-                  <div className="relative group">
-                    <img
-                      src={form.imageUrl}
-                      alt="Product preview"
-                      className="h-32 w-32 rounded-2xl object-cover border border-[#E5EBE7] shadow-sm"
-                    />
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setForm((prev) => ({ ...prev, imageUrl: '' }))
-                      }}
-                      className="absolute -top-2 -right-2 rounded-full bg-rose-600 p-1 text-white shadow hover:bg-rose-700"
-                      title="Remove image"
-                    >
-                      <ClearIcon size={12} />
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center gap-2 text-slate-500 py-2">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white text-[#285A48] shadow-2xs border border-[#E5EBE7]">
-                      ↑
-                    </div>
-                    <div>
-                      <p className="text-xs font-bold text-[#091413]">
-                        Upload Product Photo
-                      </p>
-                      <p className="text-[11px] text-slate-400">
-                        Drag and drop or browse from device
-                      </p>
-                    </div>
-                  </div>
-                )}
               </div>
+            </FormSection>
 
-              <Input
-                placeholder="Or paste an image web URL"
-                value={form.imageUrl}
-                onChange={(e) =>
-                  setForm({ ...form, imageUrl: e.target.value })
-                }
-              />
-            </div>
+            <FormSection title="Pricing">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Field label="Cost Price">
+                  <Input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={form.costPrice}
+                    onChange={(e) =>
+                      setForm({ ...form, costPrice: Number(e.target.value) })
+                    }
+                  />
+                </Field>
 
-            <label className="flex items-center gap-2.5 text-xs font-bold text-slate-700 sm:col-span-2 cursor-pointer pt-1">
-              <input
-                type="checkbox"
-                checked={form.isActive}
-                onChange={(e) =>
-                  setForm({ ...form, isActive: e.target.checked })
-                }
-                className="h-4 w-4 rounded-md border-[#E5EBE7] text-[#285A48] focus:ring-[#285A48]"
-              />
-              Active in POS register catalog
-            </label>
+                <div>
+                  <Field label="Selling Price">
+                    <Input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={form.sellingPrice}
+                      onChange={(e) =>
+                        setForm({ ...form, sellingPrice: Number(e.target.value) })
+                      }
+                    />
+                  </Field>
+
+                  {/* Real-time Margin Preview */}
+                  {form.sellingPrice > 0 && (
+                    <div className="mt-1 flex items-center justify-between text-[11px]">
+                      <span className="text-slate-400 font-medium">Gross Margin:</span>
+                      <span
+                        className={`font-black ${
+                          profitMargin >= 40
+                            ? 'text-[#285A48]'
+                            : profitMargin > 0
+                            ? 'text-amber-600'
+                            : 'text-rose-600'
+                        }`}
+                      >
+                        {profitMargin}% ({formatMoney(form.sellingPrice - form.costPrice, settings.currencySymbol)} profit)
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </FormSection>
+
+            <FormSection title="Inventory">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {!editing && (
+                  <Field label="Initial Stock Quantity">
+                    <Input
+                      type="number"
+                      min={0}
+                      value={form.stockQuantity}
+                      onChange={(e) =>
+                        setForm({ ...form, stockQuantity: Number(e.target.value) })
+                      }
+                    />
+                  </Field>
+                )}
+
+                <Field label="Reorder Level (Par Threshold)">
+                  <Input
+                    type="number"
+                    min={0}
+                    value={form.reorderLevel}
+                    onChange={(e) =>
+                      setForm({ ...form, reorderLevel: Number(e.target.value) })
+                    }
+                  />
+                </Field>
+              </div>
+            </FormSection>
+
+            <FormSection title="Status">
+              <label className="flex items-center gap-2.5 text-xs font-bold text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.isActive}
+                  onChange={(e) =>
+                    setForm({ ...form, isActive: e.target.checked })
+                  }
+                  className="h-4 w-4 rounded-md border-[#E5EBE7] text-[#285A48] focus:ring-[#285A48]"
+                />
+                Active in POS register catalog
+              </label>
+            </FormSection>
           </div>
         </Modal>
       )}
@@ -974,11 +1012,13 @@ function RowActions({
   onView,
   onEdit,
   onDeactivate,
+  showEdit,
   showDeactivate,
 }: {
   onView: () => void
   onEdit: () => void
   onDeactivate: () => void
+  showEdit: boolean
   showDeactivate: boolean
 }) {
   return (
@@ -993,15 +1033,17 @@ function RowActions({
         <Eye size={15} />
       </button>
 
-      <button
-        type="button"
-        title="Edit product"
-        aria-label="Edit product"
-        onClick={onEdit}
-        className="flex h-8 w-8 items-center justify-center rounded-xl text-slate-400 transition-all hover:bg-[#EAF1EE] hover:text-[#285A48] active:scale-95 touch-manipulation"
-      >
-        <Pencil size={15} />
-      </button>
+      {showEdit && (
+        <button
+          type="button"
+          title="Edit product"
+          aria-label="Edit product"
+          onClick={onEdit}
+          className="flex h-8 w-8 items-center justify-center rounded-xl text-slate-400 transition-all hover:bg-[#EAF1EE] hover:text-[#285A48] active:scale-95 touch-manipulation"
+        >
+          <Pencil size={15} />
+        </button>
+      )}
 
       {showDeactivate && (
         <button
@@ -1024,12 +1066,16 @@ function ProductCard({
   onEdit,
   onView,
   onDeactivate,
+  canManage,
+  canDelete,
 }: {
   product: Product
   currencySymbol: string
   onEdit: () => void
   onView: () => void
   onDeactivate: () => void
+  canManage: boolean
+  canDelete: boolean
 }) {
   return (
     <div className="p-4 hover:bg-[#FBFDFB] transition-colors">
@@ -1071,7 +1117,8 @@ function ProductCard({
               onView={onView}
               onEdit={onEdit}
               onDeactivate={onDeactivate}
-              showDeactivate={product.isActive}
+              showEdit={canManage}
+              showDeactivate={canDelete && product.isActive}
             />
           </div>
         </div>

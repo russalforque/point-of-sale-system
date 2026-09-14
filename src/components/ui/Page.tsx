@@ -21,7 +21,7 @@ export function PageHeader({
 }
 
 export function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <div className={`rounded border border-gray-200 bg-white ${className}`}>{children}</div>
+  return <div className={`rounded-2xl border border-[#E5EBE7] bg-white shadow-sm ${className}`}>{children}</div>
 }
 
 export function TableWrap({ children }: { children: ReactNode }) {

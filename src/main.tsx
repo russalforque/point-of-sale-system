@@ -3,7 +3,9 @@ import { createRoot } from 'react-dom/client'
 import { Capacitor } from '@capacitor/core'
 import './index.css'
 import App from './App'
-import { initDatabase, testDatabase } from './database/sqlite'
+import { initDatabase } from './database/sqlite'
+import { initializeDatabase } from './database/database'
+import { seedDatabase } from './database/seed'
 
 async function startApp() {
   const root = document.getElementById('root')
@@ -24,9 +26,10 @@ async function startApp() {
 
       console.log('=== SQLITE OPENED ===')
 
-      await testDatabase()
+      await initializeDatabase()
+      await seedDatabase()
 
-      console.log('=== SQLITE TEST PASSED ===')
+      console.log('=== SQLITE READY ===')
     } catch (error) {
       console.error('=== SQLITE ERROR ===', error)
     }

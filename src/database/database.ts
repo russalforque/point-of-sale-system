@@ -132,6 +132,15 @@ export async function initializeDatabase(): Promise<void> {
       show_logo_on_receipt INTEGER NOT NULL DEFAULT 1
     );
 
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      full_name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'cashier',
+      is_active INTEGER NOT NULL DEFAULT 1
+    );
+
     CREATE INDEX IF NOT EXISTS idx_products_category
       ON products(category_id);
 

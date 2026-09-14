@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import {
   Barcode,
   ChevronDown,
@@ -19,10 +18,14 @@ import { salesApi } from '../../api/salesApi'
 import { Badge, stockTone } from '../../components/ui/Badge'
 import { Pagination } from '../../components/ui/Pagination'
 import { EmptyState, ErrorState, Spinner } from '../../components/ui/States'
+import { PaymentModal } from '../../components/pos/PaymentModal'
 
+import { useAuth } from '../../context/AuthContext'
 import { useCheckout } from '../../context/CheckoutContext'
 import { useSettings } from '../../context/SettingsContext'
 import { useToast } from '../../context/ToastContext'
+import { useReceiptPrinter } from '../../hooks/useReceiptPrinter'
+import { printerErrorMessage } from '../../services/printer'
 import { useAsync } from '../../hooks/useAsync'
 import { useDebounced } from '../../hooks/useDebounced'
 
@@ -43,15 +46,17 @@ export interface CartLine {
 }
 
 export function MobileSales() {
-  const navigate = useNavigate()
   const { notify } = useToast()
   const { settings } = useSettings()
+  const { user } = useAuth()
   const { state: checkout, setState: setCheckout } = useCheckout()
+  const { printReceipt: reprintReceipt, isPrinting, lastPrintError } = useReceiptPrinter()
 
   // UI States
   const [search, setSearch] = useState('')
   const [categoryId, setCategoryId] = useState('')
   const [isCartOpen, setIsCartOpen] = useState(false)
+  const [isPaymentOpen, setIsPaymentOpen] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [customerSearch, setCustomerSearch] = useState('')
   const [historySearch, setHistorySearch] = useState('')
@@ -83,9 +88,10 @@ export function MobileSales() {
             search: historySearch || undefined,
             page: historyPage,
             pageSize: 8,
+            cashierName: user?.role === 'cashier' ? user.fullName : undefined,
           })
         : Promise.resolve(null),
-    [historySearch, historyPage, showHistory],
+    [historySearch, historyPage, showHistory, user],
   )
 
   const totals = useMemo(
@@ -135,7 +141,15 @@ export function MobileSales() {
       notify('Add items to the cart first.', 'error')
       return
     }
-    navigate('/payment')
+    setIsCartOpen(false)
+    setIsPaymentOpen(true)
+  }
+
+  function handleReprint(order: Sale) {
+    void reprintReceipt(order, settings).then(
+      () => notify('Receipt printed successfully.'),
+      (err) => notify(printerErrorMessage(err), 'error'),
+    )
   }
 
   useEffect(() => {
@@ -557,6 +571,11 @@ export function MobileSales() {
         </div>
       )}
 
+      {/* Payment Modal */}
+      {isPaymentOpen && (
+        <PaymentModal onClose={() => setIsPaymentOpen(false)} />
+      )}
+
       {/* History Drawer */}
       {showHistory && (
         <div className="fixed inset-0 z-50 flex flex-col bg-white animate-in slide-in-from-right duration-200">
@@ -708,6 +727,16 @@ export function MobileSales() {
                       {formatMoney(selectedOrder.total, settings.currencySymbol)}
                     </span>
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleReprint(selectedOrder)}
+                    disabled={isPrinting}
+                    className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 rounded-xl bg-[#285A48] text-xs font-bold text-white shadow-xs active:scale-95 touch-manipulation disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <PrinterIcon size={14} />
+                    {isPrinting ? 'Printing…' : lastPrintError ? 'Retry Print' : 'Reprint Receipt'}
+                  </button>
                 </div>
               </div>
             )}
@@ -827,6 +856,16 @@ function ClearIcon({ size = 13 }: { size?: number }) {
     >
       <line x1="18" y1="6" x2="6" y2="18" />
       <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  )
+}
+
+function PrinterIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="6 9 6 2 18 2 18 9" />
+      <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+      <rect x="6" y="14" width="12" height="8" />
     </svg>
   )
 }

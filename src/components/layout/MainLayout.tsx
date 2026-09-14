@@ -10,8 +10,9 @@ export function MainLayout() {
   // 🟢 Detect if we are on the payment/checkout screen
   const isPaymentPage = location.pathname.startsWith('/payment')
 
-  const shouldAutoHideSidebar = () =>
-    window.innerWidth >= 1000 && window.innerHeight >= 800
+  // Auto-collapse the sidebar to an icon rail on tablets too, not just desktop,
+  // so it doesn't eat into the limited width — hover near the edge still expands it.
+  const shouldAutoHideSidebar = () => window.innerWidth >= 768
 
   const [collapsed, setCollapsed] = useState(() => {
     const saved = localStorage.getItem('sellix.sidebar')

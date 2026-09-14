@@ -14,6 +14,7 @@ import {
 
 import { Button } from '../components/ui/Button'
 import { Field, Input } from '../components/ui/Field'
+import { FormSection } from '../components/ui/FormSection'
 import { Modal } from '../components/ui/Modal'
 import { PageHeader } from '../components/ui/Page'
 import { Pagination } from '../components/ui/Pagination'
@@ -416,10 +417,13 @@ function DesktopInventory() {
       {adjust && (
         <Modal
           title="Stock Adjustment"
-          onClose={() => setAdjust(null)}
+          onClose={() => {
+            if (!busy) setAdjust(null)
+          }}
+          preventClose={busy}
           footer={
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end w-full">
-              <Button variant="secondary" onClick={() => setAdjust(null)}>
+              <Button variant="secondary" onClick={() => setAdjust(null)} disabled={busy}>
                 Cancel
               </Button>
               <Button
@@ -447,83 +451,91 @@ function DesktopInventory() {
             </div>
           </div>
 
-          <div className="mt-4 space-y-4 text-xs">
-            <div>
-              <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5">
-                Adjustment Action
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setType(1)}
-                  className={`flex min-h-11 items-center justify-center rounded-2xl text-xs font-bold transition-all active:scale-95 ${
-                    type === 1
-                      ? 'bg-[#285A48] text-white shadow-sm'
-                      : 'border border-[#E5EBE7] bg-white text-slate-600 hover:bg-[#F0F5F2]'
-                  }`}
-                >
-                  + Add Stock
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setType(2)}
-                  className={`flex min-h-11 items-center justify-center rounded-2xl text-xs font-bold transition-all active:scale-95 ${
-                    type === 2
-                      ? 'bg-rose-600 text-white shadow-sm'
-                      : 'border border-[#E5EBE7] bg-white text-slate-600 hover:bg-[#F0F5F2]'
-                  }`}
-                >
-                  - Deduct
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setType(3)}
-                  className={`flex min-h-11 items-center justify-center rounded-2xl text-xs font-bold transition-all active:scale-95 ${
-                    type === 3
-                      ? 'bg-slate-800 text-white shadow-sm'
-                      : 'border border-[#E5EBE7] bg-white text-slate-600 hover:bg-[#F0F5F2]'
-                  }`}
-                >
-                  = Count Fix
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <Field label="Quantity Units">
-                <Input
-                  type="number"
-                  min={1}
-                  value={quantity}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuantity(Math.max(1, Number(e.target.value)))}
-                />
-              </Field>
-
-              <div className="mt-2 flex gap-1.5">
-                {[1, 5, 10, 25, 50].map((num) => (
+          <div className="mt-4 space-y-5 text-xs">
+            <FormSection title="Adjustment">
+              <div>
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5">
+                  Adjustment Action
+                </label>
+                <div className="grid grid-cols-3 gap-2">
                   <button
-                    key={num}
                     type="button"
-                    onClick={() => setQuantity(num)}
-                    className={`flex-1 rounded-xl py-1 text-[11px] font-bold transition-colors ${
-                      quantity === num
-                        ? 'bg-[#285A48] text-white'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    onClick={() => setType(1)}
+                    aria-pressed={type === 1}
+                    className={`flex min-h-11 items-center justify-center rounded-xl text-xs font-bold transition-all active:scale-95 ${
+                      type === 1
+                        ? 'bg-[#285A48] text-white shadow-sm'
+                        : 'border border-[#E5EBE7] bg-white text-slate-600 hover:bg-[#F0F5F2]'
                     }`}
                   >
-                    +{num}
+                    + Add Stock
                   </button>
-                ))}
+                  <button
+                    type="button"
+                    onClick={() => setType(2)}
+                    aria-pressed={type === 2}
+                    className={`flex min-h-11 items-center justify-center rounded-xl text-xs font-bold transition-all active:scale-95 ${
+                      type === 2
+                        ? 'bg-rose-600 text-white shadow-sm'
+                        : 'border border-[#E5EBE7] bg-white text-slate-600 hover:bg-[#F0F5F2]'
+                    }`}
+                  >
+                    - Deduct
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setType(3)}
+                    aria-pressed={type === 3}
+                    className={`flex min-h-11 items-center justify-center rounded-xl text-xs font-bold transition-all active:scale-95 ${
+                      type === 3
+                        ? 'bg-slate-800 text-white shadow-sm'
+                        : 'border border-[#E5EBE7] bg-white text-slate-600 hover:bg-[#F0F5F2]'
+                    }`}
+                  >
+                    = Count Fix
+                  </button>
+                </div>
               </div>
-            </div>
 
-            <Field label="Audit Reason / Note">
-              <Input
-                value={reason}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setReason(e.target.value)}
-                placeholder="e.g. New delivery, supplier return, physical discrepancy"
-              />
-            </Field>
+              <div>
+                <Field label="Quantity Units" required>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={quantity}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuantity(Math.max(1, Number(e.target.value)))}
+                    required
+                  />
+                </Field>
+
+                <div className="mt-2 flex gap-2">
+                  {[1, 5, 10, 25, 50].map((num) => (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() => setQuantity(num)}
+                      className={`flex-1 rounded-lg py-1 text-[11px] font-bold transition-colors ${
+                        quantity === num
+                          ? 'bg-[#285A48] text-white'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      +{num}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </FormSection>
+
+            <FormSection title="Reason">
+              <Field label="Audit Reason / Note" hint="Optional — helps with the audit trail">
+                <Input
+                  value={reason}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setReason(e.target.value)}
+                  placeholder="e.g. New delivery, supplier return, physical discrepancy"
+                />
+              </Field>
+            </FormSection>
           </div>
         </Modal>
       )}
