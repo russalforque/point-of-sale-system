@@ -1,35 +1,42 @@
 import { useMemo, useState } from 'react'
-import {
-  Pencil,
-  Plus,
-  Search,
-  Trash2,
-} from '../../components/ui/Icons'
 
 import { userApi, type UserAccount, type UserPayload } from '../../api/userApi'
-import { Badge } from '../../components/ui/Badge'
-import { Button } from '../../components/ui/Button'
-import { Field, Input, Select } from '../../components/ui/Field'
+import {
+  DataCard,
+  DesktopPage,
+  DesktopSearch,
+  EmptyRow,
+  ErrorRow,
+  FilterPills,
+  HoverAction,
+  LoadingRow,
+  StatusCell,
+  Th,
+  Toolbar,
+} from '../../components/ui/DesktopKit'
+import { AddButton, Avatar, EMAIL_PATTERN, PrimaryButton, TextButton, TextField } from '../../components/ui/MobileKit'
 import { ConfirmDialog, Modal } from '../../components/ui/Modal'
-import { PageHeader } from '../../components/ui/Page'
-import { EmptyState, ErrorState, Spinner } from '../../components/ui/States'
 import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
 import { useIsMobile } from '../../hooks/useIsMobile'
-import { ROLE_LABELS, type Role } from '../../utils/permissions'
 import { getErrorMessage } from '../../utils/errors'
+import { ROLE_LABELS, type Role } from '../../utils/permissions'
 import { MobileUsers } from '../mobile/MobileUsers'
 
-type StatusFilter = '' | 'active' | 'inactive'
+type RoleFilter = Role | ''
+type FormErrors = Partial<Record<'fullName' | 'email' | 'password', string>>
 
-const emptyForm = (): UserPayload => ({
-  email: '',
-  fullName: '',
-  role: 'cashier',
-  isActive: true,
-  password: '',
-})
+const FORM_ID = 'user-form'
+const MIN_PASSWORD = 8
+
+const ROLES: { value: Role; description: string }[] = [
+  { value: 'cashier', description: 'Sales, payments and customers' },
+  { value: 'manager', description: 'Plus products, inventory and reports' },
+  { value: 'admin', description: 'Full access, including users and settings' },
+]
+
+const emptyForm = (): UserPayload => ({ email: '', fullName: '', role: 'cashier', isActive: true, password: '' })
 
 export function UsersPage() {
   const isMobile = useIsMobile()
@@ -42,83 +49,90 @@ function DesktopUsersPage() {
   const { user: currentUser } = useAuth()
 
   const [search, setSearch] = useState('')
-  const [roleFilter, setRoleFilter] = useState<Role | ''>('')
-  const [status, setStatus] = useState<StatusFilter>('')
+  const [roleFilter, setRoleFilter] = useState<RoleFilter>('')
 
-  const [form, setForm] = useState<UserPayload>(emptyForm())
-  const [editing, setEditing] = useState<UserAccount | null>(null)
   const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<UserAccount | null>(null)
+  const [form, setForm] = useState<UserPayload>(emptyForm())
+  const [initialForm, setInitialForm] = useState<UserPayload>(emptyForm())
+  const [touched, setTouched] = useState<Partial<Record<keyof FormErrors, boolean>>>({})
+  const [showPassword, setShowPassword] = useState(false)
   const [deactivate, setDeactivate] = useState<UserAccount | null>(null)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const { data, loading, error, reload } = useAsync(() => userApi.list(), [])
+  const users = useMemo(() => data ?? [], [data])
+
+  const isSelf = (account: UserAccount | null) => Boolean(account && currentUser && Number(currentUser.id) === account.id)
+
+  const counts = useMemo(
+    () => ({
+      all: users.length,
+      admin: users.filter((u) => u.role === 'admin').length,
+      manager: users.filter((u) => u.role === 'manager').length,
+      cashier: users.filter((u) => u.role === 'cashier').length,
+    }),
+    [users],
+  )
 
   const filtered = useMemo(() => {
-    if (!data) return []
-    let result = [...data]
+    const keyword = search.trim().toLowerCase()
+    return users
+      .filter((u) => !roleFilter || u.role === roleFilter)
+      .filter((u) => !keyword || u.fullName.toLowerCase().includes(keyword) || u.email.toLowerCase().includes(keyword))
+      .sort((a, b) => Number(b.isActive) - Number(a.isActive) || a.fullName.localeCompare(b.fullName))
+  }, [users, search, roleFilter])
 
-    if (search.trim()) {
-      const keyword = search.trim().toLowerCase()
-      result = result.filter(
-        (u) => u.fullName.toLowerCase().includes(keyword) || u.email.toLowerCase().includes(keyword),
-      )
-    }
-    if (roleFilter) result = result.filter((u) => u.role === roleFilter)
-    if (status === 'active') result = result.filter((u) => u.isActive)
-    else if (status === 'inactive') result = result.filter((u) => !u.isActive)
+  const password = form.password ?? ''
+  const errors: FormErrors = {}
+  if (!form.fullName.trim()) errors.fullName = 'Enter the person’s name.'
+  if (!EMAIL_PATTERN.test(form.email.trim())) errors.email = 'Enter a valid email. It’s used to sign in.'
+  else if (!editing && users.some((u) => u.email.toLowerCase() === form.email.trim().toLowerCase()))
+    errors.email = 'An account with this email already exists.'
+  if (!editing && password.length < MIN_PASSWORD) errors.password = `Use at least ${MIN_PASSWORD} characters.`
+  else if (editing && password.length > 0 && password.length < MIN_PASSWORD)
+    errors.password = `Use at least ${MIN_PASSWORD} characters, or leave blank.`
 
-    return result.sort((a, b) => a.fullName.localeCompare(b.fullName))
-  }, [data, search, roleFilter, status])
+  const isValid = Object.keys(errors).length === 0
+  const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm)
+  const editingSelf = isSelf(editing)
+  const hasFilters = search.trim() !== '' || roleFilter !== ''
+  const fieldError = (key: keyof FormErrors) => (touched[key] ? errors[key] : undefined)
 
-  const totalUsers = data?.length ?? 0
-  const activeUsers = data?.filter((u) => u.isActive).length ?? 0
-  const adminCount = data?.filter((u) => u.role === 'admin').length ?? 0
-
-  const hasFilters = Boolean(search.trim() || roleFilter || status)
-
-  function resetFilters() {
-    setSearch('')
-    setRoleFilter('')
-    setStatus('')
-  }
-
-  function openCreate() {
-    setEditing(null)
-    setForm(emptyForm())
-    setOpen(true)
-  }
-
-  function openEdit(account: UserAccount) {
+  function openForm(account: UserAccount | null) {
+    const next = account
+      ? { email: account.email, fullName: account.fullName, role: account.role, isActive: account.isActive, password: '' }
+      : emptyForm()
     setEditing(account)
-    setForm({ email: account.email, fullName: account.fullName, role: account.role, isActive: account.isActive, password: '' })
+    setForm(next)
+    setInitialForm(next)
+    setTouched({})
+    setShowPassword(false)
     setOpen(true)
   }
 
-  function closeModal() {
-    if (busy) return
+  function closeForm() {
     setOpen(false)
+    setConfirmDiscard(false)
+  }
+
+  function requestClose() {
+    if (busy) return
+    if (isDirty) setConfirmDiscard(true)
+    else closeForm()
   }
 
   async function save() {
-    if (!form.email.trim() || !form.fullName.trim()) {
-      notify('Email and full name are required.', 'error')
-      return
-    }
-    if (!editing && !form.password?.trim()) {
-      notify('Password is required for a new account.', 'error')
-      return
-    }
-
+    setTouched({ fullName: true, email: true, password: true })
+    if (!isValid || busy) return
     setBusy(true)
     try {
-      if (editing) {
-        await userApi.update(editing.id, { ...form, password: form.password?.trim() || undefined })
-        notify('User account updated.')
-      } else {
-        await userApi.create(form)
-        notify('User account created.')
-      }
-      setOpen(false)
+      const payload: UserPayload = { ...form, fullName: form.fullName.trim(), email: form.email.trim(), password: password || undefined }
+      if (editing) await userApi.update(editing.id, payload)
+      else await userApi.create(payload)
+      notify(editing ? 'Changes saved.' : `Account created for ${payload.fullName}.`)
+      closeForm()
       await reload()
     } catch (err) {
       notify(getErrorMessage(err), 'error')
@@ -132,8 +146,23 @@ function DesktopUsersPage() {
     setBusy(true)
     try {
       await userApi.deactivate(deactivate.id)
-      notify('User account deactivated.')
+      notify(`${deactivate.fullName} can no longer sign in.`)
       setDeactivate(null)
+      closeForm()
+      await reload()
+    } catch (err) {
+      notify(getErrorMessage(err), 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function reactivate(account: UserAccount) {
+    setBusy(true)
+    try {
+      await userApi.update(account.id, { ...account, isActive: true, password: undefined })
+      notify(`${account.fullName} can sign in again.`)
+      closeForm()
       await reload()
     } catch (err) {
       notify(getErrorMessage(err), 'error')
@@ -143,235 +172,231 @@ function DesktopUsersPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#091413]/[0.02] text-[#091413] antialiased">
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 md:px-8">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <PageHeader title="Users" subtitle="Staff accounts, roles, and access" />
-          <button
-            type="button"
-            onClick={openCreate}
-            className="inline-flex items-center justify-center gap-2 self-start rounded-lg bg-[#285A48] px-3.5 py-2 text-xs font-medium text-white shadow-xs transition-colors hover:bg-[#1e4537] active:scale-[0.98] sm:self-auto"
-          >
-            <Plus size={15} />
-            <span>Add user</span>
-          </button>
-        </div>
+    <DesktopPage
+      title="Users"
+      subtitle={data ? `${users.filter((u) => u.isActive).length} people can sign in` : 'Staff accounts and roles'}
+      actions={<AddButton label="Add user" onClick={() => openForm(null)} />}
+    >
+      <Toolbar>
+        <DesktopSearch value={search} onChange={setSearch} placeholder="Search name or email" label="Search users" />
+        <FilterPills
+          label="Role"
+          value={roleFilter}
+          onChange={setRoleFilter}
+          options={[
+            { key: '', label: 'All', count: data ? counts.all : undefined },
+            { key: 'admin', label: 'Admins', count: data ? counts.admin : undefined },
+            { key: 'manager', label: 'Managers', count: data ? counts.manager : undefined },
+            { key: 'cashier', label: 'Cashiers', count: data ? counts.cashier : undefined },
+          ]}
+        />
+      </Toolbar>
 
-        <div className="mt-4 grid grid-cols-3 gap-3">
-          <MetricCard label="Total accounts" value={totalUsers} isSelected={status === '' && !roleFilter} onClick={resetFilters} />
-          <MetricCard label="Active" value={activeUsers} indicator="pine" isSelected={status === 'active'} onClick={() => setStatus((prev) => (prev === 'active' ? '' : 'active'))} />
-          <MetricCard label="Admins" value={adminCount} isSelected={roleFilter === 'admin'} onClick={() => setRoleFilter((prev) => (prev === 'admin' ? '' : 'admin'))} />
-        </div>
+      <DataCard className="mt-4">
+        {loading && !data && <LoadingRow />}
+        {!loading && error && <ErrorRow message={error} onRetry={() => void reload()} />}
+        {!error && data && filtered.length === 0 && (
+          <EmptyRow
+            title="No users found"
+            hint={hasFilters ? 'Try a different search or role.' : 'Create accounts for your staff.'}
+            actionLabel={hasFilters ? 'Clear filters' : 'Add user'}
+            secondary={hasFilters}
+            onAction={
+              hasFilters
+                ? () => {
+                    setSearch('')
+                    setRoleFilter('')
+                  }
+                : () => openForm(null)
+            }
+          />
+        )}
 
-        <div className="mt-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap items-center gap-1 rounded-lg border border-[#091413]/10 bg-[#091413]/[0.04] p-0.5 self-start">
-            {(['', 'admin', 'manager', 'cashier'] as const).map((r) => (
-              <button
-                key={r || 'all'}
-                type="button"
-                onClick={() => setRoleFilter(r)}
-                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
-                  roleFilter === r ? 'bg-white text-[#091413] shadow-xs' : 'text-[#091413]/60 hover:text-[#091413]'
-                }`}
-              >
-                {r ? ROLE_LABELS[r] : 'All roles'}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1 lg:max-w-md lg:justify-end">
-            <div className="relative w-full">
-              <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#091413]/40" />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search name or email..."
-                className="h-9 w-full rounded-lg border border-[#091413]/15 bg-white pl-8.5 pr-8 text-xs text-[#091413] placeholder-[#091413]/40 outline-none transition-colors focus:border-[#285A48] focus:ring-1 focus:ring-[#285A48]"
-              />
-            </div>
-            {hasFilters && (
-              <button
-                type="button"
-                onClick={resetFilters}
-                className="shrink-0 rounded-lg border border-[#091413]/15 bg-white px-3 py-2 text-xs font-medium text-[#091413]/70 transition-colors hover:bg-[#091413]/[0.03] hover:text-[#091413]"
-              >
-                Reset
-              </button>
-            )}
-          </div>
-        </div>
-
-        <main className="mt-4 overflow-hidden rounded-xl border border-[#091413]/10 bg-white shadow-xs">
-          {loading && (
-            <div className="py-16">
-              <Spinner />
-            </div>
-          )}
-
-          {error && (
-            <div className="p-6">
-              <ErrorState message={error} onRetry={() => void reload()} />
-            </div>
-          )}
-
-          {!loading && !error && filtered.length === 0 && (
-            <div className="p-8 text-center">
-              <EmptyState
-                title="No user accounts found"
-                hint={hasFilters ? 'Try clearing filters or search a different keyword.' : 'Create the first staff account.'}
-              />
-            </div>
-          )}
-
-          {!loading && !error && filtered.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs text-[#091413]/80">
-                <thead className="border-b border-[#091413]/10 bg-[#091413]/[0.02] text-[11px] font-medium uppercase tracking-wider text-[#091413]/50">
-                  <tr>
-                    <th className="py-3 pl-4 pr-3 sm:pl-6 font-medium">Name</th>
-                    <th className="py-3 px-3 font-medium">Email</th>
-                    <th className="py-3 px-3 font-medium">Role</th>
-                    <th className="py-3 px-3 text-center font-medium">Status</th>
-                    <th className="py-3 pl-3 pr-4 sm:pr-6 text-right font-medium">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#091413]/5 font-normal">
-                  {filtered.map((account) => (
-                    <tr key={account.id} className="transition-colors hover:bg-[#285A48]/[0.03]">
-                      <td className="py-3.5 pl-4 pr-3 sm:pl-6 font-medium text-[#091413]">
-                        {account.fullName}
-                        {currentUser && Number(currentUser.id) === account.id && (
-                          <span className="ml-1.5 text-[10px] font-semibold text-[#285A48]">(you)</span>
-                        )}
-                      </td>
-                      <td className="py-3.5 px-3 text-[#091413]/70">{account.email}</td>
-                      <td className="py-3.5 px-3">
-                        <Badge tone={account.role === 'admin' ? 'blue' : account.role === 'manager' ? 'amber' : 'gray'}>
-                          {ROLE_LABELS[account.role]}
-                        </Badge>
-                      </td>
-                      <td className="py-3.5 px-3 text-center">
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${
-                            account.isActive
-                              ? 'bg-[#285A48]/10 text-[#285A48] border border-[#285A48]/20'
-                              : 'bg-[#091413]/[0.05] text-[#091413]/60 border border-[#091413]/10'
-                          }`}
+        {filtered.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="border-b border-slate-100 text-xs text-slate-500">
+                <tr>
+                  <Th className="pl-6">Name</Th>
+                  <Th>Email</Th>
+                  <Th>Role</Th>
+                  <Th>Status</Th>
+                  <Th className="pr-6">
+                    <span className="sr-only">Actions</span>
+                  </Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filtered.map((account) => (
+                  <tr key={account.id} onClick={() => openForm(account)} className="group cursor-pointer hover:bg-slate-50">
+                    <td className="py-3 pl-6 pr-3">
+                      <div className="flex items-center gap-3">
+                        <Avatar name={account.fullName} inactive={!account.isActive} />
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            openForm(account)
+                          }}
+                          className={`text-left font-medium focus-visible:underline focus-visible:outline-none ${account.isActive ? '' : 'text-slate-400'}`}
                         >
-                          {account.isActive ? 'Active' : 'Inactive'}
-                        </span>
-                      </td>
-                      <td className="py-3.5 pl-3 pr-4 sm:pr-6 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <button
-                            type="button"
-                            title="Edit account"
-                            onClick={() => openEdit(account)}
-                            className="flex h-8 w-8 items-center justify-center rounded-md text-[#091413]/40 transition-colors hover:bg-[#285A48]/10 hover:text-[#285A48] active:scale-95"
-                          >
-                            <Pencil size={15} />
-                          </button>
-                          {account.isActive && !(currentUser && Number(currentUser.id) === account.id) && (
-                            <button
-                              type="button"
-                              title="Deactivate account"
-                              onClick={() => setDeactivate(account)}
-                              className="flex h-8 w-8 items-center justify-center rounded-md text-[#091413]/40 transition-colors hover:bg-rose-50 hover:text-rose-600 active:scale-95"
-                            >
-                              <Trash2 size={15} />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </main>
-      </div>
+                          {account.fullName}
+                          {isSelf(account) && <span className="ml-1.5 text-xs font-medium text-[#1F5E3B]">You</span>}
+                        </button>
+                      </div>
+                    </td>
+                    <td className="max-w-72 truncate px-3 py-3 text-slate-600">{account.email}</td>
+                    <td className="px-3 py-3">{ROLE_LABELS[account.role]}</td>
+                    <td className="px-3 py-3">
+                      <StatusCell active={account.isActive} />
+                    </td>
+                    <td className="py-3 pl-3 pr-6 text-right">
+                      <HoverAction label="Edit" ariaLabel={`Edit ${account.fullName}`} onClick={() => openForm(account)} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </DataCard>
 
       {open && (
         <Modal
-          title={editing ? 'Edit user account' : 'Add user account'}
-          onClose={closeModal}
+          title={editing ? editing.fullName : 'Add user'}
+          description={editing ? (editing.isActive ? ROLE_LABELS[editing.role] : 'Inactive — can’t sign in') : undefined}
+          size="lg"
+          onClose={requestClose}
           preventClose={busy}
           footer={
-            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <Button variant="secondary" onClick={closeModal} disabled={busy}>
+            <div className="flex w-full items-center gap-2">
+              {editing && editing.isActive && !editingSelf && (
+                <TextButton tone="danger" onClick={() => setDeactivate(editing)} disabled={busy} className="h-12">
+                  Deactivate
+                </TextButton>
+              )}
+              {editing && !editing.isActive && (
+                <TextButton tone="accent" onClick={() => void reactivate(editing)} disabled={busy} className="h-12">
+                  {busy ? 'Reactivating…' : 'Reactivate'}
+                </TextButton>
+              )}
+              <div className="flex-1" />
+              <TextButton onClick={requestClose} disabled={busy} className="h-12">
                 Cancel
-              </Button>
-              <button
-                type="button"
-                onClick={() => void save()}
-                disabled={busy || !form.email.trim() || !form.fullName.trim()}
-                className="inline-flex items-center justify-center rounded-lg bg-[#285A48] px-4 py-2 text-xs font-medium text-white shadow-xs transition-colors hover:bg-[#1e4537] disabled:opacity-50"
-              >
-                {busy ? 'Saving…' : editing ? 'Save changes' : 'Create account'}
-              </button>
+              </TextButton>
+              <PrimaryButton type="submit" form={FORM_ID} disabled={busy || (editing !== null && !isDirty)} className="h-12 flex-none px-8">
+                {busy ? 'Saving…' : editing ? (isDirty ? 'Save changes' : 'No changes') : 'Create account'}
+              </PrimaryButton>
             </div>
           }
         >
-          <div className="space-y-4 text-xs">
-            <Field label="Full name" required>
-              <Input value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} required autoFocus />
-            </Field>
-
-            <Field label="Email" required>
-              <Input
+          <form
+            id={FORM_ID}
+            noValidate
+            onSubmit={(e) => {
+              e.preventDefault()
+              void save()
+            }}
+            className="space-y-5"
+          >
+            <div className="grid gap-4 sm:grid-cols-2">
+              <TextField
+                label="Full name"
+                value={form.fullName}
+                onChange={(fullName) => setForm({ ...form, fullName })}
+                onBlur={() => setTouched((t) => ({ ...t, fullName: true }))}
+                error={fieldError('fullName')}
+                placeholder="e.g. Maria Santos"
+                autoFocus={!editing}
+                autoComplete="off"
+                autoCapitalize="words"
+              />
+              <TextField
+                label="Email"
                 type="email"
+                inputMode="email"
+                autoComplete="off"
+                autoCapitalize="none"
                 value={form.email}
-                onChange={(e) => setForm({ ...form, email: e.target.value })}
-                required
+                onChange={(email) => setForm({ ...form, email })}
+                onBlur={() => setTouched((t) => ({ ...t, email: true }))}
+                error={editing ? undefined : fieldError('email')}
+                hint={editing ? 'Used to sign in, so it can’t be changed.' : 'Used to sign in.'}
                 disabled={Boolean(editing)}
+                placeholder="e.g. maria@store.com"
               />
-            </Field>
+            </div>
 
-            <Field label="Role" required>
-              <Select
-                value={form.role}
-                onChange={(e) => setForm({ ...form, role: e.target.value as Role })}
-                disabled={Boolean(editing && currentUser && Number(currentUser.id) === editing.id)}
-              >
-                <option value="admin">Admin</option>
-                <option value="manager">Manager</option>
-                <option value="cashier">Cashier</option>
-              </Select>
-            </Field>
+            <fieldset disabled={editingSelf}>
+              <legend className="text-sm font-medium">Role</legend>
+              <div className="mt-1.5 grid gap-2 sm:grid-cols-3">
+                {ROLES.map((role) => {
+                  const selected = form.role === role.value
+                  return (
+                    <label
+                      key={role.value}
+                      className={`flex cursor-pointer items-start gap-3 rounded-2xl px-4 py-3 transition ${
+                        selected ? 'bg-[#F2F8F4] ring-2 ring-[#1F5E3B]' : 'bg-[#F6F8F7] hover:bg-[#EEF3F0]'
+                      } ${editingSelf ? 'cursor-not-allowed opacity-60' : ''}`}
+                    >
+                      <input
+                        type="radio"
+                        name="role"
+                        value={role.value}
+                        checked={selected}
+                        onChange={() => setForm({ ...form, role: role.value })}
+                        className="mt-0.5 h-4 w-4 accent-[#1F5E3B]"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-sm font-medium">{ROLE_LABELS[role.value]}</span>
+                        <span className="block text-xs text-slate-500">{role.description}</span>
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+              {editingSelf && <p className="mt-1.5 text-xs text-slate-500">You can’t change your own role.</p>}
+            </fieldset>
 
-            <Field
-              label={editing ? 'New password (leave blank to keep current)' : 'Password'}
-              required={!editing}
-              hint={editing ? undefined : 'Minimum 8 characters'}
-            >
-              <Input
-                type="password"
-                value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })}
-                placeholder={editing ? '••••••••' : 'Minimum 8 characters'}
-                required={!editing}
-              />
-            </Field>
-
-            <label className="flex items-center gap-2 text-xs font-medium text-[#091413]/80 cursor-pointer pt-1">
-              <input
-                type="checkbox"
-                checked={form.isActive}
-                onChange={(e) => setForm({ ...form, isActive: e.target.checked })}
-                disabled={Boolean(editing && currentUser && Number(currentUser.id) === editing.id)}
-                className="h-4 w-4 rounded border-[#091413]/20 text-[#285A48] focus:ring-[#285A48]"
-              />
-              Active account
-            </label>
-          </div>
+            <TextField
+              label={editing ? 'New password' : 'Password'}
+              optional={Boolean(editing)}
+              type={showPassword ? 'text' : 'password'}
+              autoComplete="new-password"
+              value={password}
+              onChange={(value) => setForm({ ...form, password: value })}
+              onBlur={() => setTouched((t) => ({ ...t, password: true }))}
+              error={fieldError('password')}
+              hint={editing ? 'Leave blank to keep their current password.' : `At least ${MIN_PASSWORD} characters.`}
+              trailing={
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((visible) => !visible)}
+                  className="h-10 rounded-xl px-3 text-sm font-medium text-[#1F5E3B] hover:bg-[#E6F1EA]"
+                >
+                  {showPassword ? 'Hide' : 'Show'}
+                </button>
+              }
+            />
+          </form>
         </Modal>
+      )}
+
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard changes?"
+          message="The information you entered will not be saved."
+          confirmLabel="Discard"
+          danger
+          onCancel={() => setConfirmDiscard(false)}
+          onConfirm={closeForm}
+        />
       )}
 
       {deactivate && (
         <ConfirmDialog
-          title="Deactivate user account"
-          message={`Deactivate ${deactivate.fullName}? They will no longer be able to sign in.`}
+          title={`Deactivate ${deactivate.fullName}?`}
+          message="They won’t be able to sign in. Their sales history is kept, and you can reactivate the account anytime."
           confirmLabel="Deactivate"
           danger
           busy={busy}
@@ -379,37 +404,7 @@ function DesktopUsersPage() {
           onConfirm={() => void confirmDeactivate()}
         />
       )}
-    </div>
-  )
-}
-
-function MetricCard({
-  label,
-  value,
-  indicator,
-  isSelected = false,
-  onClick,
-}: {
-  label: string
-  value: string | number
-  indicator?: 'pine'
-  isSelected?: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`group relative rounded-xl border p-3.5 sm:p-4 text-left transition-all active:scale-[0.99] ${
-        isSelected ? 'border-[#285A48] bg-white ring-1 ring-[#285A48] shadow-xs' : 'border-[#091413]/10 bg-white hover:border-[#285A48]/50'
-      }`}
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-[#091413]/50">{label}</span>
-        {indicator === 'pine' && <span className="h-1.5 w-1.5 rounded-full bg-[#285A48]" />}
-      </div>
-      <p className="mt-2 text-xl font-semibold tracking-tight text-[#091413] sm:text-2xl">{value}</p>
-    </button>
+    </DesktopPage>
   )
 }
 

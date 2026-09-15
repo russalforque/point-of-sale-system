@@ -1,106 +1,114 @@
 import { useMemo, useState } from 'react'
 
 import { categoryApi, type CategoryPayload } from '../../api/categoryApi'
-import { Tags } from '../../components/ui/Icons'
-import { Button } from '../../components/ui/Button'
-import { Field, Input, Textarea } from '../../components/ui/Field'
-import { ConfirmDialog, Modal } from '../../components/ui/Modal'
-import { MobileEmpty, MobileError, MobileLoading, StickyToolbar } from '../../components/ui/MobileStates'
+import {
+  AddButton,
+  EmptyBlock,
+  ErrorBlock,
+  InactivePill,
+  LoadingBlock,
+  PageHeader,
+  PrimaryButton,
+  RowButton,
+  SearchField,
+  Segmented,
+  Sheet,
+  SheetBody,
+  SheetFooter,
+  SheetHeader,
+  SwitchRow,
+  TextAreaField,
+  TextButton,
+  TextField,
+  useEscapeKey,
+} from '../../components/ui/MobileKit'
+import { ConfirmDialog } from '../../components/ui/Modal'
 import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
 import type { Category } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
 
-const emptyForm: CategoryPayload = {
-  name: '',
-  description: '',
-  isActive: true,
-}
-
 type StatusFilter = 'all' | 'active' | 'inactive'
+
+const emptyForm: CategoryPayload = { name: '', description: '', isActive: true }
 
 export function MobileCategories() {
   const { notify } = useToast()
 
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [status, setStatus] = useState<StatusFilter>('all')
 
-  const [editing, setEditing] = useState<Category | null>(null)
   const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<Category | null>(null)
   const [form, setForm] = useState<CategoryPayload>(emptyForm)
+  const [initialForm, setInitialForm] = useState<CategoryPayload>(emptyForm)
+  const [nameTouched, setNameTouched] = useState(false)
   const [busy, setBusy] = useState(false)
   const [remove, setRemove] = useState<Category | null>(null)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
 
   const { data, loading, error, reload } = useAsync(() => categoryApi.list(), [])
+  const categories = data ?? []
 
-  const totalCategories = data?.length ?? 0
-  const activeCount = data?.filter((c) => c.isActive).length ?? 0
-  const inactiveCount = totalCategories - activeCount
-
-  const hasActiveFilters = search.trim() !== '' || statusFilter !== 'all'
+  const counts = useMemo(() => {
+    const active = categories.filter((c) => c.isActive).length
+    return { all: categories.length, active, inactive: categories.length - active }
+  }, [categories])
 
   const filtered = useMemo(() => {
-    if (!data) return []
-    let result = [...data]
-
-    if (search.trim()) {
-      const keyword = search.trim().toLowerCase()
-      result = result.filter(
-        (c) => c.name.toLowerCase().includes(keyword) || (c.description ?? '').toLowerCase().includes(keyword),
+    const keyword = search.trim().toLowerCase()
+    return categories
+      .filter((c) => (status === 'all' ? true : status === 'active' ? c.isActive : !c.isActive))
+      .filter(
+        (c) =>
+          !keyword || c.name.toLowerCase().includes(keyword) || (c.description ?? '').toLowerCase().includes(keyword),
       )
-    }
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [categories, search, status])
 
-    if (statusFilter === 'active') result = result.filter((c) => c.isActive)
-    else if (statusFilter === 'inactive') result = result.filter((c) => !c.isActive)
+  const trimmedName = form.name.trim()
+  const nameTaken = categories.some(
+    (c) => c.id !== editing?.id && c.name.trim().toLowerCase() === trimmedName.toLowerCase(),
+  )
+  const nameError = !trimmedName ? 'Enter a category name.' : nameTaken ? 'A category with this name already exists.' : undefined
+  const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm)
+  const hasFilters = search.trim() !== '' || status !== 'all'
 
-    return result.sort((a, b) => a.name.localeCompare(b.name))
-  }, [data, search, statusFilter])
-
-  function resetFilters() {
-    setSearch('')
-    setStatusFilter('all')
-  }
-
-  function updateForm<K extends keyof CategoryPayload>(field: K, value: CategoryPayload[K]) {
-    setForm((current) => ({ ...current, [field]: value }))
-  }
-
-  function openCreate() {
-    setEditing(null)
-    setForm({ ...emptyForm })
-    setOpen(true)
-  }
-
-  function openEdit(category: Category) {
+  function openForm(category: Category | null) {
+    const next = category
+      ? { name: category.name, description: category.description ?? '', isActive: category.isActive }
+      : { ...emptyForm }
     setEditing(category)
-    setForm({ name: category.name, description: category.description ?? '', isActive: category.isActive })
+    setForm(next)
+    setInitialForm(next)
+    setNameTouched(false)
     setOpen(true)
   }
 
-  function closeModal() {
-    if (busy) return
+  function closeForm() {
     setOpen(false)
+    setConfirmDiscard(false)
   }
+
+  function requestClose() {
+    if (busy) return
+    if (isDirty) setConfirmDiscard(true)
+    else closeForm()
+  }
+
+  useEscapeKey(requestClose, open && !remove && !confirmDiscard)
 
   async function save() {
-    const name = form.name.trim()
-    if (!name) {
-      notify('Category name is required.', 'error')
-      return
-    }
+    setNameTouched(true)
+    if (nameError || busy) return
 
     setBusy(true)
     try {
-      const payload: CategoryPayload = { ...form, name, description: form.description?.trim() ?? '' }
-      if (editing) {
-        await categoryApi.update(editing.id, payload)
-        notify('Category updated.')
-      } else {
-        await categoryApi.create(payload)
-        notify('Category added.')
-      }
-      setOpen(false)
-      setForm({ ...emptyForm })
+      const payload: CategoryPayload = { ...form, name: trimmedName, description: form.description?.trim() ?? '' }
+      if (editing) await categoryApi.update(editing.id, payload)
+      else await categoryApi.create(payload)
+      notify(editing ? 'Changes saved.' : `“${trimmedName}” added.`)
+      closeForm()
       await reload()
     } catch (err) {
       notify(getErrorMessage(err), 'error')
@@ -111,16 +119,12 @@ export function MobileCategories() {
 
   async function confirmDelete() {
     if (!remove) return
-    if (remove.productCount > 0) {
-      notify('Cannot delete a category that is currently used by products.', 'error')
-      setRemove(null)
-      return
-    }
     setBusy(true)
     try {
       await categoryApi.remove(remove.id)
-      notify('Category deleted.')
+      notify(`“${remove.name}” deleted.`)
       setRemove(null)
+      closeForm()
       await reload()
     } catch (err) {
       notify(getErrorMessage(err), 'error')
@@ -130,233 +134,169 @@ export function MobileCategories() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F6F8F7] pb-28 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-[#091413] antialiased">
-      <main className="mx-auto w-full max-w-2xl px-4 sm:px-6">
-        <header className="flex items-center justify-between gap-3 pb-3">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-black tracking-tight text-[#091413]">Categories</h1>
-            <p className="mt-0.5 text-xs text-slate-500">Organize your product groups</p>
-          </div>
-          <button
-            type="button"
-            onClick={openCreate}
-            className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-2xl bg-[#285A48] px-4 text-sm font-bold text-white shadow-md shadow-[#285A48]/20 active:scale-95 touch-manipulation"
-          >
-            <PlusIcon size={18} />
-            <span>Add</span>
-          </button>
-        </header>
+    <div className="flex min-h-full flex-col bg-white text-[#091413] antialiased">
+      <PageHeader
+        title="Categories"
+        subtitle={data ? `${counts.active} active · group products at the register` : 'Group products at the register'}
+        action={<AddButton onClick={() => openForm(null)} />}
+      >
+        <SearchField value={search} onChange={setSearch} placeholder="Search categories" label="Search categories" />
+        <Segmented
+          label="Category status"
+          value={status}
+          onChange={setStatus}
+          options={[
+            { key: 'all', label: 'All', count: data ? counts.all : undefined },
+            { key: 'active', label: 'Active', count: data ? counts.active : undefined },
+            { key: 'inactive', label: 'Inactive', count: data ? counts.inactive : undefined },
+          ]}
+        />
+      </PageHeader>
 
-        <section className="grid grid-cols-3 gap-2">
-          <MetricTile label="Total" value={totalCategories} active={statusFilter === 'all'} onClick={() => setStatusFilter('all')} />
-          <MetricTile label="Active" value={activeCount} tone="emerald" active={statusFilter === 'active'} onClick={() => setStatusFilter('active')} />
-          <MetricTile label="Inactive" value={inactiveCount} active={statusFilter === 'inactive'} onClick={() => setStatusFilter('inactive')} />
-        </section>
+      <main className="flex-1 px-5 pb-6">
+        {loading && !data && <LoadingBlock />}
+        {!loading && error && <ErrorBlock message={error} onRetry={() => void reload()} />}
 
-        <StickyToolbar>
-          <div className="relative mt-2">
-            <SearchIcon size={17} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search categories..."
-              className="h-12 w-full rounded-2xl border border-[#E5EBE7] bg-white pl-10 pr-9 text-sm font-medium text-[#091413] placeholder-slate-400 shadow-2xs outline-none transition focus:border-[#285A48] focus:ring-2 focus:ring-[#285A48]/15"
-            />
-          </div>
-          {hasActiveFilters && (
-            <button type="button" onClick={resetFilters} className="mt-2 text-xs font-bold text-[#285A48]">
-              Reset filters
-            </button>
-          )}
-        </StickyToolbar>
+        {!error && data && filtered.length === 0 && (
+          <EmptyBlock
+            title={hasFilters ? 'No categories found' : 'No categories yet'}
+            hint={
+              search.trim()
+                ? `Nothing matches “${search.trim()}”.`
+                : hasFilters
+                ? 'No categories have this status.'
+                : 'Categories help cashiers find products faster.'
+            }
+            actionLabel={hasFilters ? 'Clear filters' : 'Add first category'}
+            secondary={hasFilters}
+            onAction={
+              hasFilters
+                ? () => {
+                    setSearch('')
+                    setStatus('all')
+                  }
+                : () => openForm(null)
+            }
+          />
+        )}
 
-        <section className="mt-2">
-          {loading && <MobileLoading label="Loading categories…" />}
-
-          {error && <MobileError message={error} onRetry={() => void reload()} />}
-
-          {!loading && !error && filtered.length === 0 && (
-            <MobileEmpty
-              icon={<Tags size={22} />}
-              title={search ? 'No matching categories' : 'No categories found'}
-              hint={search ? 'Try a different search term.' : 'Create your first product category.'}
-              action={
-                !search ? (
-                  <Button onClick={openCreate} className="min-h-12 w-full text-sm">
-                    Add Category
-                  </Button>
-                ) : undefined
-              }
-            />
-          )}
-
-          {!loading && !error && filtered.length > 0 && (
-            <div className="space-y-3">
-              {filtered.map((category) => (
-                <article key={category.id} className="rounded-3xl border border-[#E5EBE7] bg-white p-4 shadow-xs">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-bold text-[#091413]">{category.name}</p>
-                      <p className="mt-0.5 line-clamp-2 text-xs text-slate-500">
-                        {category.description || 'No description provided'}
-                      </p>
-                    </div>
-                    <span
-                      className={`shrink-0 inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-bold ${
-                        category.isActive ? 'bg-[#EAF1EE] text-[#285A48]' : 'bg-slate-100 text-slate-500'
-                      }`}
-                    >
-                      {category.isActive ? 'Active' : 'Inactive'}
+        {filtered.length > 0 && (
+          <ul>
+            {filtered.map((category) => (
+              <li key={category.id} className="border-b border-slate-100 last:border-b-0">
+                <RowButton onClick={() => openForm(category)}>
+                  <div className="min-w-0 flex-1">
+                    <p className={`truncate text-[15px] ${category.isActive ? '' : 'text-slate-400'}`}>{category.name}</p>
+                    <p className={`mt-0.5 truncate text-xs ${category.description ? 'text-slate-400' : 'text-slate-300'}`}>
+                      {category.description || 'No description'}
+                    </p>
+                  </div>
+                  {category.isActive ? (
+                    <span className="shrink-0 text-sm tabular-nums text-slate-500">
+                      {category.productCount} {category.productCount === 1 ? 'product' : 'products'}
                     </span>
-                  </div>
-
-                  <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-2.5 text-xs">
-                    <span className="text-slate-500">Products linked</span>
-                    <span className="font-mono font-bold text-[#091413]">{category.productCount}</span>
-                  </div>
-
-                  <div className="mt-3 flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => openEdit(category)}
-                      className="flex h-11 flex-1 items-center justify-center rounded-xl border border-[#E5EBE7] bg-white text-xs font-bold text-[#091413] active:scale-95 touch-manipulation"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setRemove(category)}
-                      className="flex h-11 flex-1 items-center justify-center rounded-xl border border-rose-200 bg-rose-50 text-xs font-bold text-rose-600 active:scale-95 touch-manipulation"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
+                  ) : (
+                    <InactivePill />
+                  )}
+                </RowButton>
+              </li>
+            ))}
+          </ul>
+        )}
       </main>
 
       {open && (
-        <Modal
-          title={editing ? 'Edit category' : 'Add category'}
-          onClose={closeModal}
-          preventClose={busy}
-          footer={
-            <div className="flex flex-col-reverse gap-2 w-full">
-              <Button variant="secondary" onClick={closeModal} disabled={busy} className="min-h-12 text-sm">
-                Cancel
-              </Button>
-              <Button onClick={() => void save()} disabled={busy || !form.name.trim()} className="min-h-12 text-sm">
-                {busy ? 'Saving…' : editing ? 'Save changes' : 'Create category'}
-              </Button>
-            </div>
-          }
-        >
-          <div className="space-y-4 text-sm">
-            <Field label="Category name" required>
-              <Input
+        <Sheet label={editing ? 'Edit category' : 'Add category'} onClose={requestClose}>
+          <form
+            noValidate
+            className="flex min-h-0 flex-1 flex-col"
+            onSubmit={(e) => {
+              e.preventDefault()
+              void save()
+            }}
+          >
+            <SheetHeader
+              title={editing ? 'Edit category' : 'Add category'}
+              subtitle={editing ? `Used by ${editing.productCount} ${editing.productCount === 1 ? 'product' : 'products'}` : undefined}
+              onClose={requestClose}
+              closeDisabled={busy}
+            />
+
+            <SheetBody>
+              <TextField
+                label="Name"
                 value={form.name}
-                onChange={(e) => updateForm('name', e.target.value)}
-                placeholder="e.g. Hot Drinks, Accessories..."
-                className="min-h-12 rounded-2xl text-sm"
-                required
-                autoFocus
+                onChange={(name) => setForm({ ...form, name })}
+                onBlur={() => setNameTouched(true)}
+                error={nameTouched ? nameError : undefined}
+                placeholder="e.g. Hot drinks"
+                autoFocus={!editing}
+                autoCapitalize="words"
+                enterKeyHint="done"
               />
-            </Field>
 
-            <Field label="Description">
-              <Textarea
-                value={form.description}
-                onChange={(e) => updateForm('description', e.target.value)}
-                placeholder="Optional description of items in this group..."
-                className="min-h-24 rounded-2xl text-sm"
+              <TextAreaField
+                label="Description"
+                optional
+                value={form.description ?? ''}
+                onChange={(description) => setForm({ ...form, description })}
+                placeholder="What goes in this category?"
               />
-            </Field>
 
-            <label className="flex min-h-12 items-center gap-3 rounded-2xl border border-[#E5EBE7] bg-white px-3.5 text-sm font-bold text-slate-700">
-              <input
-                type="checkbox"
-                checked={form.isActive}
-                onChange={(e) => updateForm('isActive', e.target.checked)}
-                className="h-5 w-5 rounded-md border-[#E5EBE7] text-[#285A48] focus:ring-[#285A48]"
-              />
-              Active category
-            </label>
-          </div>
-        </Modal>
+              {editing && (
+                <SwitchRow
+                  label="Active"
+                  description="Inactive categories are hidden at the register"
+                  checked={form.isActive}
+                  onChange={(isActive) => setForm({ ...form, isActive })}
+                />
+              )}
+
+              {editing &&
+                (editing.productCount > 0 ? (
+                  <p className="rounded-2xl bg-[#F6F8F7] px-4 py-3 text-sm text-slate-500">
+                    This category can’t be deleted while {editing.productCount}{' '}
+                    {editing.productCount === 1 ? 'product uses' : 'products use'} it. Turn off “Active” to hide it instead.
+                  </p>
+                ) : (
+                  <TextButton tone="danger" onClick={() => setRemove(editing)} disabled={busy} className="-ml-4">
+                    Delete category
+                  </TextButton>
+                ))}
+            </SheetBody>
+
+            <SheetFooter>
+              <PrimaryButton type="submit" disabled={busy || (editing !== null && !isDirty)}>
+                {busy ? 'Saving…' : editing ? (isDirty ? 'Save changes' : 'No changes') : 'Add category'}
+              </PrimaryButton>
+            </SheetFooter>
+          </form>
+        </Sheet>
+      )}
+
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard changes?"
+          message="The changes you made will not be saved."
+          confirmLabel="Discard"
+          danger
+          onCancel={() => setConfirmDiscard(false)}
+          onConfirm={closeForm}
+        />
       )}
 
       {remove && (
         <ConfirmDialog
-          title="Delete category"
-          message={
-            remove.productCount > 0
-              ? `"${remove.name}" is currently linked to ${remove.productCount} product(s) and cannot be deleted.`
-              : `Are you sure you want to delete "${remove.name}"? This action cannot be undone.`
-          }
-          confirmLabel={remove.productCount > 0 ? 'Understood' : 'Delete'}
-          danger={remove.productCount === 0}
+          title={`Delete “${remove.name}”?`}
+          message="This permanently removes the category. This can’t be undone."
+          confirmLabel="Delete"
+          danger
           busy={busy}
-          onCancel={() => {
-            if (!busy) setRemove(null)
-          }}
-          onConfirm={() => {
-            if (remove.productCount > 0) setRemove(null)
-            else void confirmDelete()
-          }}
+          onCancel={() => !busy && setRemove(null)}
+          onConfirm={() => void confirmDelete()}
         />
       )}
     </div>
-  )
-}
-
-function MetricTile({
-  label,
-  value,
-  tone,
-  active,
-  onClick,
-}: {
-  label: string
-  value: number
-  tone?: 'emerald'
-  active: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex min-h-17 flex-col items-center justify-center rounded-2xl border py-2 text-center transition-all active:scale-95 touch-manipulation ${
-        active ? 'border-[#285A48] bg-white shadow-xs ring-1 ring-[#285A48]' : 'border-[#E5EBE7] bg-white'
-      }`}
-    >
-      <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-        {tone === 'emerald' && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />}
-        {label}
-      </span>
-      <span className="mt-1 text-lg font-black tabular-nums text-[#091413]">{value}</span>
-    </button>
-  )
-}
-
-function PlusIcon({ size = 15 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="12" y1="5" x2="12" y2="19" />
-      <line x1="5" y1="12" x2="19" y2="12" />
-    </svg>
-  )
-}
-
-function SearchIcon({ size = 14, className }: { size?: number; className?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <circle cx="11" cy="11" r="8" />
-      <line x1="21" y1="21" x2="16.65" y2="16.65" />
-    </svg>
   )
 }
 

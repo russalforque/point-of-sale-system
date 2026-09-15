@@ -1,53 +1,42 @@
 import { useEffect, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
+
+import { customerApi, type CustomerPayload } from '../../api/customerApi'
+import { salesApi } from '../../api/salesApi'
+import { ChevronRight, Search, X } from '../../components/ui/Icons'
 import {
-  Search,
-  UserPlus,
-  Eye,
-  Pencil,
-  UserX,
-} from '../../components/ui/Icons'
-import {
-  useLocation,
-  useNavigate,
-} from 'react-router-dom'
-
-import {
-  customerApi,
-  type CustomerPayload,
-} from '../../api/customerApi'
-
-import { Button } from '../../components/ui/Button'
-import { PageHeader } from '../../components/ui/Page'
-
-import {
-  ConfirmDialog,
-  Modal,
-} from '../../components/ui/Modal'
-
-import {
-  Field,
-  Input,
-  Textarea,
-} from '../../components/ui/Field'
-
-import { FormSection } from '../../components/ui/FormSection'
-
+  AddButton,
+  Avatar,
+  ContactActions,
+  DetailList,
+  DetailRow,
+  EMAIL_PATTERN,
+  InactivePill,
+  PrimaryButton,
+  SwitchRow,
+  TextAreaField,
+  TextButton,
+  TextField,
+} from '../../components/ui/MobileKit'
+import { ConfirmDialog, Modal } from '../../components/ui/Modal'
 import { Pagination } from '../../components/ui/Pagination'
-
-import {
-  EmptyState,
-  ErrorState,
-  Spinner,
-} from '../../components/ui/States'
-
+import { EmptyState, ErrorState, Spinner } from '../../components/ui/States'
 import { useAuth } from '../../context/AuthContext'
+import { useSettings } from '../../context/SettingsContext'
 import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
+import { useDebounced } from '../../hooks/useDebounced'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import type { Customer } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
-import { formatDate } from '../../utils/format'
+import { formatDate, formatDateTime, formatMoney } from '../../utils/format'
 import { MobileCustomers } from '../mobile/MobileCustomers'
+
+type StatusFilter = '' | 'active' | 'inactive'
+type FormErrors = Partial<Record<'fullName' | 'email' | 'phone', string>>
+
+const PAGE_SIZE = 20
+const FORM_ID = 'customer-form'
 
 const emptyForm: CustomerPayload = {
   fullName: '',
@@ -55,6 +44,24 @@ const emptyForm: CustomerPayload = {
   email: '',
   address: '',
   isActive: true,
+}
+
+function toForm(customer: Customer): CustomerPayload {
+  return {
+    fullName: customer.fullName,
+    phone: customer.phone ?? '',
+    email: customer.email ?? '',
+    address: customer.address ?? '',
+    isActive: customer.isActive,
+  }
+}
+
+function validate(form: CustomerPayload): FormErrors {
+  const errors: FormErrors = {}
+  if (!form.fullName.trim()) errors.fullName = 'Enter the customer’s name.'
+  if (form.email?.trim() && !EMAIL_PATTERN.test(form.email.trim())) errors.email = 'Enter a valid email, like name@email.com.'
+  if (form.phone?.trim() && form.phone.replace(/\D/g, '').length < 7) errors.phone = 'Phone number looks too short.'
+  return errors
 }
 
 export function CustomersPage() {
@@ -66,63 +73,79 @@ export function CustomersPage() {
 function DesktopCustomersPage() {
   const { notify } = useToast()
   const { can } = useAuth()
+  const { settings } = useSettings()
   const canManage = can('customers.manage')
   const navigate = useNavigate()
   const location = useLocation()
 
   const [search, setSearch] = useState('')
-  const [status, setStatus] = useState<'' | 'active' | 'inactive'>('')
+  const [status, setStatus] = useState<StatusFilter>('')
   const [page, setPage] = useState(1)
 
-  const [form, setForm] = useState<CustomerPayload>(emptyForm)
-  const [editing, setEditing] = useState<Customer | null>(null)
   const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<Customer | null>(null)
   const [view, setView] = useState<Customer | null>(null)
+  const [form, setForm] = useState<CustomerPayload>(emptyForm)
+  const [initialForm, setInitialForm] = useState<CustomerPayload>(emptyForm)
+  const [touched, setTouched] = useState<Partial<Record<keyof FormErrors, boolean>>>({})
   const [deactivate, setDeactivate] = useState<Customer | null>(null)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [busy, setBusy] = useState(false)
+
+  const q = useDebounced(search).trim()
 
   const { data, loading, error, reload } = useAsync(
     () =>
       customerApi.list({
-        search: search.trim() || undefined,
+        search: q || undefined,
         isActive: status === '' ? undefined : status === 'active',
         page,
-        pageSize: 10,
+        pageSize: PAGE_SIZE,
       }),
-    [search, status, page],
+    [q, status, page],
   )
 
-  const totalCustomers = data?.totalCount ?? 0
-  const activeCustomers =
-    data?.items.filter((customer) => customer.isActive).length ?? 0
-  const inactiveCustomers =
-    data?.items.filter((customer) => !customer.isActive).length ?? 0
-  const totalLoyaltyPoints =
-    data?.items.reduce((sum, customer) => sum + customer.loyaltyPoints, 0) ?? 0
+  // Real totals across all customers (respecting search), not just the visible page.
+  const counts = useAsync(async () => {
+    const count = (isActive?: boolean) =>
+      customerApi.list({ search: q || undefined, isActive, page: 1, pageSize: 1 }).then((r) => r.totalCount)
+    const [all, active] = await Promise.all([count(), count(true)])
+    return { all, active, inactive: Math.max(0, all - active) }
+  }, [q])
 
-  const hasActiveFilters = search.trim() !== '' || status !== ''
+  const recentSales = useAsync(async () => {
+    if (!view) return null
+    const result = await salesApi.list({ search: view.fullName, page: 1, pageSize: 20 })
+    return result.items.filter((sale) => sale.customerId === view.id).slice(0, 5)
+  }, [view?.id])
 
-  function resetAllFilters() {
-    setSearch('')
-    setStatus('')
+  const items = data?.items ?? []
+  const hasFilters = q !== '' || status !== ''
+  const errors = validate(form)
+  const isValid = Object.keys(errors).length === 0
+  const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm)
+  const fieldError = (key: keyof FormErrors) => (touched[key] ? errors[key] : undefined)
+
+  useEffect(() => {
     setPage(1)
-  }
-
-  function handleStatusChange(newStatus: '' | 'active' | 'inactive') {
-    setStatus(newStatus)
-    setPage(1)
-  }
+  }, [q])
 
   /* =========================================================
-     URL-BASED MODAL ROUTING
+     URL-BASED MODALS (/customers/create, /customers/:id, /customers/edit/:id)
   ========================================================= */
 
   useEffect(() => {
     const path = location.pathname
 
     if (path === '/customers/create') {
+      if (!canManage) {
+        navigate('/customers', { replace: true })
+        return
+      }
       setEditing(null)
       setForm(emptyForm)
+      setInitialForm(emptyForm)
+      setTouched({})
       setOpen(true)
       setView(null)
       return
@@ -148,13 +171,9 @@ function DesktopCustomersPage() {
       .then((customer) => {
         if (editMatch) {
           setEditing(customer)
-          setForm({
-            fullName: customer.fullName,
-            phone: customer.phone ?? '',
-            email: customer.email ?? '',
-            address: customer.address ?? '',
-            isActive: customer.isActive,
-          })
+          setForm(toForm(customer))
+          setInitialForm(toForm(customer))
+          setTouched({})
           setOpen(true)
           setView(null)
         } else {
@@ -166,36 +185,55 @@ function DesktopCustomersPage() {
         notify(getErrorMessage(err), 'error')
         navigate('/customers')
       })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname, navigate, notify, canManage])
 
-  function closeModals() {
+  function goToList() {
     setOpen(false)
     setView(null)
-    if (location.pathname !== '/customers') {
-      navigate('/customers')
-    }
+    setConfirmDiscard(false)
+    if (location.pathname !== '/customers') navigate('/customers')
   }
 
-  function openCreate() {
-    navigate('/customers/create')
+  function requestCloseForm() {
+    if (busy) return
+    if (isDirty) setConfirmDiscard(true)
+    else goToList()
   }
 
-  function openEdit(customer: Customer) {
-    navigate(`/customers/edit/${customer.id}`)
+  function selectStatus(next: StatusFilter) {
+    setStatus(next)
+    setPage(1)
   }
+
+  function clearFilters() {
+    setSearch('')
+    selectStatus('')
+  }
+
+  /* =========================================================
+     ACTIONS
+  ========================================================= */
 
   async function save() {
+    setTouched({ fullName: true, email: true, phone: true })
+    if (!isValid || busy) return
+
     setBusy(true)
     try {
-      if (editing) {
-        await customerApi.update(editing.id, form)
-      } else {
-        await customerApi.create(form)
+      const payload: CustomerPayload = {
+        ...form,
+        fullName: form.fullName.trim(),
+        phone: form.phone?.trim(),
+        email: form.email?.trim(),
+        address: form.address?.trim(),
       }
-
-      notify(editing ? 'Customer profile updated.' : 'Customer added to directory.')
-      closeModals()
-      await reload()
+      const saved = editing ? await customerApi.update(editing.id, payload) : await customerApi.create(payload)
+      notify(editing ? 'Changes saved.' : `${saved.fullName} added.`)
+      setInitialForm(form)
+      await Promise.all([reload(), counts.reload()])
+      // Show the result right away.
+      navigate(`/customers/${saved.id}`, { replace: true })
     } catch (err) {
       notify(getErrorMessage(err), 'error')
     } finally {
@@ -208,9 +246,10 @@ function DesktopCustomersPage() {
     setBusy(true)
     try {
       await customerApi.deactivate(deactivate.id)
-      notify('Customer account deactivated.')
+      notify(`${deactivate.fullName} deactivated.`)
+      if (view?.id === deactivate.id) setView({ ...view, isActive: false })
       setDeactivate(null)
-      await reload()
+      await Promise.all([reload(), counts.reload()])
     } catch (err) {
       notify(getErrorMessage(err), 'error')
     } finally {
@@ -218,361 +257,213 @@ function DesktopCustomersPage() {
     }
   }
 
+  async function reactivate(customer: Customer) {
+    setBusy(true)
+    try {
+      const updated = await customerApi.update(customer.id, { ...toForm(customer), isActive: true })
+      notify(`${customer.fullName} is active again.`)
+      if (view?.id === customer.id) setView(updated)
+      await Promise.all([reload(), counts.reload()])
+    } catch (err) {
+      notify(getErrorMessage(err), 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /* =========================================================
+     RENDER
+  ========================================================= */
+
+  const filterOptions: { key: StatusFilter; label: string; count?: number }[] = [
+    { key: '', label: 'All', count: counts.data?.all },
+    { key: 'active', label: 'Active', count: counts.data?.active },
+    { key: 'inactive', label: 'Inactive', count: counts.data?.inactive },
+  ]
+
   return (
-    <div className="min-h-screen bg-[#F6F8F7] text-[#091413] pb-24 antialiased selection:bg-[#285A48] selection:text-white">
-      <div className="mx-auto max-w-7xl px-3.5 pt-4 sm:px-6 sm:pt-6 md:px-8">
-        
-        {/* =========================================================
-            PAGE HEADER & PRIMARY ACTION
-        ========================================================= */}
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between pb-2">
-          <PageHeader
-            title="Customers"
-            subtitle="Customer directory, loyalty points, and accounts"
-          />
-          <button
-            type="button"
-            onClick={openCreate}
-            className="inline-flex min-h-[44px] items-center justify-center gap-2 self-start rounded-2xl bg-[#285A48] px-4 py-2.5 text-xs font-bold text-white shadow-md shadow-[#285A48]/20 transition-all hover:bg-[#1f4739] active:scale-95 touch-manipulation sm:self-auto"
-          >
-            <UserPlus size={16} />
-            <span>Add Customer</span>
-          </button>
-        </div>
-
-        {/* =========================================================
-            INTERACTIVE KPI CARDS (Click to Quick-Filter)
-        ========================================================= */}
-        <div className="mt-2 grid grid-cols-2 gap-2.5 sm:gap-3 md:grid-cols-4">
-          <MetricCard
-            label="Total Accounts"
-            value={totalCustomers}
-            isSelected={status === ''}
-            onClick={() => handleStatusChange('')}
-          />
-          <MetricCard
-            label="Active Accounts"
-            value={activeCustomers}
-            indicator="emerald"
-            isSelected={status === 'active'}
-            onClick={() => handleStatusChange('active')}
-          />
-          <MetricCard
-            label="Inactive"
-            value={inactiveCustomers}
-            indicator="neutral"
-            isSelected={status === 'inactive'}
-            onClick={() => handleStatusChange('inactive')}
-          />
-          <MetricCard
-            label="Total Loyalty Points"
-            value={totalLoyaltyPoints.toLocaleString()}
-            isClickable={false}
-            icon="star"
-          />
-        </div>
-
-        {/* =========================================================
-            SEARCH & STATUS FILTER TOOLBAR
-        ========================================================= */}
-        <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          {/* Segmented Filter Pills */}
-          <div className="flex items-center gap-1 rounded-2xl border border-[#E5EBE7] bg-white p-1 self-start sm:self-auto shadow-2xs">
-            <button
-              type="button"
-              onClick={() => handleStatusChange('')}
-              className={`rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                status === ''
-                  ? 'bg-[#285A48] text-white shadow-xs'
-                  : 'text-slate-500 hover:text-[#091413]'
-              }`}
-            >
-              All
-            </button>
-            <button
-              type="button"
-              onClick={() => handleStatusChange('active')}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                status === 'active'
-                  ? 'bg-[#285A48] text-white shadow-xs'
-                  : 'text-slate-500 hover:text-[#091413]'
-              }`}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${status === 'active' ? 'bg-emerald-300' : 'bg-emerald-500'}`} />
-              Active
-            </button>
-            <button
-              type="button"
-              onClick={() => handleStatusChange('inactive')}
-              className={`rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                status === 'inactive'
-                  ? 'bg-[#285A48] text-white shadow-xs'
-                  : 'text-slate-500 hover:text-[#091413]'
-              }`}
-            >
-              Inactive
-            </button>
+    <div className="min-h-full bg-[#F6F8F7] text-[#091413] antialiased">
+      <div className="mx-auto max-w-6xl px-6 pb-10 pt-6">
+        {/* HEADER */}
+        <header className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold tracking-tight">Customers</h1>
+            <p className="mt-0.5 text-sm text-slate-500">
+              {counts.data
+                ? `${counts.data.all} ${counts.data.all === 1 ? 'customer' : 'customers'} · ${counts.data.active} active`
+                : 'Contacts and loyalty points'}
+            </p>
           </div>
+          {canManage && <AddButton label="Add customer" onClick={() => navigate('/customers/create')} />}
+        </header>
 
-          {/* Search Bar & Reset Trigger */}
-          <div className="flex items-center gap-2 flex-1 sm:max-w-md sm:justify-end">
-            <div className="relative w-full">
-              <Search
-                size={16}
-                className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
-              />
-              <input
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value)
-                  setPage(1)
-                }}
-                placeholder="Search by name, phone, code..."
-                className="h-11 w-full rounded-2xl border border-[#E5EBE7] bg-white pl-10 pr-9 text-xs font-semibold text-[#091413] placeholder-slate-400 outline-none transition focus:border-[#285A48] focus:ring-2 focus:ring-[#285A48]/15"
-              />
-              {search && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSearch('')
-                    setPage(1)
-                  }}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-1 text-slate-400 hover:text-slate-700"
-                  title="Clear search"
-                >
-                  <ClearIcon size={14} />
-                </button>
-              )}
-            </div>
-
-            {hasActiveFilters && (
+        {/* TOOLBAR */}
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+          <div className="relative w-full max-w-md">
+            <Search size={16} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="search"
+              aria-label="Search customers"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search name, phone, email or code"
+              className="h-11 w-full rounded-2xl border-0 bg-white pl-11 pr-11 text-sm ring-1 ring-slate-200 placeholder:text-slate-400 outline-none transition focus:ring-2 focus:ring-[#1F5E3B] [&::-webkit-search-cancel-button]:hidden"
+            />
+            {search && (
               <button
                 type="button"
-                onClick={resetAllFilters}
-                className="flex h-11 shrink-0 items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white px-3.5 text-xs font-bold text-slate-600 shadow-2xs hover:bg-[#F0F5F2] hover:text-[#091413] active:scale-95 touch-manipulation"
+                onClick={() => setSearch('')}
+                aria-label="Clear search"
+                className="absolute right-1 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100"
               >
-                Reset
+                <X size={13} />
               </button>
             )}
           </div>
+
+          <div role="tablist" aria-label="Customer status" className="flex rounded-full bg-white p-1 ring-1 ring-slate-200">
+            {filterOptions.map((option) => {
+              const active = status === option.key
+              return (
+                <button
+                  key={option.key || 'all'}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => selectStatus(option.key)}
+                  className={`inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] ${
+                    active ? 'bg-[#1F5E3B] text-white' : 'text-slate-600 hover:text-[#091413]'
+                  }`}
+                >
+                  {option.label}
+                  {option.count !== undefined && (
+                    <span className={`tabular-nums ${active ? 'text-white/70' : 'text-slate-400'}`}>{option.count}</span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
         </div>
 
-        {/* =========================================================
-            DIRECTORY CONTENT CONTAINER
-        ========================================================= */}
-        <div className="mt-4 overflow-hidden rounded-3xl border border-[#E5EBE7] bg-white shadow-sm">
-          {loading && (
-            <div className="py-20 flex flex-col items-center justify-center text-center">
+        {/* DIRECTORY */}
+        <div className="mt-4 overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100">
+          {loading && !data && (
+            <div className="py-20">
               <Spinner />
-              <p className="mt-3 text-xs font-semibold text-slate-400">
-                Fetching customer directory...
-              </p>
             </div>
           )}
 
-          {error && (
+          {!loading && error && (
             <div className="p-6">
               <ErrorState message={error} onRetry={() => void reload()} />
             </div>
           )}
 
-          {!loading && !error && data && data.items.length === 0 && (
-            <div className="p-10 text-center">
+          {!loading && !error && items.length === 0 && (
+            <div className="px-6 py-16 text-center">
               <EmptyState
-                title="No customers found"
+                title={hasFilters ? 'No customers found' : 'No customers yet'}
                 hint={
-                  hasActiveFilters
-                    ? 'Try clearing your active status filter or search keyword.'
-                    : 'Get started by adding your first registered customer.'
+                  q
+                    ? `Nothing matches “${q}”.`
+                    : hasFilters
+                    ? 'No customers have this status.'
+                    : 'Save customers to track their purchases and loyalty points.'
                 }
               />
-              {hasActiveFilters && (
+              {hasFilters ? (
                 <button
                   type="button"
-                  onClick={resetAllFilters}
-                  className="mt-3 inline-flex items-center gap-1.5 text-xs font-bold text-[#285A48] underline hover:text-[#1a3b2f]"
+                  onClick={clearFilters}
+                  className="mt-4 h-10 rounded-full bg-[#F3F5F4] px-5 text-sm font-medium hover:bg-[#E9EEEB]"
                 >
-                  Reset directory filters
+                  Clear filters
                 </button>
+              ) : (
+                canManage && (
+                  <button
+                    type="button"
+                    onClick={() => navigate('/customers/create')}
+                    className="mt-4 h-11 rounded-full bg-[#1F5E3B] px-6 text-sm font-medium text-white"
+                  >
+                    Add first customer
+                  </button>
+                )
               )}
             </div>
           )}
 
-          {!loading && !error && data && data.items.length > 0 && (
+          {!error && items.length > 0 && (
             <>
-              {/* ---------------------------------------------------
-                  MOBILE DIRECTORY VIEW (Cards instead of clipped table)
-              ---------------------------------------------------- */}
-              <div className="divide-y divide-slate-100 md:hidden">
-                {data.items.map((customer) => (
-                  <div key={customer.id} className="p-4 hover:bg-[#FBFDFB] transition-colors">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-[#EAF1EE] text-xs font-extrabold text-[#285A48]">
-                          {getInitials(customer.fullName)}
-                        </div>
-                        <div className="min-w-0">
-                          <button
-                            type="button"
-                            onClick={() => navigate(`/customers/${customer.id}`)}
-                            className="text-left font-bold text-sm text-[#091413] truncate hover:text-[#285A48] block"
-                          >
-                            {customer.fullName}
-                          </button>
-                          <p className="text-[11px] font-semibold text-slate-400">
-                            {customer.customerCode}
-                          </p>
-                        </div>
-                      </div>
-
-                      <span
-                        className={`inline-flex shrink-0 items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          customer.isActive
-                            ? 'bg-[#EAF1EE] text-[#285A48]'
-                            : 'bg-slate-100 text-slate-500'
-                        }`}
-                      >
-                        {customer.isActive ? 'Active' : 'Inactive'}
-                      </span>
-                    </div>
-
-                    <div className="mt-3 flex items-center justify-between text-xs text-slate-500 border-t border-slate-100/80 pt-2.5">
-                      <div className="flex flex-col text-[11px]">
-                        <span>{customer.phone || 'No phone'}</span>
-                        <span className="text-slate-400 truncate max-w-[170px]">{customer.email || 'No email'}</span>
-                      </div>
-
-                      <div className="flex items-center gap-1">
-                        <span className="rounded-xl bg-[#F6F8F7] px-2 py-1 text-[11px] font-bold text-[#285A48] border border-[#E5EBE7]">
-                          ★ {customer.loyaltyPoints.toLocaleString()} pts
-                        </span>
-
-                        <div className="flex items-center ml-1">
-                          <IconAction
-                            title="View customer"
-                            onClick={() => navigate(`/customers/${customer.id}`)}
-                          >
-                            <Eye size={15} />
-                          </IconAction>
-                          {canManage && (
-                            <IconAction
-                              title="Edit customer"
-                              onClick={() => openEdit(customer)}
-                            >
-                              <Pencil size={15} />
-                            </IconAction>
-                          )}
-                          {canManage && customer.isActive && (
-                            <IconAction
-                              title="Deactivate customer"
-                              danger
-                              onClick={() => setDeactivate(customer)}
-                            >
-                              <UserX size={15} />
-                            </IconAction>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* ---------------------------------------------------
-                  DESKTOP DIRECTORY TABLE VIEW
-              ---------------------------------------------------- */}
-              <div className="hidden md:block w-full overflow-x-auto">
-                <table className="w-full text-left text-xs text-slate-600">
-                  <thead className="border-b border-[#E5EBE7] bg-[#FBFDFB] text-[11px] font-bold uppercase tracking-wider text-slate-400">
+              <div className="overflow-x-auto">
+                <table className={`w-full text-left text-sm transition-opacity ${loading ? 'opacity-60' : ''}`}>
+                  <thead className="border-b border-slate-100 text-xs text-slate-500">
                     <tr>
-                      <th className="py-3.5 pl-6 pr-3">Customer</th>
-                      <th className="py-3.5 px-3">Contact</th>
-                      <th className="py-3.5 px-3 text-right">Loyalty Points</th>
-                      <th className="py-3.5 px-3 text-center">Status</th>
-                      <th className="py-3.5 pl-3 pr-6 text-right">Actions</th>
+                      <th scope="col" className="py-3 pl-6 pr-3 font-medium">Customer</th>
+                      <th scope="col" className="px-3 py-3 font-medium">Contact</th>
+                      <th scope="col" className="px-3 py-3 text-right font-medium">Points</th>
+                      <th scope="col" className="px-3 py-3 font-medium">Status</th>
+                      <th scope="col" className="py-3 pl-3 pr-6"><span className="sr-only">Actions</span></th>
                     </tr>
                   </thead>
-
                   <tbody className="divide-y divide-slate-100">
-                    {data.items.map((customer) => (
+                    {items.map((customer) => (
                       <tr
                         key={customer.id}
-                        className="transition-colors hover:bg-[#F9FAF9]"
+                        onClick={() => navigate(`/customers/${customer.id}`)}
+                        className="group cursor-pointer transition-colors hover:bg-slate-50"
                       >
-                        <td className="py-3.5 pl-6 pr-3">
+                        <td className="py-3 pl-6 pr-3">
                           <div className="flex items-center gap-3">
-                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-[#EAF1EE] text-xs font-black text-[#285A48]">
-                              {getInitials(customer.fullName)}
-                            </div>
-                            <div className="flex flex-col min-w-0">
+                            <Avatar name={customer.fullName} inactive={!customer.isActive} />
+                            <div className="min-w-0">
+                              {/* The name is the keyboard-accessible way to open the profile. */}
                               <button
                                 type="button"
-                                onClick={() => navigate(`/customers/${customer.id}`)}
-                                className="text-left font-bold text-slate-900 hover:text-[#285A48] transition-colors"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  navigate(`/customers/${customer.id}`)
+                                }}
+                                className={`block max-w-64 truncate text-left font-medium focus-visible:underline focus-visible:outline-none ${
+                                  customer.isActive ? '' : 'text-slate-400'
+                                }`}
                               >
                                 {customer.fullName}
                               </button>
-                              <span className="text-[11px] font-semibold text-slate-400">
-                                {customer.customerCode}
-                              </span>
+                              <span className="text-xs text-slate-400">{customer.customerCode}</span>
                             </div>
                           </div>
                         </td>
-
-                        <td className="py-3.5 px-3">
-                          <div className="flex flex-col text-slate-700">
-                            <span className="font-semibold text-xs text-slate-900">{customer.phone ?? '—'}</span>
-                            <span className="text-[11px] text-slate-400 truncate max-w-[220px]">
-                              {customer.email ?? '—'}
-                            </span>
-                          </div>
-                        </td>
-
-                        <td className="py-3.5 px-3 text-right">
-                          <span className="inline-flex items-center rounded-xl bg-[#EAF1EE] px-2.5 py-1 text-xs font-black text-[#285A48]">
-                            ★ {customer.loyaltyPoints.toLocaleString()}
+                        <td className="px-3 py-3">
+                          <span className={`block ${customer.phone ? '' : 'text-slate-300'}`}>{customer.phone || 'No phone'}</span>
+                          <span className={`block max-w-60 truncate text-xs ${customer.email ? 'text-slate-500' : 'text-slate-300'}`}>
+                            {customer.email || 'No email'}
                           </span>
                         </td>
-
-                        <td className="py-3.5 px-3 text-center">
-                          <span
-                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
-                              customer.isActive
-                                ? 'bg-[#EAF1EE] text-[#285A48] border border-[#285A48]/10'
-                                : 'bg-slate-100 text-slate-500'
-                            }`}
-                          >
-                            {customer.isActive ? 'Active' : 'Inactive'}
-                          </span>
+                        <td className="px-3 py-3 text-right tabular-nums">{customer.loyaltyPoints.toLocaleString()}</td>
+                        <td className="px-3 py-3">
+                          {customer.isActive ? (
+                            <span className="text-sm text-[#1F5E3B]">Active</span>
+                          ) : (
+                            <InactivePill />
+                          )}
                         </td>
-
-                        <td className="py-3.5 pl-3 pr-6 text-right">
+                        <td className="py-3 pl-3 pr-6">
                           <div className="flex items-center justify-end gap-1">
-                            <IconAction
-                              title="View details"
-                              onClick={() => navigate(`/customers/${customer.id}`)}
-                            >
-                              <Eye size={15} />
-                            </IconAction>
-
                             {canManage && (
-                              <IconAction
-                                title="Edit profile"
-                                onClick={() => openEdit(customer)}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  navigate(`/customers/edit/${customer.id}`)
+                                }}
+                                aria-label={`Edit ${customer.fullName}`}
+                                className="h-9 rounded-full px-3 text-sm font-medium text-[#1F5E3B] opacity-0 transition hover:bg-[#F2F8F4] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] group-hover:opacity-100"
                               >
-                                <Pencil size={15} />
-                              </IconAction>
+                                Edit
+                              </button>
                             )}
-
-                            {canManage && customer.isActive && (
-                              <IconAction
-                                title="Deactivate account"
-                                danger
-                                onClick={() => setDeactivate(customer)}
-                              >
-                                <UserX size={15} />
-                              </IconAction>
-                            )}
+                            <ChevronRight size={12} className="text-slate-300" />
                           </div>
                         </td>
                       </tr>
@@ -581,159 +472,202 @@ function DesktopCustomersPage() {
                 </table>
               </div>
 
-              {/* Pagination Bar */}
-              <div className="border-t border-[#E5EBE7] bg-[#FBFDFB] px-4 py-3 sm:px-6">
-                <Pagination
-                  page={data.page}
-                  totalPages={data.totalPages}
-                  onPage={setPage}
-                />
-              </div>
+              {(data?.totalPages ?? 1) > 1 && (
+                <div className="border-t border-slate-100 px-6 py-3">
+                  <Pagination page={data?.page ?? 1} totalPages={data?.totalPages ?? 1} onPage={setPage} />
+                </div>
+              )}
             </>
           )}
         </div>
       </div>
 
-      {/* =========================================================
-          CREATE / EDIT MODAL
-      ========================================================= */}
+      {/* PROFILE */}
+      {view && (
+        <Modal
+          title={view.fullName}
+          description={`${view.customerCode} · Customer since ${formatDate(view.createdAt)}`}
+          size="lg"
+          onClose={goToList}
+          footer={
+            canManage ? (
+              <div className="flex w-full items-center gap-2">
+                {view.isActive ? (
+                  <TextButton tone="danger" onClick={() => setDeactivate(view)} disabled={busy} className="h-12">
+                    Deactivate
+                  </TextButton>
+                ) : (
+                  <TextButton tone="accent" onClick={() => void reactivate(view)} disabled={busy} className="h-12">
+                    {busy ? 'Activating…' : 'Reactivate'}
+                  </TextButton>
+                )}
+                <div className="flex-1" />
+                <PrimaryButton onClick={() => navigate(`/customers/edit/${view.id}`)} className="h-12 flex-none px-8">
+                  Edit details
+                </PrimaryButton>
+              </div>
+            ) : undefined
+          }
+        >
+          <div className="space-y-5">
+            {!view.isActive && (
+              <p className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-600">
+                Inactive — this customer can’t be selected at checkout.
+              </p>
+            )}
+
+            <div className="grid gap-4 sm:grid-cols-[1fr_auto]">
+              <ContactActions phone={view.phone} email={view.email} />
+              <div className="rounded-2xl bg-[#F2F8F4] px-5 py-3 sm:min-w-40">
+                <p className="text-sm text-[#1F5E3B]">Loyalty points</p>
+                <p className="text-2xl font-bold tabular-nums">{view.loyaltyPoints.toLocaleString()}</p>
+              </div>
+            </div>
+
+            <DetailList>
+              <DetailRow label="Phone" value={view.phone} />
+              <DetailRow label="Email" value={view.email} />
+              <DetailRow label="Address" value={view.address} />
+            </DetailList>
+
+            <section>
+              <h3 className="text-sm font-medium">Recent purchases</h3>
+              {recentSales.loading ? (
+                <div className="py-6">
+                  <Spinner />
+                </div>
+              ) : recentSales.data && recentSales.data.length > 0 ? (
+                <ul className="mt-1">
+                  {recentSales.data.map((sale) => (
+                    <li
+                      key={sale.id}
+                      className="flex items-baseline justify-between gap-3 border-b border-slate-100 py-2.5 text-sm last:border-b-0"
+                    >
+                      <span className="min-w-0 truncate text-slate-500">
+                        {sale.invoiceNumber} · {formatDateTime(sale.createdAt)}
+                      </span>
+                      <span className="shrink-0 tabular-nums">{formatMoney(sale.total, settings.currencySymbol)}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-1 py-2 text-sm text-slate-400">No purchases yet.</p>
+              )}
+            </section>
+          </div>
+        </Modal>
+      )}
+
+      {/* ADD / EDIT */}
       {open && (
         <Modal
-          title={editing ? 'Edit Customer Profile' : 'Add New Customer'}
-          description={
-            editing
-              ? 'Update contact details and account status.'
-              : 'Register a new customer to the directory.'
-          }
-          onClose={closeModals}
+          title={editing ? 'Edit customer' : 'Add customer'}
+          description={editing ? editing.customerCode : undefined}
+          size="lg"
+          onClose={requestCloseForm}
           preventClose={busy}
           footer={
-            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end w-full">
-              <Button variant="secondary" onClick={closeModals}>
+            <div className="flex w-full items-center justify-end gap-2">
+              <TextButton onClick={requestCloseForm} disabled={busy} className="h-12">
                 Cancel
-              </Button>
-              <Button
-                onClick={() => void save()}
-                disabled={busy || !form.fullName.trim()}
+              </TextButton>
+              <PrimaryButton
+                type="submit"
+                form={FORM_ID}
+                disabled={busy || (editing !== null && !isDirty)}
+                className="h-12 flex-none px-8"
               >
-                {busy
-                  ? 'Saving...'
-                  : editing
-                    ? 'Save Changes'
-                    : 'Create Customer'}
-              </Button>
+                {busy ? 'Saving…' : editing ? (isDirty ? 'Save changes' : 'No changes') : 'Add customer'}
+              </PrimaryButton>
             </div>
           }
         >
-          <div className="space-y-5 text-xs">
-            <Field label="Full Name" required>
-              <Input
-                value={form.fullName}
-                placeholder="e.g., Jane Doe"
-                onChange={(e) =>
-                  setForm({ ...form, fullName: e.target.value })
-                }
-                required
+          <form
+            id={FORM_ID}
+            noValidate
+            onSubmit={(e) => {
+              e.preventDefault()
+              void save()
+            }}
+            className="space-y-4"
+          >
+            <TextField
+              label="Full name"
+              value={form.fullName}
+              onChange={(fullName) => setForm({ ...form, fullName })}
+              onBlur={() => setTouched((t) => ({ ...t, fullName: true }))}
+              error={fieldError('fullName')}
+              placeholder="e.g. Juan Dela Cruz"
+              autoFocus
+              autoComplete="off"
+              autoCapitalize="words"
+            />
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <TextField
+                label="Mobile number"
+                optional
+                type="tel"
+                inputMode="tel"
+                autoComplete="off"
+                value={form.phone ?? ''}
+                onChange={(phone) => setForm({ ...form, phone })}
+                onBlur={() => setTouched((t) => ({ ...t, phone: true }))}
+                error={fieldError('phone')}
+                placeholder="e.g. 0912 345 6789"
               />
-            </Field>
+              <TextField
+                label="Email"
+                optional
+                type="email"
+                inputMode="email"
+                autoComplete="off"
+                autoCapitalize="none"
+                value={form.email ?? ''}
+                onChange={(email) => setForm({ ...form, email })}
+                onBlur={() => setTouched((t) => ({ ...t, email: true }))}
+                error={fieldError('email')}
+                placeholder="e.g. juan@email.com"
+              />
+            </div>
 
-            <FormSection title="Contact Information">
-              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
-                <Field label="Mobile Phone">
-                  <Input
-                    value={form.phone}
-                    placeholder="e.g., +63 912 345 6789"
-                    onChange={(e) =>
-                      setForm({ ...form, phone: e.target.value })
-                    }
-                  />
-                </Field>
+            <TextAreaField
+              label="Address"
+              optional
+              value={form.address ?? ''}
+              onChange={(address) => setForm({ ...form, address })}
+              placeholder="Street, city, landmark"
+            />
 
-                <Field label="Email Address">
-                  <Input
-                    type="email"
-                    placeholder="e.g., customer@email.com"
-                    value={form.email}
-                    onChange={(e) =>
-                      setForm({ ...form, email: e.target.value })
-                    }
-                  />
-                </Field>
-              </div>
-
-              <Field label="Physical Address / Delivery Notes">
-                <Textarea
-                  value={form.address}
-                  placeholder="Street, City, Landmark"
-                  onChange={(e) =>
-                    setForm({ ...form, address: e.target.value })
-                  }
-                />
-              </Field>
-            </FormSection>
-
-            <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer pt-1">
-              <input
-                type="checkbox"
+            {/* New customers are always active; status only matters when editing. */}
+            {editing && (
+              <SwitchRow
+                label="Active"
+                description="Can be selected at checkout"
                 checked={form.isActive}
-                onChange={(e) =>
-                  setForm({ ...form, isActive: e.target.checked })
-                }
-                className="h-4 w-4 rounded-md border-[#E5EBE7] text-[#285A48] focus:ring-[#285A48]"
+                onChange={(isActive) => setForm({ ...form, isActive })}
               />
-              Account Active & Eligible for POS checkout
-            </label>
-          </div>
+            )}
+          </form>
         </Modal>
       )}
 
-      {/* =========================================================
-          VIEW CUSTOMER DETAIL MODAL
-      ========================================================= */}
-      {view && (
-        <Modal title="Customer Profile" onClose={closeModals}>
-          <div className="text-xs space-y-4">
-            {/* Top Identity Hero */}
-            <div className="flex items-center gap-3.5 rounded-2xl bg-[#F6F8F7] p-3.5 border border-[#E5EBE7]">
-              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#EAF1EE] text-sm font-black text-[#285A48]">
-                {getInitials(view.fullName)}
-              </div>
-              <div className="min-w-0 flex-1">
-                <h3 className="font-extrabold text-sm text-[#091413] truncate">{view.fullName}</h3>
-                <p className="text-[11px] font-semibold text-slate-400">{view.customerCode}</p>
-              </div>
-              <span
-                className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold ${
-                  view.isActive ? 'bg-[#EAF1EE] text-[#285A48]' : 'bg-slate-200 text-slate-600'
-                }`}
-              >
-                {view.isActive ? 'Active' : 'Inactive'}
-              </span>
-            </div>
-
-            {/* Information Ledger */}
-            <div className="divide-y divide-slate-100 rounded-2xl border border-[#E5EBE7] bg-white px-4">
-              <DetailRow label="Phone Number" value={view.phone || '—'} />
-              <DetailRow label="Email Address" value={view.email || '—'} />
-              <DetailRow
-                label="Loyalty Balance"
-                value={<span className="font-black text-[#285A48]">★ {view.loyaltyPoints.toLocaleString()} Points</span>}
-              />
-              <DetailRow label="Member Since" value={formatDate(view.createdAt)} />
-              <DetailRow label="Address" value={view.address || '—'} />
-            </div>
-          </div>
-        </Modal>
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard changes?"
+          message="The information you entered will not be saved."
+          confirmLabel="Discard"
+          danger
+          onCancel={() => setConfirmDiscard(false)}
+          onConfirm={goToList}
+        />
       )}
 
-      {/* =========================================================
-          CONFIRM DEACTIVATE DIALOG
-      ========================================================= */}
       {deactivate && (
         <ConfirmDialog
-          title="Deactivate Customer Account"
-          message={`Deactivate ${deactivate.fullName}? They will no longer be available for selection in the register checkout.`}
-          confirmLabel="Deactivate Account"
+          title={`Deactivate ${deactivate.fullName}?`}
+          message="They won’t appear at checkout. Their history and points are kept, and you can reactivate them anytime."
+          confirmLabel="Deactivate"
           danger
           busy={busy}
           onCancel={() => setDeactivate(null)}
@@ -741,132 +675,6 @@ function DesktopCustomersPage() {
         />
       )}
     </div>
-  )
-}
-
-/* =============================================================
-   HELPER COMPONENTS & FUNCTIONS
-============================================================= */
-
-function getInitials(name: string): string {
-  if (!name) return '?'
-  const parts = name.trim().split(' ').filter(Boolean)
-  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase()
-  return `${parts[0]![0]}${parts[parts.length - 1]![0]}`.toUpperCase()
-}
-
-function MetricCard({
-  label,
-  value,
-  indicator,
-  isSelected = false,
-  isClickable = true,
-  icon,
-  onClick,
-}: {
-  label: string
-  value: string | number
-  indicator?: 'emerald' | 'neutral'
-  isSelected?: boolean
-  isClickable?: boolean
-  icon?: 'star'
-  onClick?: () => void
-}) {
-  return (
-    <div
-      onClick={isClickable ? onClick : undefined}
-      role={isClickable ? 'button' : undefined}
-      tabIndex={isClickable ? 0 : undefined}
-      onKeyDown={(e) => {
-        if (isClickable && (e.key === 'Enter' || e.key === ' ')) {
-          e.preventDefault()
-          onClick?.()
-        }
-      }}
-      className={`group relative rounded-3xl border p-4 text-left transition-all active:scale-[0.98] ${
-        isClickable ? 'cursor-pointer touch-manipulation' : ''
-      } ${
-        isSelected
-          ? 'border-[#285A48] bg-white ring-2 ring-[#285A48]/20 shadow-sm'
-          : 'border-[#E5EBE7] bg-white hover:border-slate-300'
-      }`}
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-          {label}
-        </span>
-        {indicator === 'emerald' && (
-          <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-        )}
-        {icon === 'star' && (
-          <span className="text-xs text-[#285A48] font-bold">★</span>
-        )}
-      </div>
-      <p className="mt-2 text-xl font-black tracking-tight text-[#091413] sm:text-2xl">
-        {value}
-      </p>
-    </div>
-  )
-}
-
-function IconAction({
-  children,
-  title,
-  danger = false,
-  onClick,
-}: {
-  children: React.ReactNode
-  title: string
-  danger?: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      aria-label={title}
-      onClick={onClick}
-      className={`flex h-8 w-8 items-center justify-center rounded-xl transition-all active:scale-95 touch-manipulation ${
-        danger
-          ? 'text-slate-400 hover:bg-rose-50 hover:text-rose-600'
-          : 'text-slate-400 hover:bg-[#EAF1EE] hover:text-[#285A48]'
-      }`}
-    >
-      {children}
-    </button>
-  )
-}
-
-function DetailRow({
-  label,
-  value,
-}: {
-  label: string
-  value: React.ReactNode
-}) {
-  return (
-    <div className="flex justify-between py-2.5">
-      <span className="text-slate-400 font-medium">{label}</span>
-      <span className="text-slate-900 font-bold text-right">{value}</span>
-    </div>
-  )
-}
-
-function ClearIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
-    </svg>
   )
 }
 

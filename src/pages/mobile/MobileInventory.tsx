@@ -1,44 +1,64 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 
 import { inventoryApi } from '../../api/inventoryApi'
 
 import {
-  Badge,
-  stockTone,
-} from '../../components/ui/Badge'
-
-import { Button } from '../../components/ui/Button'
-import { Modal } from '../../components/ui/Modal'
+  ChevronLeft,
+  ChevronRight,
+  History,
+  Minus,
+  Plus,
+  Search,
+  X,
+} from '../../components/ui/Icons'
 import { Pagination } from '../../components/ui/Pagination'
-
-import {
-  EmptyState,
-  ErrorState,
-  Spinner,
-} from '../../components/ui/States'
+import { EmptyState, ErrorState, Spinner } from '../../components/ui/States'
 
 import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
-import type { InventoryItem } from '../../types'
+import { useDebounced } from '../../hooks/useDebounced'
+import type { InventoryHistory, InventoryItem } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
 import { formatDateTime } from '../../utils/format'
 
 type StockFilter = '' | 'In Stock' | 'Low Stock' | 'Out of Stock'
 
-interface HistoryRow {
-  id: string | number
-  createdAt: string | Date
-  productName: string
-  type: string
-  quantityChange: number
-  quantityAfter: number
-  reason?: string | null
+/** Matches the adjustment `type` values understood by inventoryApi.adjust. */
+type AdjustType = 1 | 2 | 3
+
+const ADJUST_TYPES: { value: AdjustType; label: string }[] = [
+  { value: 1, label: 'Add' },
+  { value: 2, label: 'Remove' },
+  { value: 3, label: 'Set count' },
+]
+
+const QUICK_AMOUNTS = [1, 5, 10, 25, 50]
+
+const REASONS: Record<AdjustType, string[]> = {
+  1: ['Delivery', 'Customer return'],
+  2: ['Damaged', 'Expired', 'Lost'],
+  3: ['Stock count'],
 }
+
+const PAGE_SIZE = 20
 
 const safeFormatDateTime = (date: string | Date | null | undefined): string => {
   if (!date) return ''
   const val = date instanceof Date ? date.toISOString() : String(date)
   return formatDateTime(val)
+}
+
+function statusStyle(status: string) {
+  if (status === 'Out of Stock') return { text: 'text-rose-600', bar: 'bg-rose-500', label: 'Out of stock' }
+  if (status === 'Low Stock') return { text: 'text-amber-700', bar: 'bg-amber-400', label: 'Low stock' }
+  return { text: 'text-[#091413]', bar: 'bg-[#1F5E3B]', label: 'In stock' }
+}
+
+function projectStock(current: number, type: AdjustType, quantity: number) {
+  if (type === 1) return current + quantity
+  if (type === 2) return Math.max(0, current - quantity)
+  return quantity
 }
 
 export function MobileInventory() {
@@ -48,48 +68,77 @@ export function MobileInventory() {
   const [stock, setStock] = useState<StockFilter>('')
   const [page, setPage] = useState(1)
   const [historyPage, setHistoryPage] = useState(1)
+  const [showHistory, setShowHistory] = useState(false)
 
   const [adjust, setAdjust] = useState<InventoryItem | null>(null)
-  const [type, setType] = useState<number>(1) // 1: Increase (+), 2: Decrease (-), 3: Count Correction (=)
-  const [quantity, setQuantity] = useState(5)
+  const [type, setType] = useState<AdjustType>(1)
+  const [quantity, setQuantity] = useState(1)
   const [reason, setReason] = useState('')
-
   const [busy, setBusy] = useState(false)
-  const [showHistory, setShowHistory] = useState(false)
+
+  const q = useDebounced(search).trim()
 
   const list = useAsync(
     () =>
       inventoryApi.list({
-        search: search.trim() || undefined,
+        search: q || undefined,
         stockStatus: stock || undefined,
         page,
-        pageSize: 10,
+        pageSize: PAGE_SIZE,
       }),
-    [search, stock, page],
+    [q, stock, page],
   )
+
+  // Accurate totals across the whole catalog (respecting search), not just the visible page.
+  const counts = useAsync(async () => {
+    const count = (stockStatus?: string) =>
+      inventoryApi
+        .list({ search: q || undefined, stockStatus, page: 1, pageSize: 1 })
+        .then((result) => result.totalCount)
+
+    const [all, low, out] = await Promise.all([count(), count('Low Stock'), count('Out of Stock')])
+    return { all, low, out, inStock: Math.max(0, all - low - out) }
+  }, [q])
 
   const history = useAsync(
     () =>
       showHistory
-        ? inventoryApi.history({
-            page: historyPage,
-            pageSize: 10,
-          })
+        ? inventoryApi.history({ page: historyPage, pageSize: PAGE_SIZE })
         : Promise.resolve(null),
     [historyPage, showHistory],
   )
 
+  const productHistory = useAsync(
+    () =>
+      adjust
+        ? inventoryApi.history({ productId: adjust.productId, page: 1, pageSize: 3 })
+        : Promise.resolve(null),
+    [adjust?.productId],
+  )
+
   const items: InventoryItem[] = list.data?.items ?? []
-  const totalCount = list.data?.totalCount ?? items.length
-  const inStockCount = items.filter((item) => item.stockStatus === 'In Stock').length
-  const lowStockCount = items.filter((item) => item.stockStatus === 'Low Stock').length
-  const outOfStockCount = items.filter((item) => item.stockStatus === 'Out of Stock').length
+  const historyItems: InventoryHistory[] = history.data?.items ?? []
+  const isFirstLoad = list.loading && !list.data
+  const hasActiveFilters = q !== '' || stock !== ''
 
-  const historyItems: HistoryRow[] = (history.data?.items as HistoryRow[]) ?? []
-  const hasActiveFilters = search.trim() !== '' || stock !== ''
+  // Reset to page 1 whenever the (debounced) search changes.
+  useEffect(() => {
+    setPage(1)
+  }, [q])
 
-  function handleFilterStatus(status: StockFilter) {
-    setStock((prev) => (prev === status ? '' : status))
+  // Escape closes the top-most layer (never mid-save).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || busy) return
+      if (adjust) setAdjust(null)
+      else if (showHistory) setShowHistory(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [adjust, showHistory, busy])
+
+  function selectFilter(status: StockFilter) {
+    setStock(status)
     setPage(1)
   }
 
@@ -99,8 +148,37 @@ export function MobileInventory() {
     setPage(1)
   }
 
+  function openAdjust(item: InventoryItem) {
+    setAdjust(item)
+    setType(1)
+    setQuantity(1)
+    setReason('')
+  }
+
+  function changeType(next: AdjustType) {
+    setType(next)
+    setReason('')
+    // "Set count" starts from the current count so the cashier only corrects the difference.
+    if (next === 3 && adjust) setQuantity(adjust.stockQuantity)
+    else if (type === 3) setQuantity(1)
+  }
+
+  const minQuantity = type === 3 ? 0 : 1
+  const projectedStock = adjust ? projectStock(adjust.stockQuantity, type, quantity) : 0
+  const isNoChange = adjust ? projectedStock === adjust.stockQuantity : true
+  const removesMoreThanStock = adjust !== null && type === 2 && quantity > adjust.stockQuantity
+  const willBeLow = adjust !== null && projectedStock > 0 && projectedStock <= adjust.reorderLevel
+
+  const saveLabel = busy
+    ? 'Saving…'
+    : type === 1
+    ? `Add ${quantity} ${quantity === 1 ? 'unit' : 'units'}`
+    : type === 2
+    ? `Remove ${Math.min(quantity, adjust?.stockQuantity ?? quantity)} ${quantity === 1 ? 'unit' : 'units'}`
+    : `Set count to ${quantity}`
+
   async function submitAdjust() {
-    if (!adjust) return
+    if (!adjust || busy || isNoChange || quantity < minQuantity) return
 
     setBusy(true)
 
@@ -112,15 +190,14 @@ export function MobileInventory() {
         reason: reason.trim(),
       })
 
-      notify('Stock count updated successfully.')
+      notify(`${adjust.productName}: ${adjust.stockQuantity} → ${projectedStock}`)
       setAdjust(null)
-      setReason('')
-      setQuantity(5)
 
-      await list.reload()
-      if (showHistory) {
-        await history.reload()
-      }
+      await Promise.all([
+        list.reload(),
+        counts.reload(),
+        showHistory ? history.reload() : Promise.resolve(),
+      ])
     } catch (err) {
       notify(getErrorMessage(err), 'error')
     } finally {
@@ -128,984 +205,531 @@ export function MobileInventory() {
     }
   }
 
-  // Live preview calculations for Adjustment Sheet
-  const projectedStock = adjust
-    ? type === 1
-      ? adjust.stockQuantity + quantity
-      : type === 2
-      ? Math.max(0, adjust.stockQuantity - quantity)
-      : quantity
-    : 0
+  const filters: { key: StockFilter; label: string; count?: number; tone: string }[] = [
+    { key: '', label: 'All', count: counts.data?.all, tone: 'text-slate-400' },
+    { key: 'Low Stock', label: 'Low', count: counts.data?.low, tone: 'text-amber-600' },
+    { key: 'Out of Stock', label: 'Out', count: counts.data?.out, tone: 'text-rose-600' },
+    { key: 'In Stock', label: 'In stock', count: counts.data?.inStock, tone: 'text-slate-400' },
+  ]
 
   return (
-    <div className="min-h-screen bg-[#F6F8F7] text-[#091413] pb-32 pt-[max(1rem,env(safe-area-inset-top,0px))] font-sans antialiased selection:bg-[#285A48] selection:text-white">
-      <main className="mx-auto w-full max-w-md px-4 sm:px-6">
-
-        {/* =========================================================
-            HEADER BAR
-        ========================================================= */}
-        <header className="flex items-start justify-between gap-3 pb-2 pt-1">
-          <div>
-            <h1 className="text-2xl font-black tracking-tight text-[#091413]">
-              Inventory
-            </h1>
-            <p className="mt-0.5 text-xs text-slate-500">
-              Track stock levels and product availability
+    <div className="flex min-h-full flex-col bg-white text-[#091413] antialiased">
+      {/* HEADER */}
+      <header className="sticky top-0 z-30 bg-white/95 px-5 pb-3 pt-4 backdrop-blur-md">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold tracking-tight">Inventory</h1>
+            <p className="mt-0.5 text-sm text-slate-500">
+              {counts.data
+                ? counts.data.low + counts.data.out > 0
+                  ? `${counts.data.low + counts.data.out} products need restocking`
+                  : 'All products are well stocked'
+                : 'Tap a product to update its stock.'}
             </p>
           </div>
 
           <button
             type="button"
-            onClick={() => setShowHistory(true)}
-            aria-label="View Movement History Logs"
-            className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-[#E5EBE7] bg-white px-3.5 text-xs font-semibold text-[#091413] shadow-xs transition hover:bg-[#EAF1EE] hover:text-[#285A48] active:scale-95 touch-manipulation"
+            onClick={() => {
+              setHistoryPage(1)
+              setShowHistory(true)
+            }}
+            className="inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-[#F3F5F4] px-4 text-sm font-medium transition hover:bg-[#E9EEEB] active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
           >
-            <HistoryIcon size={14} />
-            <span>History</span>
+            <History size={15} className="text-[#1F5E3B]" />
+            History
           </button>
-        </header>
+        </div>
 
-        {/* =========================================================
-            KPI METRIC SUMMARY CARDS (MATCHING DESIGN LAYOUT)
-        ========================================================= */}
-        <section aria-label="Stock Metrics" className="mt-3">
-          <div className="grid grid-cols-4 gap-2">
-            {/* TOTAL */}
+        {/* Search */}
+        <div className="relative mt-4">
+          <Search
+            size={16}
+            className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
+          />
+          <input
+            type="search"
+            inputMode="search"
+            enterKeyHint="search"
+            aria-label="Search products or SKU"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search products or SKU"
+            className="h-12 w-full rounded-2xl border-0 bg-[#F3F5F4] pl-11 pr-12 text-[15px] placeholder:text-slate-400 outline-none transition focus:bg-white focus:ring-2 focus:ring-[#1F5E3B] [&::-webkit-search-cancel-button]:hidden"
+          />
+          {search && (
             <button
               type="button"
-              onClick={() => handleFilterStatus('')}
-              className={`flex flex-col items-center justify-center rounded-2xl border py-2.5 px-1 text-center transition-all active:scale-95 touch-manipulation ${
-                stock === ''
-                  ? 'border-[#285A48] bg-white shadow-xs ring-1 ring-[#285A48]'
-                  : 'border-[#E5EBE7] bg-white hover:bg-slate-50'
-              }`}
+              onClick={() => setSearch('')}
+              aria-label="Clear search"
+              className="absolute right-1 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 active:bg-slate-200"
             >
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                Total
-              </span>
-              <span className="mt-1 text-xl font-black tabular-nums text-[#091413]">
-                {totalCount}
-              </span>
+              <X size={14} />
             </button>
+          )}
+        </div>
 
-            {/* IN STOCK */}
-            <button
-              type="button"
-              onClick={() => handleFilterStatus('In Stock')}
-              className={`flex flex-col items-center justify-center rounded-2xl border py-2.5 px-1 text-center transition-all active:scale-95 touch-manipulation ${
-                stock === 'In Stock'
-                  ? 'border-[#285A48] bg-[#EAF1EE]/40 shadow-xs ring-1 ring-[#285A48]'
-                  : 'border-[#E5EBE7] bg-white hover:bg-emerald-50/40'
-              }`}
-            >
-              <span className="text-[10px] font-bold uppercase tracking-wider text-[#285A48]">
-                In Stock
-              </span>
-              <span className="mt-1 text-xl font-black tabular-nums text-[#285A48]">
-                {inStockCount}
-              </span>
-            </button>
-
-            {/* LOW */}
-            <button
-              type="button"
-              onClick={() => handleFilterStatus('Low Stock')}
-              className={`flex flex-col items-center justify-center rounded-2xl border py-2.5 px-1 text-center transition-all active:scale-95 touch-manipulation ${
-                stock === 'Low Stock'
-                  ? 'border-amber-500 bg-amber-50/50 shadow-xs ring-1 ring-amber-500'
-                  : 'border-[#E5EBE7] bg-white hover:bg-amber-50/30'
-              }`}
-            >
-              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-600">
-                Low
-              </span>
-              <span className="mt-1 text-xl font-black tabular-nums text-amber-600">
-                {lowStockCount}
-              </span>
-            </button>
-
-            {/* OUT */}
-            <button
-              type="button"
-              onClick={() => handleFilterStatus('Out of Stock')}
-              className={`flex flex-col items-center justify-center rounded-2xl border py-2.5 px-1 text-center transition-all active:scale-95 touch-manipulation ${
-                stock === 'Out of Stock'
-                  ? 'border-rose-500 bg-rose-50/50 shadow-xs ring-1 ring-rose-500'
-                  : 'border-[#E5EBE7] bg-white hover:bg-rose-50/30'
-              }`}
-            >
-              <span className="text-[10px] font-bold uppercase tracking-wider text-rose-600">
-                Out
-              </span>
-              <span className="mt-1 text-xl font-black tabular-nums text-rose-600">
-                {outOfStockCount}
-              </span>
-            </button>
-          </div>
-        </section>
-
-        {/* =========================================================
-            SEARCH FIELD
-        ========================================================= */}
-        <section aria-label="Search" className="mt-3.5">
-          <div className="relative">
-            <SearchIcon
-              size={17}
-              className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
-            />
-            <input
-              type="search"
-              aria-label="Search products or SKU"
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value)
-                setPage(1)
-              }}
-              placeholder="Search products or SKU"
-              className="h-11 w-full rounded-2xl border border-[#E5EBE7] bg-white pl-10 pr-9 text-xs font-semibold text-[#091413] placeholder-slate-400 shadow-2xs outline-none transition focus:border-[#285A48] focus:ring-2 focus:ring-[#285A48]/15"
-            />
-            {search && (
+        {/* Status filter — one control, real counts */}
+        <div
+          role="tablist"
+          aria-label="Stock status"
+          className="-mx-5 mt-3 flex gap-2 overflow-x-auto px-5 pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {filters.map((filter) => {
+            const isActive = stock === filter.key
+            return (
               <button
+                key={filter.key || 'all'}
                 type="button"
-                onClick={() => {
-                  setSearch('')
-                  setPage(1)
-                }}
-                aria-label="Clear search input"
-                className="absolute right-2.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                role="tab"
+                aria-selected={isActive}
+                onClick={() => selectFilter(filter.key)}
+                className={`inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full px-4 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] focus-visible:ring-offset-2 ${
+                  isActive ? 'bg-[#1F5E3B] text-white' : 'bg-[#F3F5F4] text-slate-600 active:bg-[#E9EEEB]'
+                }`}
               >
-                <ClearIcon size={13} />
-              </button>
-            )}
-          </div>
-        </section>
-
-        {/* =========================================================
-            FILTER CHIPS RAIL / ACTIVE BADGES
-        ========================================================= */}
-        <section aria-label="Stock Filter Pills" className="mt-3">
-          {/* Default filter pill row when not actively searching */}
-          {!search.trim() ? (
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
-              {(
-                [
-                  { key: '', label: 'All' },
-                  { key: 'In Stock', label: 'In Stock' },
-                  { key: 'Low Stock', label: 'Low Stock' },
-                  { key: 'Out of Stock', label: 'Out of Stock' },
-                ] as const
-              ).map((tab) => {
-                const isActive = stock === tab.key
-                return (
-                  <button
-                    key={tab.key}
-                    type="button"
-                    onClick={() => handleFilterStatus(tab.key)}
-                    className={`inline-flex h-8 shrink-0 items-center justify-center rounded-full px-4 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                      isActive
-                        ? 'bg-[#091413] text-white shadow-xs'
-                        : 'border border-[#E5EBE7] bg-white text-slate-600 hover:border-slate-300'
+                {filter.label}
+                {filter.count !== undefined && (
+                  <span
+                    className={`tabular-nums ${
+                      isActive ? 'text-white/70' : filter.count > 0 ? filter.tone : 'text-slate-400'
                     }`}
                   >
-                    {tab.label}
-                  </button>
-                )
-              })}
-            </div>
-          ) : (
-            /* Active search and filter chips indicator strip */
-            <div className="flex items-center justify-between gap-2 pt-0.5">
-              <div className="flex flex-wrap items-center gap-1.5">
-                {stock && (
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-[#285A48] px-3 py-1 text-[11px] font-bold text-white shadow-2xs">
-                    <span>{stock}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleFilterStatus('')}
-                      aria-label={`Clear ${stock} filter`}
-                      className="hover:opacity-80"
-                    >
-                      ×
-                    </button>
+                    {filter.count}
                   </span>
                 )}
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-200/80 px-3 py-1 text-[11px] font-bold text-[#091413]">
-                  <span>&ldquo;{search.trim()}&rdquo;</span>
-                  <button
-                    type="button"
-                    onClick={() => setSearch('')}
-                    aria-label="Clear search"
-                    className="hover:opacity-80"
-                  >
-                    ×
-                  </button>
-                </span>
-              </div>
+              </button>
+            )
+          })}
+        </div>
+      </header>
 
+      {/* LIST */}
+      <main className="flex-1 px-5 pb-6">
+        {isFirstLoad && (
+          <div className="flex h-56 items-center justify-center">
+            <Spinner />
+          </div>
+        )}
+
+        {!list.loading && list.error && (
+          <div className="py-8">
+            <ErrorState message={list.error} onRetry={() => void list.reload()} />
+          </div>
+        )}
+
+        {!list.loading && !list.error && items.length === 0 && (
+          <div className="py-16 text-center">
+            <EmptyState
+              title="No products found"
+              hint={q ? `Nothing matches “${q}”.` : 'No products have this stock status.'}
+            />
+            {hasActiveFilters && (
               <button
                 type="button"
                 onClick={resetFilters}
-                className="shrink-0 text-xs font-bold text-[#285A48] hover:underline"
+                className="mt-4 h-11 rounded-full bg-[#F3F5F4] px-5 text-sm font-medium active:bg-[#E9EEEB]"
               >
-                Clear all
+                Clear filters
               </button>
-            </div>
-          )}
-        </section>
+            )}
+          </div>
+        )}
 
-        {/* =========================================================
-            INVENTORY CARDS LIST / LOADING / ERROR / EMPTY STATES
-        ========================================================= */}
-        <section aria-label="Product Inventory List" className="mt-4">
-          {/* Loading State (from screenshot) */}
-          {list.loading && (
-            <div className="flex flex-col items-center justify-center rounded-3xl border border-[#E5EBE7] bg-white py-20 text-center shadow-xs">
-              <Spinner />
-              <h3 className="mt-4 text-sm font-bold text-[#091413]">
-                Loading inventory...
-              </h3>
-              <p className="mt-1 text-xs text-slate-400">
-                Please wait a moment
-              </p>
-            </div>
-          )}
+        {!list.error && items.length > 0 && (
+          <>
+            <ul className={`transition-opacity ${list.loading ? 'opacity-60' : ''}`}>
+              {items.map((row) => (
+                <li key={row.productId} className="border-b border-slate-100 last:border-b-0">
+                  <InventoryRow item={row} onSelect={() => openAdjust(row)} />
+                </li>
+              ))}
+            </ul>
 
-          {/* Error State (from screenshot) */}
-          {!list.loading && list.error && (
-            <div className="flex flex-col items-center justify-center rounded-3xl border border-[#E5EBE7] bg-white p-8 text-center shadow-xs">
-              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-rose-50 text-rose-500">
-                <ExclamationIcon size={26} />
-              </div>
-              <h3 className="mt-4 text-sm font-bold text-[#091413]">
-                Unable to load inventory
-              </h3>
-              <p className="mt-1.5 max-w-xs text-xs text-slate-500">
-                {list.error || 'Something went wrong. Please check your connection and try again.'}
-              </p>
-              <button
-                type="button"
-                onClick={() => void list.reload()}
-                className="mt-5 inline-flex h-11 w-full items-center justify-center rounded-2xl bg-rose-600 px-4 text-xs font-bold text-white shadow-xs transition hover:bg-rose-700 active:scale-98"
-              >
-                Try Again
-              </button>
-            </div>
-          )}
-
-          {/* Empty State (from screenshot) */}
-          {!list.loading && !list.error && items.length === 0 && (
-            <div className="flex flex-col items-center justify-center rounded-3xl border border-[#E5EBE7] bg-white p-8 text-center shadow-xs">
-              <div className="flex h-24 w-24 items-center justify-center">
-                <EmptyBoxIllustration />
-              </div>
-              <h3 className="mt-2 text-base font-extrabold text-[#091413]">
-                No products found
-              </h3>
-              <p className="mt-1 max-w-xs text-xs text-slate-400 leading-relaxed">
-                Try adjusting your search or filters to find what you&apos;re looking for.
-              </p>
-              {hasActiveFilters && (
-                <button
-                  type="button"
-                  onClick={resetFilters}
-                  className="mt-5 inline-flex h-11 w-full items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white px-5 text-xs font-bold text-[#091413] shadow-xs transition hover:bg-[#F6F8F7] active:scale-98"
-                >
-                  Clear filters
-                </button>
-              )}
-            </div>
-          )}
-
-          {/* List Cards */}
-          {!list.loading && !list.error && items.length > 0 && (
-            <div className="space-y-3">
-              {items.map((row) => {
-                const isDepleted = row.stockQuantity <= 0
-                const isLow = row.stockStatus === 'Low Stock'
-
-                const percentage =
-                  row.reorderLevel > 0
-                    ? Math.min(100, Math.round((row.stockQuantity / row.reorderLevel) * 100))
-                    : isDepleted
-                    ? 0
-                    : 100
-
-                return (
-                  <article
-                    key={row.productId}
-                    className="rounded-3xl border border-[#E5EBE7] bg-white p-4 shadow-xs transition hover:border-slate-300"
-                  >
-                    {/* Top Row: Thumbnail + Info + Status Badge */}
-                    <div className="flex items-start gap-3">
-                      {/* Product Thumbnail / Icon */}
-                      <div className="flex h-13 w-13 shrink-0 items-center justify-center rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] overflow-hidden text-[#285A48]">
-                        {(row as unknown as { imageUrl?: string; image?: string }).imageUrl ||
-                        (row as unknown as { imageUrl?: string; image?: string }).image ? (
-                          <img
-                            src={
-                              (row as unknown as { imageUrl?: string; image?: string }).imageUrl ||
-                              (row as unknown as { imageUrl?: string; image?: string }).image
-                            }
-                            alt={row.productName}
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <PackageIllustration isDepleted={isDepleted} />
-                        )}
-                      </div>
-
-                      {/* Title & SKU */}
-                      <div className="min-w-0 flex-1">
-                        <h2 className="text-sm font-black text-[#091413] leading-snug truncate">
-                          {row.productName}
-                        </h2>
-                        <p className="mt-0.5 font-mono text-[11px] text-slate-400">
-                          SKU: {row.sku}
-                        </p>
-                      </div>
-
-                      {/* Pill Badge */}
-                      <div className="shrink-0">
-                        <CustomStockBadge status={row.stockStatus} />
-                      </div>
-                    </div>
-
-                    {/* Stock Counts Row */}
-                    <div className="mt-3 flex items-baseline justify-between">
-                      <div className="flex items-baseline gap-1.5">
-                        <span
-                          className={`text-2xl font-black tabular-nums tracking-tight ${
-                            isDepleted
-                              ? 'text-rose-600'
-                              : isLow
-                              ? 'text-[#091413]'
-                              : 'text-[#091413]'
-                          }`}
-                        >
-                          {row.stockQuantity}
-                        </span>
-                        <span className="text-xs font-semibold text-slate-400">
-                          in stock
-                        </span>
-                      </div>
-
-                      <div className="text-xs font-semibold text-slate-400">
-                        Par level: <span className="font-bold text-slate-700">{row.reorderLevel}</span>
-                      </div>
-                    </div>
-
-                    {/* Gauge Bar with percentage label */}
-                    <div className="mt-2 flex items-center gap-2.5">
-                      <div
-                        className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100"
-                        role="progressbar"
-                        aria-valuenow={row.stockQuantity}
-                        aria-valuemin={0}
-                        aria-valuemax={row.reorderLevel}
-                      >
-                        <div
-                          className={`h-full rounded-full transition-all duration-300 ${
-                            isDepleted
-                              ? 'bg-rose-500 w-0'
-                              : isLow
-                              ? 'bg-amber-500'
-                              : 'bg-[#285A48]'
-                          }`}
-                          style={{ width: `${isDepleted ? 0 : Math.max(8, percentage)}%` }}
-                        />
-                      </div>
-                      <span className="text-[10px] font-bold tabular-nums text-slate-400 shrink-0">
-                        {percentage}%
-                      </span>
-                    </div>
-
-                    {/* Card Footer: Timestamp & Adjust Button */}
-                    <div className="mt-3.5 flex items-center justify-between border-t border-slate-100 pt-3">
-                      <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
-                        <ClockIcon size={13} />
-                        <span>Updated {safeFormatDateTime(row.lastUpdated)}</span>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAdjust(row)
-                          setType(1)
-                          setQuantity(5)
-                          setReason('')
-                        }}
-                        className="inline-flex h-8 items-center justify-center rounded-full border border-[#E5EBE7] bg-white px-4 text-xs font-bold text-[#091413] shadow-2xs transition hover:border-[#285A48] hover:bg-[#EAF1EE] hover:text-[#285A48] active:scale-95 touch-manipulation"
-                      >
-                        Adjust
-                      </button>
-                    </div>
-                  </article>
-                )
-              })}
-
-              {/* Pagination */}
-              <div className="pt-2">
+            {(list.data?.totalPages ?? 1) > 1 && (
+              <div className="pt-4">
                 <Pagination
                   page={list.data?.page ?? 1}
                   totalPages={list.data?.totalPages ?? 1}
                   onPage={setPage}
                 />
               </div>
-            </div>
-          )}
-        </section>
-
+            )}
+          </>
+        )}
       </main>
 
-      {/* =========================================================
-          ADJUST STOCK MODAL / BOTTOM SHEET (MATCHING SCREENSHOT)
-      ========================================================= */}
+      {/* ADJUST SHEET */}
       {adjust && (
-        <Modal
-          title="Adjust Stock"
-          onClose={() => {
-            if (!busy) setAdjust(null)
-          }}
-          preventClose={busy}
-        >
-          <div className="space-y-4 text-xs pb-1">
-            {/* Selected Product Hero Card */}
-            <div className="flex items-center gap-3 rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] p-3">
-              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-[#E5EBE7] bg-white text-[#285A48]">
-                <PackageIllustration isDepleted={adjust.stockQuantity <= 0} />
+        <Sheet label={`Update stock for ${adjust.productName}`} onClose={() => !busy && setAdjust(null)}>
+          <div className="flex items-start justify-between gap-3 px-5 pb-2">
+            <div className="min-w-0">
+              <h2 className="truncate text-lg font-semibold">{adjust.productName}</h2>
+              <p className="text-sm text-slate-500">
+                SKU {adjust.sku} · Low at {adjust.reorderLevel}
+              </p>
+            </div>
+            <CloseButton onClick={() => setAdjust(null)} disabled={busy} label="Close" />
+          </div>
+
+          <div className="flex-1 overflow-y-auto overscroll-contain px-5">
+            {/* Live before → after preview */}
+            <div className="mt-2 flex items-center justify-center gap-5 rounded-3xl bg-[#F2F8F4] py-5">
+              <div className="text-center">
+                <p className="text-xs text-slate-500">Now</p>
+                <p className="text-3xl font-semibold tabular-nums text-slate-400">{adjust.stockQuantity}</p>
               </div>
-              <div className="min-w-0 flex-1">
-                <h3 className="font-extrabold text-sm text-[#091413] leading-snug truncate">
-                  {adjust.productName}
-                </h3>
-                <p className="mt-0.5 font-mono text-[11px] text-slate-400">
-                  SKU: {adjust.sku}
+              <ChevronRight size={14} className="text-slate-300" />
+              <div className="text-center">
+                <p className="text-xs text-[#1F5E3B]">After</p>
+                <p
+                  aria-live="polite"
+                  className={`text-4xl font-bold tabular-nums ${
+                    projectedStock === 0 ? 'text-rose-600' : willBeLow ? 'text-amber-700' : 'text-[#091413]'
+                  }`}
+                >
+                  {projectedStock}
                 </p>
               </div>
             </div>
 
-            {/* Current Stock vs Par Level Card */}
-            <div className="grid grid-cols-2 gap-3 rounded-2xl border border-[#E5EBE7] bg-white p-3.5 shadow-2xs">
-              <div>
-                <span className="block text-[11px] font-semibold text-slate-400">
-                  Current Stock
-                </span>
-                <div className="mt-1 flex items-baseline gap-1">
-                  <span className="text-2xl font-black text-[#091413] tabular-nums">
-                    {adjust.stockQuantity}
-                  </span>
-                  <span className="text-xs font-medium text-slate-400">units</span>
-                </div>
-              </div>
+            {(removesMoreThanStock || willBeLow || projectedStock === 0) && !isNoChange && (
+              <p className="mt-2 text-center text-sm text-amber-700">
+                {removesMoreThanStock
+                  ? `Only ${adjust.stockQuantity} in stock — count will be set to 0.`
+                  : projectedStock === 0
+                  ? 'This product will be out of stock.'
+                  : 'Still at or below the low-stock level.'}
+              </p>
+            )}
 
-              <div className="border-l border-slate-100 pl-3.5">
-                <span className="block text-[11px] font-semibold text-slate-400">
-                  Par Level
-                </span>
-                <div className="mt-1">
-                  <span className="text-2xl font-black text-[#091413] tabular-nums">
-                    {adjust.reorderLevel}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Adjustment Type Switcher */}
-            <div>
-              <label className="block text-[11px] font-bold text-slate-700 mb-2">
-                Adjustment Type
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setType(1)}
-                  aria-pressed={type === 1}
-                  className={`flex h-12 flex-col items-center justify-center gap-0.5 rounded-2xl border text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                    type === 1
-                      ? 'border-[#285A48] bg-[#285A48] text-white shadow-xs'
-                      : 'border-[#E5EBE7] bg-white text-slate-600 hover:bg-[#F6F8F7]'
-                  }`}
-                >
-                  <PlusCircleIcon size={15} />
-                  <span>Add Stock</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setType(2)}
-                  aria-pressed={type === 2}
-                  className={`flex h-12 flex-col items-center justify-center gap-0.5 rounded-2xl border text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                    type === 2
-                      ? 'border-rose-600 bg-rose-600 text-white shadow-xs'
-                      : 'border-[#E5EBE7] bg-white text-slate-600 hover:bg-[#F6F8F7]'
-                  }`}
-                >
-                  <MinusCircleIcon size={15} />
-                  <span>Deduct</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setType(3)}
-                  aria-pressed={type === 3}
-                  className={`flex h-12 flex-col items-center justify-center gap-0.5 rounded-2xl border text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                    type === 3
-                      ? 'border-[#091413] bg-[#091413] text-white shadow-xs'
-                      : 'border-[#E5EBE7] bg-white text-slate-600 hover:bg-[#F6F8F7]'
-                  }`}
-                >
-                  <TargetCircleIcon size={15} />
-                  <span>Set Count</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Quantity Stepper */}
-            <div>
-              <label className="block text-[11px] font-bold text-slate-700 mb-2">
-                Quantity
-              </label>
-              <div className="flex items-center justify-between rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] p-2">
-                <button
-                  type="button"
-                  onClick={() => setQuantity((prev) => Math.max(1, prev - 1))}
-                  aria-label="Decrease quantity by 1"
-                  className="flex h-11 w-11 items-center justify-center rounded-xl bg-white text-lg font-black text-[#091413] shadow-xs active:scale-95 touch-manipulation"
-                >
-                  –
-                </button>
-                <span className="text-2xl font-black tabular-nums text-[#091413]">
-                  {quantity}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setQuantity((prev) => prev + 1)}
-                  aria-label="Increase quantity by 1"
-                  className="flex h-11 w-11 items-center justify-center rounded-xl bg-white text-lg font-black text-[#091413] shadow-xs active:scale-95 touch-manipulation"
-                >
-                  +
-                </button>
-              </div>
-            </div>
-
-            {/* Quick Add Presets */}
-            <div>
-              <label className="block text-[11px] font-bold text-slate-700 mb-1.5">
-                Quick Add
-              </label>
-              <div className="flex gap-2">
-                {[1, 5, 10, 25, 50].map((num) => (
+            {/* Type */}
+            <div
+              role="radiogroup"
+              aria-label="Adjustment type"
+              className="mt-5 grid grid-cols-3 rounded-full bg-[#F1F4F3] p-1"
+            >
+              {ADJUST_TYPES.map((option) => {
+                const isSelected = type === option.value
+                return (
                   <button
-                    key={num}
+                    key={option.value}
                     type="button"
-                    onClick={() => setQuantity(num)}
-                    className={`flex-1 h-9 rounded-xl border text-xs font-bold transition active:scale-95 ${
-                      quantity === num
-                        ? 'border-[#091413] bg-[#091413] text-white shadow-xs'
-                        : 'border-[#E5EBE7] bg-white text-slate-700 hover:bg-[#F6F8F7]'
+                    role="radio"
+                    aria-checked={isSelected}
+                    onClick={() => changeType(option.value)}
+                    className={`min-h-11 rounded-full text-sm font-medium transition ${
+                      isSelected ? 'bg-[#1F5E3B] text-white shadow-sm' : 'text-slate-600'
                     }`}
                   >
-                    {num}
+                    {option.label}
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Quantity */}
+            <label htmlFor="adjust-quantity" className="mt-5 block text-sm font-medium">
+              {type === 3 ? 'Counted quantity' : 'Quantity'}
+            </label>
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setQuantity((prev) => Math.max(minQuantity, prev - 1))}
+                disabled={quantity <= minQuantity}
+                aria-label="Decrease quantity"
+                className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-[#F3F5F4] active:bg-[#E9EEEB] disabled:opacity-40"
+              >
+                <Minus size={13} />
+              </button>
+              <input
+                id="adjust-quantity"
+                type="number"
+                inputMode="numeric"
+                min={minQuantity}
+                value={quantity}
+                onChange={(e) => {
+                  const next = Math.floor(Number(e.target.value))
+                  setQuantity(Number.isFinite(next) ? Math.max(minQuantity, next) : minQuantity)
+                }}
+                onFocus={(e) => e.target.select()}
+                className="h-14 min-w-0 flex-1 rounded-2xl border-0 bg-[#F3F5F4] text-center text-2xl font-semibold tabular-nums outline-none focus:bg-white focus:ring-2 focus:ring-[#1F5E3B]"
+              />
+              <button
+                type="button"
+                onClick={() => setQuantity((prev) => prev + 1)}
+                aria-label="Increase quantity"
+                className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-[#F3F5F4] active:bg-[#E9EEEB]"
+              >
+                <Plus size={13} />
+              </button>
+            </div>
+
+            {type !== 3 && (
+              <div className="mt-2 grid grid-cols-5 gap-2">
+                {QUICK_AMOUNTS.map((amount) => (
+                  <button
+                    key={amount}
+                    type="button"
+                    onClick={() => setQuantity(amount)}
+                    aria-pressed={quantity === amount}
+                    className={`h-10 rounded-xl text-sm font-medium tabular-nums transition ${
+                      quantity === amount ? 'bg-[#1F5E3B] text-white' : 'bg-[#E6F1EA] text-[#1F5E3B]'
+                    }`}
+                  >
+                    {amount}
                   </button>
                 ))}
               </div>
-            </div>
+            )}
 
-            {/* Projected Stock Preview Card */}
-            <div className="rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] p-3">
-              <span className="block text-[11px] font-bold text-slate-700">
-                Projected Stock
-              </span>
-              <div className="mt-2 grid grid-cols-3 text-center">
-                <div>
-                  <span className="block text-[10px] font-semibold text-slate-400">Current</span>
-                  <span className="text-base font-black text-[#091413]">{adjust.stockQuantity}</span>
-                </div>
-                <div>
-                  <span className="block text-[10px] font-semibold text-slate-400">Adjustment</span>
-                  <span
-                    className={`text-base font-black ${
-                      type === 2
-                        ? 'text-rose-600'
-                        : type === 1
-                        ? 'text-[#285A48]'
-                        : 'text-amber-600'
-                    }`}
-                  >
-                    {type === 1 ? `+${quantity}` : type === 2 ? `-${quantity}` : `=${quantity}`}
-                  </span>
-                </div>
-                <div>
-                  <span className="block text-[10px] font-semibold text-slate-400">New Stock</span>
-                  <span className="text-base font-black text-[#285A48]">{projectedStock}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Reason Text Input */}
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label
-                  htmlFor="adjust-reason-input"
-                  className="text-[11px] font-bold text-slate-700"
+            {/* Reason */}
+            <label htmlFor="adjust-reason" className="mt-5 block text-sm font-medium">
+              Reason <span className="font-normal text-slate-400">(optional)</span>
+            </label>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {REASONS[type].map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => setReason((prev) => (prev === preset ? '' : preset))}
+                  aria-pressed={reason === preset}
+                  className={`h-9 rounded-full px-3.5 text-sm transition ${
+                    reason === preset ? 'bg-[#1F5E3B] text-white' : 'bg-[#F3F5F4] text-slate-600'
+                  }`}
                 >
-                  Reason (optional)
-                </label>
-                <span className="text-[10px] text-slate-400 tabular-nums">
-                  {reason.length}/200
-                </span>
-              </div>
-              <input
-                id="adjust-reason-input"
-                type="text"
-                maxLength={200}
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                placeholder="Delivery, damaged items, stock count..."
-                className="h-11 w-full rounded-2xl border border-[#E5EBE7] bg-white px-3.5 text-xs text-[#091413] placeholder-slate-400 shadow-2xs outline-none transition focus:border-[#285A48] focus:ring-2 focus:ring-[#285A48]/15"
-              />
+                  {preset}
+                </button>
+              ))}
             </div>
+            <input
+              id="adjust-reason"
+              type="text"
+              maxLength={200}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Add a note"
+              className="mt-2 h-12 w-full rounded-2xl border-0 bg-[#F3F5F4] px-4 text-[15px] placeholder:text-slate-400 outline-none focus:bg-white focus:ring-2 focus:ring-[#1F5E3B]"
+            />
 
-            {/* Save Button CTA */}
-            <div className="pt-2">
-              <button
-                type="button"
-                onClick={() => void submitAdjust()}
-                disabled={busy || quantity < 1}
-                className="flex h-12 w-full items-center justify-center rounded-2xl bg-[#285A48] px-4 text-sm font-bold text-white shadow-xs transition hover:bg-[#1f4738] active:scale-98 disabled:opacity-50"
-              >
-                {busy ? 'Saving…' : 'Save Adjustment'}
-              </button>
-            </div>
+            {/* Recent changes for context */}
+            {productHistory.data && productHistory.data.items.length > 0 && (
+              <div className="mb-4 mt-6">
+                <p className="text-sm font-medium">Recent changes</p>
+                <ul className="mt-1">
+                  {productHistory.data.items.map((entry) => (
+                    <li
+                      key={entry.id}
+                      className="flex items-baseline justify-between gap-3 border-b border-slate-100 py-2.5 text-sm last:border-b-0"
+                    >
+                      <span className="min-w-0 truncate text-slate-500">
+                        {entry.reason || entry.type} · {safeFormatDateTime(entry.createdAt)}
+                      </span>
+                      <ChangeAmount value={entry.quantityChange} />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
-        </Modal>
+
+          <div className="border-t border-slate-100 px-5 pb-[max(1rem,env(safe-area-inset-bottom,0px))] pt-3">
+            <button
+              type="button"
+              onClick={() => void submitAdjust()}
+              disabled={busy || isNoChange}
+              className="flex h-14 w-full items-center justify-center rounded-2xl bg-[#1F5E3B] text-[15px] font-semibold text-white transition active:scale-[0.99] disabled:bg-slate-200 disabled:text-slate-400"
+            >
+              {isNoChange && !busy ? 'No change to save' : saveLabel}
+            </button>
+          </div>
+        </Sheet>
       )}
 
-      {/* =========================================================
-          STOCK MOVEMENT HISTORY MODAL (MATCHING SCREENSHOT)
-      ========================================================= */}
+      {/* HISTORY — full-screen page */}
       {showHistory && (
-        <Modal
-          title="Stock Movement History"
-          onClose={() => setShowHistory(false)}
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Stock history"
+          className="fixed inset-0 z-50 flex flex-col bg-white pt-[env(safe-area-inset-top,0px)] animate-in slide-in-from-right duration-200"
         >
-          {history.loading && (
-            <div className="flex flex-col items-center justify-center py-14 text-center">
-              <Spinner />
-              <p className="mt-3 text-xs font-semibold text-slate-400">
-                Loading history logs...
-              </p>
+          <div className="flex items-center gap-2 px-2 pt-2">
+            <button
+              type="button"
+              onClick={() => setShowHistory(false)}
+              aria-label="Back to inventory"
+              className="flex h-11 w-11 items-center justify-center rounded-full active:bg-slate-100"
+            >
+              <ChevronLeft size={16} />
+            </button>
+            <div>
+              <h2 className="text-lg font-semibold">Stock history</h2>
+              <p className="text-xs text-slate-500">{history.data?.totalCount ?? 0} changes</p>
             </div>
-          )}
+          </div>
 
-          {!history.loading && history.error && (
-            <div className="p-4">
-              <ErrorState
-                message={history.error}
-                onRetry={() => void history.reload()}
+          <div className="flex-1 overflow-y-auto overscroll-contain px-5 pt-2">
+            {history.loading && !history.data && (
+              <div className="py-16 text-center">
+                <Spinner />
+              </div>
+            )}
+
+            {!history.loading && history.error && (
+              <div className="py-8">
+                <ErrorState message={history.error} onRetry={() => void history.reload()} />
+              </div>
+            )}
+
+            {!history.loading && !history.error && historyItems.length === 0 && (
+              <div className="py-16 text-center">
+                <EmptyState title="No stock changes yet" hint="Adjustments you make will appear here." />
+              </div>
+            )}
+
+            <ul className={history.loading ? 'opacity-60' : ''}>
+              {historyItems.map((row) => (
+                <li
+                  key={row.id}
+                  className="flex min-h-[72px] items-center gap-3 border-b border-slate-100 py-3 last:border-b-0"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[15px]">{row.productName}</p>
+                    <p className="mt-0.5 truncate text-xs text-slate-400">
+                      {row.type}
+                      {row.reason ? ` · ${row.reason}` : ''} · {safeFormatDateTime(row.createdAt)}
+                    </p>
+                  </div>
+
+                  <div className="shrink-0 text-right">
+                    <ChangeAmount value={row.quantityChange} />
+                    <p className="text-xs tabular-nums text-slate-400">now {row.quantityAfter}</p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {history.data && history.data.totalPages > 1 && (
+            <div className="border-t border-slate-100 px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))]">
+              <Pagination
+                page={history.data.page}
+                totalPages={history.data.totalPages}
+                onPage={setHistoryPage}
               />
             </div>
           )}
-
-          {!history.loading && !history.error && historyItems.length === 0 && (
-            <div className="py-10 text-center">
-              <EmptyState title="No stock movement records" />
-            </div>
-          )}
-
-          {!history.loading && !history.error && historyItems.length > 0 && (
-            <div className="space-y-3">
-              <div className="divide-y divide-slate-100 max-h-[60vh] overflow-y-auto overscroll-contain">
-                {historyItems.map((row) => {
-                  const isDeduction = row.quantityChange < 0
-                  const isCorrection = row.type.toLowerCase().includes('count') || row.type.toLowerCase().includes('fix')
-
-                  return (
-                    <div key={row.id} className="flex items-center justify-between py-3.5 gap-3 text-xs">
-                      {/* Left icon circle */}
-                      <div className="flex items-center gap-3 min-w-0 flex-1">
-                        <div
-                          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white font-bold text-sm ${
-                            isDeduction
-                              ? 'bg-rose-600'
-                              : isCorrection
-                              ? 'bg-amber-500'
-                              : 'bg-[#285A48]'
-                          }`}
-                        >
-                          {isDeduction ? '–' : isCorrection ? '◎' : '+'}
-                        </div>
-
-                        <div className="min-w-0 flex-1">
-                          <p className="font-extrabold text-[#091413] leading-snug">
-                            {row.type || (isDeduction ? 'Deducted' : isCorrection ? 'Set Count' : 'Added')}
-                          </p>
-                          <p className="text-[11px] text-slate-500 mt-0.5">
-                            Current Balance: <strong className="font-semibold text-[#091413]">{row.quantityAfter}</strong>
-                          </p>
-                          {row.reason && (
-                            <p className="text-[11px] text-slate-400 truncate mt-0.5">
-                              {row.reason}
-                            </p>
-                          )}
-                          <p className="text-[10px] text-slate-400 mt-0.5">
-                            {safeFormatDateTime(row.createdAt)}
-                          </p>
-                        </div>
-                      </div>
-
-                      {/* Right quantity change */}
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span
-                          className={`text-sm font-black tabular-nums ${
-                            isDeduction
-                              ? 'text-rose-600'
-                              : isCorrection
-                              ? 'text-amber-600'
-                              : 'text-[#285A48]'
-                          }`}
-                        >
-                          {row.quantityChange > 0 ? `+${row.quantityChange}` : row.quantityChange}
-                        </span>
-                        <span className="text-slate-300 font-bold">&rsaquo;</span>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-
-              {/* History Pagination */}
-              <div className="pt-2 border-t border-slate-100">
-                <Pagination
-                  page={history.data?.page ?? 1}
-                  totalPages={history.data?.totalPages ?? 1}
-                  onPage={setHistoryPage}
-                />
-              </div>
-            </div>
-          )}
-        </Modal>
+        </div>
       )}
     </div>
   )
 }
 
 /* =============================================================
-   CUSTOM BADGES & MICRO-COMPONENTS (MATCHING SCREENSHOT)
+   BUILDING BLOCKS
 ============================================================= */
 
-function CustomStockBadge({ status }: { status: string }) {
-  if (status === 'In Stock') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-[#EAF1EE] px-2.5 py-0.5 text-[10px] font-bold text-[#285A48] border border-[#285A48]/15">
-        <span>+</span>
-        <span>In Stock</span>
-      </span>
-    )
-  }
-
-  if (status === 'Low Stock') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[10px] font-bold text-amber-700 border border-amber-200">
-        <span>⚡</span>
-        <span>Low Stock</span>
-      </span>
-    )
-  }
+function InventoryRow({ item, onSelect }: { item: InventoryItem; onSelect: () => void }) {
+  const style = statusStyle(item.stockStatus)
+  const fill =
+    item.reorderLevel > 0
+      ? Math.min(100, (item.stockQuantity / (item.reorderLevel * 2)) * 100)
+      : item.stockQuantity > 0
+      ? 100
+      : 0
 
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2.5 py-0.5 text-[10px] font-bold text-rose-600 border border-rose-200">
-      <span>◆</span>
-      <span>Out of Stock</span>
+    <button
+      type="button"
+      onClick={onSelect}
+      className="flex min-h-[76px] w-full items-center gap-4 py-3 text-left transition active:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1F5E3B]"
+    >
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[15px]">{item.productName}</p>
+        <p className="mt-0.5 truncate text-xs text-slate-400">SKU {item.sku}</p>
+
+        {/* Bar scale: the low-stock level sits at the midpoint */}
+        <div
+          className="mt-2 h-1 w-full max-w-40 overflow-hidden rounded-full bg-slate-100"
+          role="progressbar"
+          aria-label={`${item.productName} stock level`}
+          aria-valuenow={item.stockQuantity}
+          aria-valuemin={0}
+          aria-valuemax={item.reorderLevel * 2 || item.stockQuantity}
+        >
+          <div className={`h-full rounded-full ${style.bar}`} style={{ width: `${fill}%` }} />
+        </div>
+      </div>
+
+      <div className="shrink-0 text-right">
+        <p className={`text-xl font-semibold leading-tight tabular-nums ${style.text}`}>
+          {item.stockQuantity}
+        </p>
+        <p className={`text-xs ${item.stockStatus === 'In Stock' ? 'text-slate-400' : style.text}`}>
+          {item.stockStatus === 'In Stock' ? `low at ${item.reorderLevel}` : style.label}
+        </p>
+      </div>
+
+      <ChevronRight size={12} className="shrink-0 text-slate-300" />
+    </button>
+  )
+}
+
+function ChangeAmount({ value }: { value: number }) {
+  return (
+    <span
+      className={`text-[15px] font-medium tabular-nums ${
+        value > 0 ? 'text-[#1F5E3B]' : value < 0 ? 'text-rose-600' : 'text-slate-400'
+      }`}
+    >
+      {value > 0 ? `+${value}` : value < 0 ? `−${Math.abs(value)}` : '0'}
     </span>
   )
 }
 
-function PackageIllustration({ isDepleted }: { isDepleted?: boolean }) {
+function Sheet({
+  label,
+  onClose,
+  children,
+}: {
+  label: string
+  onClose: () => void
+  children: ReactNode
+}) {
   return (
-    <svg
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={isDepleted ? 'text-slate-300' : 'text-[#285A48]'}
-      aria-hidden="true"
-    >
-      <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
-      <path d="m3.3 7 8.7 5 8.7-5" />
-      <path d="M12 22V12" />
-    </svg>
+    <div role="dialog" aria-modal="true" aria-label={label} className="fixed inset-0 z-50 flex flex-col justify-end">
+      <div className="absolute inset-0 bg-black/30" onClick={onClose} aria-hidden="true" />
+
+      <div className="relative flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-3xl bg-white animate-in slide-in-from-bottom duration-200">
+        <div className="flex justify-center pb-2 pt-2.5">
+          <span className="h-1 w-10 rounded-full bg-slate-200" />
+        </div>
+        {children}
+      </div>
+    </div>
   )
 }
 
-function EmptyBoxIllustration() {
+function CloseButton({
+  onClick,
+  label,
+  disabled,
+}: {
+  onClick: () => void
+  label: string
+  disabled?: boolean
+}) {
   return (
-    <svg width="84" height="84" viewBox="0 0 84 84" fill="none" aria-hidden="true">
-      <rect x="18" y="26" width="48" height="38" rx="8" fill="#EAF1EE" stroke="#285A48" strokeWidth="2" strokeDasharray="4 3" />
-      <path d="M30 18L42 26L54 18" stroke="#285A48" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="56" cy="56" r="14" fill="white" stroke="#285A48" strokeWidth="2.5" />
-      <line x1="66" y1="66" x2="76" y2="76" stroke="#285A48" strokeWidth="2.5" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function SearchIcon({ size = 16, className }: { size?: number; className?: string }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.3"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#F3F5F4] text-slate-500 active:bg-[#E9EEEB] disabled:opacity-40"
     >
-      <circle cx="11" cy="11" r="8" />
-      <line x1="21" y1="21" x2="16.65" y2="16.65" />
-    </svg>
-  )
-}
-
-function HistoryIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-      <path d="M3 3v5h5" />
-      <polyline points="12 7 12 12 15 15" />
-    </svg>
-  )
-}
-
-function ClearIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
-    </svg>
-  )
-}
-
-function ClockIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="10" />
-      <polyline points="12 6 12 12 16 14" />
-    </svg>
-  )
-}
-
-function PlusCircleIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="10" />
-      <line x1="12" y1="8" x2="12" y2="16" />
-      <line x1="8" y1="12" x2="16" y2="12" />
-    </svg>
-  )
-}
-
-function MinusCircleIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="10" />
-      <line x1="8" y1="12" x2="16" y2="12" />
-    </svg>
-  )
-}
-
-function TargetCircleIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="10" />
-      <circle cx="12" cy="12" r="4" />
-    </svg>
-  )
-}
-
-function ExclamationIcon({ size = 24 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="10" />
-      <line x1="12" y1="8" x2="12" y2="12" />
-      <line x1="12" y1="16" x2="12.01" y2="16" />
-    </svg>
+      <X size={14} />
+    </button>
   )
 }
 

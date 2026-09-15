@@ -1,54 +1,86 @@
+import { useEffect, useId, useRef, useState } from 'react'
+import type { MouseEvent } from 'react'
+import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
 import {
-  faBars,
+  faBox,
   faBoxesStacked,
   faCartShopping,
   faChartLine,
+  faEllipsis,
+  faGear,
   faHouse,
+  faPrint,
+  faTags,
+  faTruck,
+  faUserShield,
+  faUsers,
+  faXmark,
 } from '@fortawesome/free-solid-svg-icons'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { useLocation, NavLink } from 'react-router-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
+
+import {
+  BOTTOM_NAV_HEIGHT,
+  MORE_SHEET_STATE_KEY,
+  MoreSheet,
+  isMoreSheetOpen,
+  matchesRoute,
+  withoutMoreSheetState,
+  type MoreNavGroup,
+  type MoreNavItem,
+} from '../../components/layout/MoreSheet'
+import { ConfirmDialog } from '../../components/ui/Modal'
 import { useAuth } from '../../context/AuthContext'
-import type { Permission } from '../../utils/permissions'
+import { ROLE_LABELS, type Permission, type Role } from '../../utils/permissions'
 
 interface MobileBottomNavProps {
-  /** Callback to open the full slide-out mobile drawer (Sidebar) */
-  onOpenMenu: () => void
-  /** Optional notification count for orders or inventory alerts */
+  /** Optional notification count for inventory alerts */
   alertCount?: number
 }
 
-// Routes that live inside the "More" menu
-const MORE_ROUTES = [
-  '/customers',
-  '/products',
-  '/categories',
-  '/suppliers',
-  '/settings',
-  '/users',
-  '/printer-settings',
+type PrimaryItem = { to: string; label: string; icon: IconDefinition; permission?: Permission; badge?: number }
+type SecondaryItem = MoreNavItem & { permission: Permission }
+
+/**
+ * Secondary destinations shown in the "More" sheet. These mirror the existing
+ * routes and permissions from App.tsx / Sidebar.tsx — nothing new is added.
+ */
+const SECONDARY_GROUPS: { title: string; items: SecondaryItem[] }[] = [
+  {
+    title: 'Management',
+    items: [
+      { to: '/products', label: 'Products', description: 'Catalog, prices and photos', icon: faBox, permission: 'products.view' },
+      { to: '/customers', label: 'Customers', description: 'Contacts and loyalty points', icon: faUsers, permission: 'customers.view' },
+      { to: '/categories', label: 'Categories', description: 'Group products at the register', icon: faTags, permission: 'categories.manage' },
+      { to: '/suppliers', label: 'Suppliers', description: 'Vendors and their contacts', icon: faTruck, permission: 'suppliers.manage' },
+    ],
+  },
+  {
+    title: 'System',
+    items: [
+      { to: '/users', label: 'Users', description: 'Staff accounts and roles', icon: faUserShield, permission: 'users.manage' },
+      { to: '/printer-settings', label: 'Printer', description: 'Receipt printer and cash drawer', icon: faPrint, permission: 'printer.configure' },
+      { to: '/settings', label: 'Settings', description: 'Store, tax and receipts', icon: faGear, permission: 'settings.view' },
+    ],
+  },
 ]
 
-export function MobileBottomNav({ onOpenMenu, alertCount = 0 }: MobileBottomNavProps) {
+export function MobileBottomNav({ alertCount = 0 }: MobileBottomNavProps) {
   const location = useLocation()
-  const { can } = useAuth()
+  const navigate = useNavigate()
+  const { can, user, logout } = useAuth()
 
-  // Check if current route belongs to one of the secondary "More" pages
-  const isMoreActive = MORE_ROUTES.some((path) =>
-    location.pathname.startsWith(path)
-  )
+  const sheetId = useId()
+  const moreButtonRef = useRef<HTMLButtonElement | null>(null)
+  const [confirmLogout, setConfirmLogout] = useState(false)
+  const [loggingOut, setLoggingOut] = useState(false)
 
-  const allNavItems: { to: string; label: string; icon: typeof faHouse; permission?: Permission; badge?: number }[] = [
-    {
-      to: '/dashboard',
-      label: 'Home',
-      icon: faHouse,
-    },
-    {
-      to: '/sales',
-      label: 'Orders',
-      icon: faCartShopping,
-      permission: 'sales.process',
-    },
+  const isSheetOpen = isMoreSheetOpen(location.state)
+  const currentUrl = `${location.pathname}${location.search}${location.hash}`
+
+  const allPrimaryItems: PrimaryItem[] = [
+    { to: '/dashboard', label: 'Home', icon: faHouse },
+    { to: '/sales', label: 'Orders', icon: faCartShopping, permission: 'sales.process' },
     {
       to: '/inventory',
       label: 'Inventory',
@@ -56,127 +88,170 @@ export function MobileBottomNav({ onOpenMenu, alertCount = 0 }: MobileBottomNavP
       permission: 'inventory.manage',
       badge: alertCount > 0 ? alertCount : undefined,
     },
-    {
-      to: '/reports',
-      label: 'Reports',
-      icon: faChartLine,
-      permission: 'reports.view',
-    },
+    { to: '/reports', label: 'Reports', icon: faChartLine, permission: 'reports.view' },
   ]
+  const primaryItems = allPrimaryItems.filter((item) => !item.permission || can(item.permission))
 
-  const navItems = allNavItems.filter((item) => !item.permission || can(item.permission))
+  const secondaryGroups: MoreNavGroup[] = SECONDARY_GROUPS.map((group) => ({
+    title: group.title,
+    items: group.items.filter((item) => can(item.permission)),
+  })).filter((group) => group.items.length > 0)
+
+  const isOnSecondaryRoute = secondaryGroups.some((group) =>
+    group.items.some((item) => matchesRoute(location.pathname, item.to)),
+  )
+
+  // A reload can restore a history entry that still carries the "open" marker; start closed.
+  useEffect(() => {
+    if (isSheetOpen) {
+      navigate(currentUrl, { replace: true, state: withoutMoreSheetState(location.state) })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  function openSheet() {
+    if (isSheetOpen) return
+    // Push a same-URL entry so back (browser or Android) closes the sheet first.
+    navigate(currentUrl, {
+      state: { ...(withoutMoreSheetState(location.state) ?? {}), [MORE_SHEET_STATE_KEY]: true },
+    })
+  }
+
+  function closeSheet() {
+    if (isSheetOpen) navigate(-1)
+  }
+
+  /** Navigate from inside the sheet (or a tab while it is open) without leaving the marker entry behind. */
+  function goTo(to: string) {
+    if (location.pathname === to) {
+      closeSheet()
+      return
+    }
+    navigate(to, { replace: isSheetOpen })
+  }
+
+  function handleTabClick(event: MouseEvent<HTMLAnchorElement>, to: string) {
+    if (!isSheetOpen) return
+    event.preventDefault()
+    goTo(to)
+  }
+
+  function requestLogout() {
+    closeSheet()
+    setConfirmLogout(true)
+  }
 
   return (
     <>
-      {/* 🟢 1. Flow Spacer: Takes up the exact same height in document flow so nothing is covered */}
+      {/* Flow spacer: reserves the nav height in document flow so content is never covered */}
       <div
         aria-hidden="true"
-        className="block md:hidden w-full shrink-0 select-none pointer-events-none"
-        style={{
-          height: 'calc(3.5rem + max(0.35rem, env(safe-area-inset-bottom, 0px)))',
-        }}
+        className="pointer-events-none block w-full shrink-0 select-none md:hidden"
+        style={{ height: BOTTOM_NAV_HEIGHT }}
       />
 
-      {/* 🟢 2. Fixed Bottom Nav */}
+      {/* Fixed bottom navigation — stays above the More sheet and its backdrop */}
       <nav
-        aria-label="Mobile Navigation"
-        className="fixed inset-x-0 bottom-0 z-40 block md:hidden border-t border-gray-200/80 bg-white/95 backdrop-blur-md transition-all select-none"
-        style={{
-          paddingBottom: 'max(0.35rem, env(safe-area-inset-bottom, 0px))',
-        }}
+        aria-label="Main navigation"
+        className="fixed inset-x-0 bottom-0 z-[43] block select-none border-t border-slate-100 bg-white md:hidden"
+        style={{ paddingBottom: 'max(0.35rem, env(safe-area-inset-bottom, 0px))' }}
       >
-        <div className="mx-auto flex h-14 max-w-md items-center justify-around px-2">
-          {navItems.map((item) => {
-            const Icon = item.icon
-
-            return (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={({ isActive }) =>
-                  `group relative flex flex-1 flex-col items-center justify-center py-1 text-center transition-all duration-150 touch-manipulation active:scale-95 ${
-                    isActive
-                      ? 'font-bold text-[#285A48]'
-                      : 'text-gray-400 hover:text-gray-600'
-                  }`
-                }
-              >
-                {({ isActive }) => (
-                  <>
-                    <div className="relative flex items-center justify-center">
-                      {/* Active Background Glow / Pill */}
-                      {isActive && (
-                        <span className="absolute -inset-x-2 -inset-y-1 rounded-xl bg-[#EAF1EE] transition-all -z-10" />
-                      )}
-
-                      <FontAwesomeIcon
-                        icon={Icon}
-                        className={`h-4.5 w-4.5 transition-transform duration-150 ${
-                          isActive ? 'scale-105 text-[#285A48]' : 'text-gray-400'
-                        }`}
-                      />
-
-                      {/* Numeric Badge (e.g., Low stock alerts) */}
-                      {item.badge && item.badge > 0 && (
-                        <span className="absolute -right-2.5 -top-1.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold text-white ring-2 ring-white shadow-xs">
-                          {item.badge > 99 ? '99+' : item.badge}
-                        </span>
-                      )}
-                    </div>
-
-                    <span
-                      className={`mt-1 text-[10px] tracking-tight ${
-                        isActive ? 'font-bold text-[#091413]' : 'font-medium text-gray-500'
-                      }`}
-                    >
-                      {item.label}
-                    </span>
-                  </>
-                )}
-              </NavLink>
-            )
-          })}
-
-          {/* "More / Menu" Button */}
-          <button
-            type="button"
-            aria-label="Open full menu"
-            onClick={onOpenMenu}
-            className={`group relative flex flex-1 flex-col items-center justify-center py-1 text-center transition-all duration-150 touch-manipulation active:scale-95 ${
-              isMoreActive
-                ? 'font-bold text-[#285A48]'
-                : 'text-gray-400 hover:text-gray-600'
-            }`}
-          >
-            <div className="relative flex items-center justify-center">
-              {isMoreActive && (
-                <span className="absolute -inset-x-2 -inset-y-1 rounded-xl bg-[#EAF1EE] transition-all -z-10" />
-              )}
-
-              <FontAwesomeIcon
-                icon={faBars}
-                className={`h-4.5 w-4.5 transition-transform duration-150 ${
-                  isMoreActive ? 'scale-105 text-[#285A48]' : 'text-gray-400'
-                }`}
-              />
-
-              {/* Indicator dot if on a nested "More" page */}
-              {isMoreActive && (
-                <span className="absolute -right-1.5 -top-1 flex h-2 w-2 rounded-full bg-[#285A48] ring-2 ring-white" />
-              )}
-            </div>
-
-            <span
-              className={`mt-1 text-[10px] tracking-tight ${
-                isMoreActive ? 'font-bold text-[#091413]' : 'font-medium text-gray-500'
-              }`}
+        <div className="mx-auto flex h-[4.5rem] max-w-md items-center justify-around px-2">
+          {primaryItems.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              onClick={(event) => handleTabClick(event, item.to)}
+              aria-label={item.badge ? `${item.label}, ${item.badge} alerts` : item.label}
+              className="flex flex-1 touch-manipulation flex-col items-center justify-center gap-1 rounded-xl py-1 text-center transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
             >
-              Menu
-            </span>
+              {({ isActive }) => {
+                // While the sheet is open, "More" is the active tab.
+                const active = isActive && !isSheetOpen
+                return (
+                  <>
+                    <NavIcon icon={item.icon} active={active} badge={item.badge} />
+                    <NavLabel label={item.label} active={active} />
+                  </>
+                )
+              }}
+            </NavLink>
+          ))}
+
+          <button
+            ref={moreButtonRef}
+            type="button"
+            onClick={() => (isSheetOpen ? closeSheet() : openSheet())}
+            aria-label={isSheetOpen ? 'Close more options' : 'More options'}
+            aria-haspopup="dialog"
+            aria-expanded={isSheetOpen}
+            aria-controls={sheetId}
+            className="flex flex-1 touch-manipulation flex-col items-center justify-center gap-1 rounded-xl py-1 text-center transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+          >
+            <NavIcon icon={isSheetOpen ? faXmark : faEllipsis} active={isSheetOpen || isOnSecondaryRoute} />
+            <NavLabel label="More" active={isSheetOpen || isOnSecondaryRoute} />
           </button>
         </div>
       </nav>
+
+      <MoreSheet
+        id={sheetId}
+        open={isSheetOpen}
+        groups={secondaryGroups}
+        activePath={location.pathname}
+        accountName={user?.fullName}
+        accountDetail={user?.role ? ROLE_LABELS[user.role as Role] ?? String(user.role) : user?.email}
+        onNavigate={goTo}
+        onClose={closeSheet}
+        onLogout={requestLogout}
+        returnFocusRef={moreButtonRef}
+      />
+
+      {confirmLogout && (
+        <ConfirmDialog
+          title="Log out?"
+          message="You’ll need your email and password to sign back in."
+          confirmLabel="Log out"
+          danger
+          busy={loggingOut}
+          onCancel={() => setConfirmLogout(false)}
+          onConfirm={() => {
+            setLoggingOut(true)
+            void logout().finally(() => {
+              setLoggingOut(false)
+              setConfirmLogout(false)
+            })
+          }}
+        />
+      )}
     </>
+  )
+}
+
+function NavIcon({ icon, active, badge }: { icon: IconDefinition; active: boolean; badge?: number }) {
+  return (
+    <span
+      className={`relative flex h-8 w-14 items-center justify-center rounded-full transition-colors duration-150 ${
+        active ? 'bg-[#E6F1EA] text-[#1F5E3B]' : 'text-slate-500'
+      }`}
+    >
+      <FontAwesomeIcon icon={icon} className="h-5 w-5" />
+
+      {badge !== undefined && badge > 0 && (
+        <span
+          aria-hidden="true"
+          className="absolute right-2 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold text-white ring-2 ring-white"
+        >
+          {badge > 99 ? '99+' : badge}
+        </span>
+      )}
+    </span>
+  )
+}
+
+function NavLabel({ label, active }: { label: string; active: boolean }) {
+  return (
+    <span className={`text-xs ${active ? 'font-semibold text-[#1F5E3B]' : 'font-medium text-slate-500'}`}>{label}</span>
   )
 }
 

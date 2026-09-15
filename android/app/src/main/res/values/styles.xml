@@ -16,7 +16,11 @@
     </style>
 
 
+    <!-- Launch window shown before the WebView paints. Plain white, matching the web loader;
+         on Android 12+ the system splash shows the Sellix launcher icon on top of it. The old
+         @drawable/splash was Capacitor's default placeholder logo, not the Sellix mark. -->
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
-        <item name="android:background">@drawable/splash</item>
+        <item name="android:background">@android:color/white</item>
+        <item name="windowSplashScreenBackground">@android:color/white</item>
     </style>
 </resources>

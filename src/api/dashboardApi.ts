@@ -92,7 +92,7 @@ export const dashboardApi = {
     }))
 
     const topSellingResult = await querySQL(
-      `SELECT si.product_id AS productId, p.name AS name,
+      `SELECT si.product_id AS productId, p.name AS name, p.image_url AS imageUrl,
               SUM(si.quantity) AS quantitySold, SUM(si.line_total) AS revenue
        FROM sale_items si
        LEFT JOIN products p ON p.id = si.product_id
@@ -105,6 +105,7 @@ export const dashboardApi = {
     const topSellingProducts = ((topSellingResult.values ?? []) as any[]).map((row) => ({
       productId: row.productId,
       name: row.name ?? 'Unknown product',
+      imageUrl: (row.imageUrl as string | null) || null,
       quantitySold: row.quantitySold,
       revenue: row.revenue,
     }))

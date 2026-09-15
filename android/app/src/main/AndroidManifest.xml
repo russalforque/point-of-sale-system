@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <application
         android:allowBackup="true"
@@ -23,6 +24,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Plugging in a USB receipt printer offers to open Sellix POS; choosing "Always"
+                 grants USB permission permanently, so the cashier isn't asked every time. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/usb_printer_filter" />
+
         </activity>
 
         <provider
@@ -39,4 +49,21 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Receipt printing (SellixPrinterPlugin: Bluetooth Classic SPP + USB).
+         BLUETOOTH_CONNECT (Android 12+) and the legacy BLUETOOTH/BLUETOOTH_ADMIN + location
+         permissions (Android 11 and older) are merged in from the bluetooth-le plugin manifest.
+         Scan results are only used to find printers, never to derive location, so assert
+         neverForLocation - Android 12+ then doesn't need Location for Bluetooth printing. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_CONNECT"
+        tools:targetApi="s" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+
+    <!-- Optional hardware: the app still installs on devices without them. -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 </manifest>

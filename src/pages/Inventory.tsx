@@ -1,694 +1,580 @@
-import { useState } from 'react'
-import {
-  History,
-  PackagePlus,
-  Search,
-} from '../components/ui/Icons'
+import { useEffect, useState } from 'react'
 
 import { inventoryApi } from '../api/inventoryApi'
-
 import {
-  Badge,
-  stockTone,
-} from '../components/ui/Badge'
-
-import { Button } from '../components/ui/Button'
-import { Field, Input } from '../components/ui/Field'
-import { FormSection } from '../components/ui/FormSection'
+  DataCard,
+  DesktopPage,
+  DesktopSearch,
+  EmptyRow,
+  ErrorRow,
+  FilterPills,
+  LoadingRow,
+  SecondaryButton,
+  Th,
+  Toolbar,
+} from '../components/ui/DesktopKit'
+import { ChevronRight, History, Minus, Plus } from '../components/ui/Icons'
+import { PrimaryButton, TextButton } from '../components/ui/MobileKit'
 import { Modal } from '../components/ui/Modal'
-import { PageHeader } from '../components/ui/Page'
 import { Pagination } from '../components/ui/Pagination'
-
-import {
-  EmptyState,
-  ErrorState,
-  Spinner,
-} from '../components/ui/States'
-
+import { EmptyState, ErrorState, Spinner } from '../components/ui/States'
 import { useToast } from '../context/ToastContext'
 import { useAsync } from '../hooks/useAsync'
-import type { InventoryItem } from '../types'
+import { useDebounced } from '../hooks/useDebounced'
+import { useIsMobile } from '../hooks/useIsMobile'
+import type { InventoryHistory, InventoryItem } from '../types'
 import { getErrorMessage } from '../utils/errors'
 import { formatDateTime } from '../utils/format'
-
-// Import Mobile Component from subfolder
 import { MobileInventory } from './mobile/MobileInventory'
 
-type StockFilter = '' | 'In Stock' | 'Low Stock' | 'Out of Stock'
+type StockFilter = '' | 'Low Stock' | 'Out of Stock' | 'In Stock'
 
-/* =============================================================
-   MAIN EXPORT: 100% PURE RESPONSIVE CSS
-============================================================= */
+/** Matches the adjustment `type` values understood by inventoryApi.adjust. */
+type AdjustType = 1 | 2 | 3
+
+const ADJUST_TYPES: { value: AdjustType; label: string }[] = [
+  { value: 1, label: 'Add' },
+  { value: 2, label: 'Remove' },
+  { value: 3, label: 'Set count' },
+]
+
+const QUICK_AMOUNTS = [1, 5, 10, 25, 50]
+
+const REASONS: Record<AdjustType, string[]> = {
+  1: ['Delivery', 'Customer return'],
+  2: ['Damaged', 'Expired', 'Lost'],
+  3: ['Stock count'],
+}
+
+const PAGE_SIZE = 20
+
+function projectStock(current: number, type: AdjustType, quantity: number) {
+  if (type === 1) return current + quantity
+  if (type === 2) return Math.max(0, current - quantity)
+  return quantity
+}
+
+function stockStyle(status: string) {
+  if (status === 'Out of Stock') return { text: 'text-rose-600', bar: 'bg-rose-500', label: 'Out of stock', labelClass: 'text-rose-600' }
+  if (status === 'Low Stock') return { text: 'text-amber-700', bar: 'bg-amber-400', label: 'Low stock', labelClass: 'text-amber-700' }
+  return { text: 'text-[#091413]', bar: 'bg-[#1F5E3B]', label: 'In stock', labelClass: 'text-slate-500' }
+}
 
 export function InventoryPage() {
-  return (
-    <div className="w-full">
-      {/* 📱 Mobile: Shows only on screens < 768px */}
-      <div className="block md:hidden">
-        <MobileInventory />
-      </div>
+  // Render exactly one layout: the old CSS switch mounted both, doubling every request.
+  const isMobile = useIsMobile()
+  if (isMobile) return <MobileInventory />
+  return <DesktopInventory />
+}
 
-      {/* 💻 Desktop: Shows only on screens ≥ 768px */}
-      <div className="hidden md:block">
-        <DesktopInventory />
-      </div>
-    </div>
+function DesktopInventory() {
+  const [search, setSearch] = useState('')
+  const [stock, setStock] = useState<StockFilter>('')
+  const [page, setPage] = useState(1)
+  const [showHistory, setShowHistory] = useState(false)
+  const [adjust, setAdjust] = useState<InventoryItem | null>(null)
+
+  const q = useDebounced(search).trim()
+
+  const list = useAsync(
+    () => inventoryApi.list({ search: q || undefined, stockStatus: stock || undefined, page, pageSize: PAGE_SIZE }),
+    [q, stock, page],
+  )
+
+  // Real totals across all products (respecting search), not just the visible page.
+  const counts = useAsync(async () => {
+    const count = (stockStatus?: string) =>
+      inventoryApi.list({ search: q || undefined, stockStatus, page: 1, pageSize: 1 }).then((r) => r.totalCount)
+    const [all, low, out] = await Promise.all([count(), count('Low Stock'), count('Out of Stock')])
+    return { all, low, out, inStock: Math.max(0, all - low - out) }
+  }, [q])
+
+  useEffect(() => {
+    setPage(1)
+  }, [q])
+
+  const items = list.data?.items ?? []
+  const needRestock = counts.data ? counts.data.low + counts.data.out : 0
+  const hasFilters = q !== '' || stock !== ''
+
+  return (
+    <DesktopPage
+      title="Inventory"
+      subtitle={
+        counts.data
+          ? needRestock > 0
+            ? `${needRestock} ${needRestock === 1 ? 'product needs' : 'products need'} restocking`
+            : 'All products are well stocked'
+          : 'Stock levels and adjustments'
+      }
+      actions={
+        <SecondaryButton onClick={() => setShowHistory(true)}>
+          <History size={14} className="text-[#1F5E3B]" />
+          Stock history
+        </SecondaryButton>
+      }
+    >
+      <Toolbar>
+        <DesktopSearch value={search} onChange={setSearch} placeholder="Search product name or SKU" label="Search inventory" />
+        <FilterPills
+          label="Stock status"
+          value={stock}
+          onChange={(value) => {
+            setStock(value)
+            setPage(1)
+          }}
+          options={[
+            { key: '', label: 'All', count: counts.data?.all },
+            { key: 'Low Stock', label: 'Low', count: counts.data?.low, attention: true },
+            { key: 'Out of Stock', label: 'Out', count: counts.data?.out, attention: true },
+            { key: 'In Stock', label: 'In stock', count: counts.data?.inStock },
+          ]}
+        />
+      </Toolbar>
+
+      <DataCard className="mt-4">
+        {list.loading && !list.data && <LoadingRow />}
+        {!list.loading && list.error && <ErrorRow message={list.error} onRetry={() => void list.reload()} />}
+        {!list.loading && !list.error && items.length === 0 && (
+          <EmptyRow
+            title="No products found"
+            hint={q ? `Nothing matches “${q}”.` : hasFilters ? 'No products have this stock status.' : 'Add products to start tracking stock.'}
+            actionLabel={hasFilters ? 'Clear filters' : undefined}
+            secondary
+            onAction={() => {
+              setSearch('')
+              setStock('')
+              setPage(1)
+            }}
+          />
+        )}
+
+        {!list.error && items.length > 0 && (
+          <>
+            <div className="overflow-x-auto">
+              <table className={`w-full text-left text-sm transition-opacity ${list.loading ? 'opacity-60' : ''}`}>
+                <thead className="border-b border-slate-100 text-xs text-slate-500">
+                  <tr>
+                    <Th className="pl-6">Product</Th>
+                    <Th align="right">On hand</Th>
+                    <Th>Level</Th>
+                    <Th>Last updated</Th>
+                    <Th className="pr-6">
+                      <span className="sr-only">Actions</span>
+                    </Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {items.map((row) => {
+                    const style = stockStyle(row.stockStatus)
+                    const fill =
+                      row.reorderLevel > 0
+                        ? Math.min(100, (row.stockQuantity / (row.reorderLevel * 2)) * 100)
+                        : row.stockQuantity > 0
+                        ? 100
+                        : 0
+                    return (
+                      <tr key={row.productId} onClick={() => setAdjust(row)} className="group cursor-pointer hover:bg-slate-50">
+                        <td className="py-3 pl-6 pr-3">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setAdjust(row)
+                            }}
+                            className="block max-w-80 truncate text-left font-medium focus-visible:underline focus-visible:outline-none"
+                          >
+                            {row.productName}
+                          </button>
+                          <span className="text-xs text-slate-400">SKU {row.sku}</span>
+                        </td>
+                        <td className="px-3 py-3 text-right">
+                          <span className={`text-base font-semibold tabular-nums ${style.text}`}>{row.stockQuantity}</span>
+                          <span className="block text-xs text-slate-400">low at {row.reorderLevel}</span>
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center gap-3">
+                            <div
+                              className="h-1.5 w-28 overflow-hidden rounded-full bg-slate-100"
+                              role="progressbar"
+                              aria-label={`${row.productName} stock level`}
+                              aria-valuenow={row.stockQuantity}
+                              aria-valuemin={0}
+                              aria-valuemax={row.reorderLevel * 2 || row.stockQuantity}
+                            >
+                              <div className={`h-full rounded-full ${style.bar}`} style={{ width: `${fill}%` }} />
+                            </div>
+                            <span className={`text-xs ${style.labelClass}`}>{style.label}</span>
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-slate-500">{formatDateTime(row.lastUpdated)}</td>
+                        <td className="py-3 pl-3 pr-6 text-right">
+                          <span className="inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-sm font-medium text-[#1F5E3B] group-hover:bg-[#F2F8F4]">
+                            Update stock
+                            <ChevronRight size={10} />
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {(list.data?.totalPages ?? 1) > 1 && (
+              <div className="border-t border-slate-100 px-6 py-3">
+                <Pagination page={list.data?.page ?? 1} totalPages={list.data?.totalPages ?? 1} onPage={setPage} />
+              </div>
+            )}
+          </>
+        )}
+      </DataCard>
+
+      {adjust && (
+        <AdjustStockModal
+          item={adjust}
+          onClose={() => setAdjust(null)}
+          onSaved={async () => {
+            await Promise.all([list.reload(), counts.reload()])
+          }}
+        />
+      )}
+
+      {showHistory && <StockHistoryModal onClose={() => setShowHistory(false)} />}
+    </DesktopPage>
   )
 }
 
 /* =============================================================
-   DESKTOP INVENTORY IMPLEMENTATION
+   UPDATE STOCK
 ============================================================= */
 
-function DesktopInventory() {
+function AdjustStockModal({
+  item,
+  onClose,
+  onSaved,
+}: {
+  item: InventoryItem
+  onClose: () => void
+  onSaved: () => Promise<void>
+}) {
   const { notify } = useToast()
-
-  const [search, setSearch] = useState('')
-  const [stock, setStock] = useState<StockFilter>('')
-  const [page, setPage] = useState(1)
-  const [historyPage, setHistoryPage] = useState(1)
-
-  const [adjust, setAdjust] = useState<InventoryItem | null>(null)
-  const [type, setType] = useState<number>(1)
+  const [type, setType] = useState<AdjustType>(1)
   const [quantity, setQuantity] = useState(1)
   const [reason, setReason] = useState('')
-
   const [busy, setBusy] = useState(false)
-  const [showHistory, setShowHistory] = useState(false)
 
-  const list = useAsync(
-    () =>
-      inventoryApi.list({
-        search: search.trim() || undefined,
-        stockStatus: stock || undefined,
-        page,
-        pageSize: 10,
-      }),
-    [search, stock, page],
+  const recent = useAsync(
+    () => inventoryApi.history({ productId: item.productId, page: 1, pageSize: 5 }),
+    [item.productId],
   )
 
-  const history = useAsync(
-    () =>
-      showHistory
-        ? inventoryApi.history({
-            page: historyPage,
-            pageSize: 8,
-          })
-        : Promise.resolve(null),
-    [historyPage, showHistory],
-  )
+  const minQuantity = type === 3 ? 0 : 1
+  const projected = projectStock(item.stockQuantity, type, quantity)
+  const isNoChange = projected === item.stockQuantity
+  const removesMoreThanStock = type === 2 && quantity > item.stockQuantity
+  const willBeLow = projected > 0 && projected <= item.reorderLevel
 
-  const items: InventoryItem[] = list.data?.items ?? []
-  const totalCount = list.data?.totalCount ?? items.length
-  const inStockCount = items.filter((item) => item.stockStatus === 'In Stock').length
-  const lowStockCount = items.filter((item) => item.stockStatus === 'Low Stock').length
-  const outOfStockCount = items.filter((item) => item.stockStatus === 'Out of Stock').length
-
-  const hasActiveFilters = search.trim() !== '' || stock !== ''
-
-  function handleFilterStatus(status: StockFilter) {
-    setStock((prev) => (prev === status ? '' : status))
-    setPage(1)
+  function changeType(next: AdjustType) {
+    setType(next)
+    setReason('')
+    // "Set count" starts from the current count so only the difference needs correcting.
+    if (next === 3) setQuantity(item.stockQuantity)
+    else if (type === 3) setQuantity(1)
   }
 
-  function resetFilters() {
-    setSearch('')
-    setStock('')
-    setPage(1)
-  }
-
-  async function submitAdjust() {
-    if (!adjust) return
-
+  async function save() {
+    if (busy || isNoChange || quantity < minQuantity) return
     setBusy(true)
-
     try {
-      await inventoryApi.adjust({
-        productId: adjust.productId,
-        type,
-        quantity,
-        reason: reason.trim(),
-      })
-
-      notify('Stock quantity successfully adjusted.')
-      setAdjust(null)
-      setReason('')
-      setQuantity(1)
-
-      await list.reload()
-      if (showHistory) {
-        await history.reload()
-      }
+      await inventoryApi.adjust({ productId: item.productId, type, quantity, reason: reason.trim() })
+      notify(`${item.productName}: ${item.stockQuantity} → ${projected}`)
+      await onSaved()
+      onClose()
     } catch (err) {
       notify(getErrorMessage(err), 'error')
-    } finally {
       setBusy(false)
     }
   }
 
+  const saveLabel = busy
+    ? 'Saving…'
+    : isNoChange
+    ? 'No change to save'
+    : type === 1
+    ? `Add ${quantity} ${quantity === 1 ? 'unit' : 'units'}`
+    : type === 2
+    ? `Remove ${Math.min(quantity, item.stockQuantity)} ${quantity === 1 ? 'unit' : 'units'}`
+    : `Set count to ${quantity}`
+
   return (
-    <div className="min-h-screen bg-[#F6F8F7] text-[#091413] pb-24 antialiased selection:bg-[#285A48] selection:text-white">
-      <div className="mx-auto max-w-7xl px-3.5 pt-4 sm:px-6 sm:pt-6 md:px-8">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between pb-2">
-          <PageHeader
-            title="Inventory"
-            subtitle="Real-time stock ledger, reorder levels, and log history"
-          />
-          <button
-            type="button"
-            onClick={() => setShowHistory(true)}
-            className="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-2xl border border-[#E5EBE7] bg-white px-4 py-2.5 text-xs font-bold text-[#285A48] shadow-2xs transition-all hover:bg-[#EAF1EE] active:scale-95 touch-manipulation sm:self-auto"
-          >
-            <History size={16} />
-            <span>Movement History</span>
-          </button>
+    <Modal
+      title={item.productName}
+      description={`SKU ${item.sku} · Low-stock alert at ${item.reorderLevel}`}
+      size="xl"
+      onClose={onClose}
+      preventClose={busy}
+      footer={
+        <div className="flex w-full items-center justify-end gap-2">
+          <TextButton onClick={onClose} disabled={busy} className="h-12">
+            Cancel
+          </TextButton>
+          <PrimaryButton type="submit" form="adjust-stock-form" disabled={busy || isNoChange} className="h-12 flex-none px-8">
+            {saveLabel}
+          </PrimaryButton>
         </div>
-
-        {/* KPI METRICS */}
-        <div className="mt-2 grid grid-cols-2 gap-2.5 sm:gap-3 md:grid-cols-4">
-          <MetricCard
-            label="Total SKUs"
-            value={totalCount}
-            isSelected={stock === ''}
-            onClick={() => handleFilterStatus('')}
-          />
-          <MetricCard
-            label="In Stock"
-            value={inStockCount}
-            indicator="emerald"
-            isSelected={stock === 'In Stock'}
-            onClick={() => handleFilterStatus('In Stock')}
-          />
-          <MetricCard
-            label="Low Stock"
-            value={lowStockCount}
-            indicator="amber"
-            isSelected={stock === 'Low Stock'}
-            onClick={() => handleFilterStatus('Low Stock')}
-          />
-          <MetricCard
-            label="Out of Stock"
-            value={outOfStockCount}
-            indicator="rose"
-            isSelected={stock === 'Out of Stock'}
-            onClick={() => handleFilterStatus('Out of Stock')}
-          />
-        </div>
-
-        {/* TOOLBAR */}
-        <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-wrap items-center gap-1 rounded-2xl border border-[#E5EBE7] bg-white p-1 self-start sm:self-auto shadow-2xs">
-            <button
-              type="button"
-              onClick={() => handleFilterStatus('')}
-              className={`rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                stock === ''
-                  ? 'bg-[#285A48] text-white shadow-xs'
-                  : 'text-slate-500 hover:text-[#091413]'
-              }`}
-            >
-              All
-            </button>
-            <button
-              type="button"
-              onClick={() => handleFilterStatus('In Stock')}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                stock === 'In Stock'
-                  ? 'bg-[#285A48] text-white shadow-xs'
-                  : 'text-slate-500 hover:text-[#091413]'
-              }`}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${stock === 'In Stock' ? 'bg-emerald-300' : 'bg-emerald-500'}`} />
-              In Stock
-            </button>
-            <button
-              type="button"
-              onClick={() => handleFilterStatus('Low Stock')}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                stock === 'Low Stock'
-                  ? 'bg-[#285A48] text-white shadow-xs'
-                  : 'text-slate-500 hover:text-[#091413]'
-              }`}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${stock === 'Low Stock' ? 'bg-amber-300' : 'bg-amber-500'}`} />
-              Low Stock
-            </button>
-            <button
-              type="button"
-              onClick={() => handleFilterStatus('Out of Stock')}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                stock === 'Out of Stock'
-                  ? 'bg-[#285A48] text-white shadow-xs'
-                  : 'text-slate-500 hover:text-[#091413]'
-              }`}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${stock === 'Out of Stock' ? 'bg-rose-300' : 'bg-rose-500'}`} />
-              Depleted
-            </button>
+      }
+    >
+      <form
+        id="adjust-stock-form"
+        onSubmit={(e) => {
+          e.preventDefault()
+          void save()
+        }}
+        className="grid gap-6 md:grid-cols-2"
+      >
+        <div className="space-y-5">
+          {/* Live before → after */}
+          <div className="flex items-center justify-center gap-6 rounded-3xl bg-[#F2F8F4] py-5">
+            <div className="text-center">
+              <p className="text-xs text-slate-500">Now</p>
+              <p className="text-3xl font-semibold tabular-nums text-slate-400">{item.stockQuantity}</p>
+            </div>
+            <ChevronRight size={14} className="text-slate-300" />
+            <div className="text-center">
+              <p className="text-xs text-[#1F5E3B]">After</p>
+              <p
+                aria-live="polite"
+                className={`text-4xl font-bold tabular-nums ${
+                  projected === 0 ? 'text-rose-600' : willBeLow ? 'text-amber-700' : 'text-[#091413]'
+                }`}
+              >
+                {projected}
+              </p>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2 flex-1 sm:max-w-xs md:max-w-sm sm:justify-end">
-            <div className="relative w-full">
-              <Search
-                size={16}
-                className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
-              />
-              <input
-                value={search}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                  setSearch(e.target.value)
-                  setPage(1)
-                }}
-                placeholder="Search product or SKU..."
-                className="h-11 w-full rounded-2xl border border-[#E5EBE7] bg-white pl-10 pr-9 text-xs font-semibold text-[#091413] placeholder-slate-400 outline-none transition focus:border-[#285A48] focus:ring-2 focus:ring-[#285A48]/15"
-              />
-              {search && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSearch('')
-                    setPage(1)
-                  }}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-1 text-slate-400 hover:text-slate-700"
-                  title="Clear search"
-                >
-                  <ClearIcon size={14} />
-                </button>
-              )}
-            </div>
+          {!isNoChange && (removesMoreThanStock || willBeLow || projected === 0) && (
+            <p className="-mt-2 text-center text-sm text-amber-700">
+              {removesMoreThanStock
+                ? `Only ${item.stockQuantity} in stock — the count will be set to 0.`
+                : projected === 0
+                ? 'This product will be out of stock.'
+                : 'Still at or below the low-stock level.'}
+            </p>
+          )}
 
-            {hasActiveFilters && (
+          <div role="radiogroup" aria-label="Adjustment type" className="grid grid-cols-3 rounded-full bg-[#F1F4F3] p-1">
+            {ADJUST_TYPES.map((option) => {
+              const selected = type === option.value
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => changeType(option.value)}
+                  className={`h-10 rounded-full text-sm font-medium transition ${selected ? 'bg-[#1F5E3B] text-white shadow-sm' : 'text-slate-600'}`}
+                >
+                  {option.label}
+                </button>
+              )
+            })}
+          </div>
+
+          <div>
+            <label htmlFor="adjust-quantity" className="block text-sm font-medium">
+              {type === 3 ? 'Counted quantity' : 'Quantity'}
+            </label>
+            <div className="mt-1.5 flex items-center gap-2">
               <button
                 type="button"
-                onClick={resetFilters}
-                className="flex h-11 shrink-0 items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white px-3.5 text-xs font-bold text-slate-600 shadow-2xs hover:bg-[#F0F5F2] hover:text-[#091413] active:scale-95 touch-manipulation"
+                onClick={() => setQuantity((prev) => Math.max(minQuantity, prev - 1))}
+                disabled={quantity <= minQuantity}
+                aria-label="Decrease quantity"
+                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#F3F5F4] hover:bg-[#E9EEEB] disabled:opacity-40"
               >
-                Reset
+                <Minus size={12} />
               </button>
+              <input
+                id="adjust-quantity"
+                type="number"
+                inputMode="numeric"
+                min={minQuantity}
+                value={quantity}
+                autoFocus
+                onFocus={(e) => e.target.select()}
+                onChange={(e) => {
+                  const next = Math.floor(Number(e.target.value))
+                  setQuantity(Number.isFinite(next) ? Math.max(minQuantity, next) : minQuantity)
+                }}
+                className="h-12 min-w-0 flex-1 rounded-2xl border-0 bg-[#F3F5F4] text-center text-xl font-semibold tabular-nums outline-none focus:bg-white focus:ring-2 focus:ring-[#1F5E3B]"
+              />
+              <button
+                type="button"
+                onClick={() => setQuantity((prev) => prev + 1)}
+                aria-label="Increase quantity"
+                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#F3F5F4] hover:bg-[#E9EEEB]"
+              >
+                <Plus size={12} />
+              </button>
+            </div>
+            {type !== 3 && (
+              <div className="mt-2 grid grid-cols-5 gap-2">
+                {QUICK_AMOUNTS.map((amount) => (
+                  <button
+                    key={amount}
+                    type="button"
+                    onClick={() => setQuantity(amount)}
+                    aria-pressed={quantity === amount}
+                    className={`h-9 rounded-xl text-sm font-medium tabular-nums transition ${
+                      quantity === amount ? 'bg-[#1F5E3B] text-white' : 'bg-[#E6F1EA] text-[#1F5E3B] hover:bg-[#D3E6DB]'
+                    }`}
+                  >
+                    {amount}
+                  </button>
+                ))}
+              </div>
             )}
           </div>
         </div>
 
-        {/* DESKTOP TABLE */}
-        <div className="mt-4 overflow-hidden rounded-3xl border border-[#E5EBE7] bg-white shadow-sm">
-          {list.loading && (
-            <div className="py-20 flex flex-col items-center justify-center text-center">
-              <Spinner />
-              <p className="mt-3 text-xs font-semibold text-slate-400">
-                Updating inventory levels...
-              </p>
-            </div>
-          )}
-
-          {list.error && (
-            <div className="p-6">
-              <ErrorState message={list.error} onRetry={() => void list.reload()} />
-            </div>
-          )}
-
-          {!list.loading && !list.error && items.length === 0 && (
-            <div className="p-10 text-center">
-              <EmptyState
-                title="No inventory records found"
-                hint={
-                  hasActiveFilters
-                    ? 'Try adjusting your search criteria or resetting filters.'
-                    : 'Add products to begin tracking stock levels.'
-                }
-              />
-              {hasActiveFilters && (
+        <div className="space-y-5">
+          <div>
+            <label htmlFor="adjust-reason" className="block text-sm font-medium">
+              Reason <span className="font-normal text-slate-400">(optional)</span>
+            </label>
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {REASONS[type].map((preset) => (
                 <button
+                  key={preset}
                   type="button"
-                  onClick={resetFilters}
-                  className="mt-3 inline-flex items-center gap-1.5 text-xs font-bold text-[#285A48] underline hover:text-[#1a3b2f]"
+                  onClick={() => setReason((prev) => (prev === preset ? '' : preset))}
+                  aria-pressed={reason === preset}
+                  className={`h-9 rounded-full px-3.5 text-sm transition ${
+                    reason === preset ? 'bg-[#1F5E3B] text-white' : 'bg-[#F3F5F4] text-slate-600 hover:bg-[#E9EEEB]'
+                  }`}
                 >
-                  Clear active filters
+                  {preset}
                 </button>
-              )}
+              ))}
             </div>
-          )}
+            <input
+              id="adjust-reason"
+              type="text"
+              maxLength={200}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Add a note"
+              className="mt-2 h-11 w-full rounded-2xl border-0 bg-[#F3F5F4] px-4 text-sm placeholder:text-slate-400 outline-none focus:bg-white focus:ring-2 focus:ring-[#1F5E3B]"
+            />
+          </div>
 
-          {!list.loading && !list.error && items.length > 0 && (
-            <>
-              <div className="w-full overflow-x-auto">
-                <table className="w-full text-left text-xs text-slate-600">
-                  <thead className="border-b border-[#E5EBE7] bg-[#FBFDFB] text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                    <tr>
-                      <th className="py-3.5 pl-6 pr-3">Product</th>
-                      <th className="py-3.5 px-3 text-right">Stock On Hand</th>
-                      <th className="py-3.5 px-3 text-right">Par Level</th>
-                      <th className="py-3.5 px-3 text-center">Status</th>
-                      <th className="py-3.5 px-3">Last Updated</th>
-                      <th className="py-3.5 pl-3 pr-6 text-right">Action</th>
-                    </tr>
-                  </thead>
-
-                  <tbody className="divide-y divide-slate-100">
-                    {items.map((row) => (
-                      <tr key={row.productId} className="transition-colors hover:bg-[#F9FAF9]">
-                        <td className="py-3.5 pl-6 pr-3">
-                          <div className="flex flex-col">
-                            <span className="font-bold text-slate-900 text-xs">
-                              {row.productName}
-                            </span>
-                            <span className="text-[11px] font-semibold text-slate-400 mt-0.5">
-                              {row.sku}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="py-3.5 px-3 text-right">
-                          <span
-                            className={`font-black text-sm ${
-                              row.stockQuantity <= 0
-                                ? 'text-rose-600'
-                                : row.stockStatus === 'Low Stock'
-                                ? 'text-amber-600'
-                                : 'text-slate-900'
-                            }`}
-                          >
-                            {row.stockQuantity}
-                          </span>
-                        </td>
-                        <td className="py-3.5 px-3 text-right text-xs font-semibold text-slate-500">
-                          {row.reorderLevel}
-                        </td>
-                        <td className="py-3.5 px-3 text-center">
-                          <Badge tone={stockTone(row.stockStatus)}>
-                            {row.stockStatus}
-                          </Badge>
-                        </td>
-                        <td className="py-3.5 px-3 text-xs text-slate-400 font-medium">
-                          {formatDateTime(row.lastUpdated)}
-                        </td>
-                        <td className="py-3.5 pl-3 pr-6 text-right">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setAdjust(row)
-                              setType(1)
-                              setQuantity(1)
-                              setReason('')
-                            }}
-                            title={`Adjust stock for ${row.productName}`}
-                            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[#E5EBE7] bg-white text-[#285A48] shadow-2xs hover:bg-[#EAF1EE] active:scale-95 transition-all touch-manipulation"
-                          >
-                            <PackagePlus size={16} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+          <div>
+            <p className="text-sm font-medium">Recent changes</p>
+            {recent.loading ? (
+              <div className="py-6">
+                <Spinner />
               </div>
-
-              <div className="border-t border-[#E5EBE7] bg-[#FBFDFB] px-4 py-3 sm:px-6">
-                <Pagination
-                  page={list.data?.page ?? 1}
-                  totalPages={list.data?.totalPages ?? 1}
-                  onPage={setPage}
-                />
-              </div>
-            </>
-          )}
+            ) : recent.data && recent.data.items.length > 0 ? (
+              <ul className="mt-1">
+                {recent.data.items.map((entry) => (
+                  <li key={entry.id} className="flex items-baseline justify-between gap-3 border-b border-slate-100 py-2.5 text-sm last:border-b-0">
+                    <span className="min-w-0 truncate text-slate-500">
+                      {entry.reason || entry.type} · {formatDateTime(entry.createdAt)}
+                    </span>
+                    <ChangeAmount value={entry.quantityChange} />
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-1 py-2 text-sm text-slate-400">No changes recorded yet.</p>
+            )}
+          </div>
         </div>
-      </div>
-
-      {/* ADJUST MODAL */}
-      {adjust && (
-        <Modal
-          title="Stock Adjustment"
-          onClose={() => {
-            if (!busy) setAdjust(null)
-          }}
-          preventClose={busy}
-          footer={
-            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end w-full">
-              <Button variant="secondary" onClick={() => setAdjust(null)} disabled={busy}>
-                Cancel
-              </Button>
-              <Button
-                onClick={() => void submitAdjust()}
-                disabled={busy || quantity < 1}
-              >
-                {busy ? 'Saving...' : 'Confirm Adjustment'}
-              </Button>
-            </div>
-          }
-        >
-          <div className="rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] p-3.5">
-            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-              Selected Item
-            </p>
-            <div className="mt-1 flex items-baseline justify-between">
-              <div>
-                <p className="font-extrabold text-sm text-[#091413]">{adjust.productName}</p>
-                <p className="text-[10px] font-semibold text-slate-400">{adjust.sku}</p>
-              </div>
-              <div className="text-right">
-                <span className="text-xs text-slate-400">Current Stock</span>
-                <p className="text-xl font-black text-[#285A48]">{adjust.stockQuantity}</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-4 space-y-5 text-xs">
-            <FormSection title="Adjustment">
-              <div>
-                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5">
-                  Adjustment Action
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setType(1)}
-                    aria-pressed={type === 1}
-                    className={`flex min-h-11 items-center justify-center rounded-xl text-xs font-bold transition-all active:scale-95 ${
-                      type === 1
-                        ? 'bg-[#285A48] text-white shadow-sm'
-                        : 'border border-[#E5EBE7] bg-white text-slate-600 hover:bg-[#F0F5F2]'
-                    }`}
-                  >
-                    + Add Stock
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setType(2)}
-                    aria-pressed={type === 2}
-                    className={`flex min-h-11 items-center justify-center rounded-xl text-xs font-bold transition-all active:scale-95 ${
-                      type === 2
-                        ? 'bg-rose-600 text-white shadow-sm'
-                        : 'border border-[#E5EBE7] bg-white text-slate-600 hover:bg-[#F0F5F2]'
-                    }`}
-                  >
-                    - Deduct
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setType(3)}
-                    aria-pressed={type === 3}
-                    className={`flex min-h-11 items-center justify-center rounded-xl text-xs font-bold transition-all active:scale-95 ${
-                      type === 3
-                        ? 'bg-slate-800 text-white shadow-sm'
-                        : 'border border-[#E5EBE7] bg-white text-slate-600 hover:bg-[#F0F5F2]'
-                    }`}
-                  >
-                    = Count Fix
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <Field label="Quantity Units" required>
-                  <Input
-                    type="number"
-                    min={1}
-                    value={quantity}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuantity(Math.max(1, Number(e.target.value)))}
-                    required
-                  />
-                </Field>
-
-                <div className="mt-2 flex gap-2">
-                  {[1, 5, 10, 25, 50].map((num) => (
-                    <button
-                      key={num}
-                      type="button"
-                      onClick={() => setQuantity(num)}
-                      className={`flex-1 rounded-lg py-1 text-[11px] font-bold transition-colors ${
-                        quantity === num
-                          ? 'bg-[#285A48] text-white'
-                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                    >
-                      +{num}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </FormSection>
-
-            <FormSection title="Reason">
-              <Field label="Audit Reason / Note" hint="Optional — helps with the audit trail">
-                <Input
-                  value={reason}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setReason(e.target.value)}
-                  placeholder="e.g. New delivery, supplier return, physical discrepancy"
-                />
-              </Field>
-            </FormSection>
-          </div>
-        </Modal>
-      )}
-
-      {/* MOVEMENT HISTORY MODAL */}
-      {showHistory && (
-        <Modal
-          title="Stock Movement History"
-          wide
-          onClose={() => setShowHistory(false)}
-        >
-          {history.loading && (
-            <div className="py-16 flex flex-col items-center justify-center">
-              <Spinner />
-              <p className="mt-2 text-xs font-semibold text-slate-400">Loading audit history...</p>
-            </div>
-          )}
-
-          {history.error && (
-            <div className="p-4">
-              <ErrorState message={history.error} onRetry={() => void history.reload()} />
-            </div>
-          )}
-
-          {!history.loading && (history.data?.items ?? []).length === 0 && (
-            <div className="py-12 text-center">
-              <EmptyState title="No stock movements logged yet" />
-            </div>
-          )}
-
-          {(history.data?.items ?? []).length > 0 && (
-            <div className="overflow-hidden rounded-2xl border border-[#E5EBE7]">
-              <div className="w-full overflow-x-auto">
-                <table className="w-full text-left text-xs text-slate-600">
-                  <thead className="border-b border-[#E5EBE7] bg-[#FBFDFB] text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                    <tr>
-                      <th className="py-3 px-3.5">Timestamp</th>
-                      <th className="py-3 px-3">Product</th>
-                      <th className="py-3 px-3">Type</th>
-                      <th className="py-3 px-3 text-right">Change</th>
-                      <th className="py-3 px-3 text-right">Resulting Stock</th>
-                      <th className="py-3 px-3.5">Reason</th>
-                    </tr>
-                  </thead>
-
-                  <tbody className="divide-y divide-slate-100">
-                    {(history.data?.items ?? []).map((row: any) => (
-                      <tr key={row.id} className="hover:bg-[#F9FAF9]">
-                        <td className="py-3 px-3.5 text-[11px] text-slate-400 font-medium">
-                          {formatDateTime(row.createdAt)}
-                        </td>
-                        <td className="py-3 px-3 font-bold text-slate-900">
-                          {row.productName}
-                        </td>
-                        <td className="py-3 px-3 text-slate-600 font-semibold">{row.type}</td>
-                        <td
-                          className={`py-3 px-3 text-right font-black ${
-                            row.quantityChange < 0
-                              ? 'text-rose-600'
-                              : 'text-[#285A48]'
-                          }`}
-                        >
-                          {row.quantityChange > 0
-                            ? `+${row.quantityChange}`
-                            : row.quantityChange}
-                        </td>
-                        <td className="py-3 px-3 text-right font-black text-slate-900">
-                          {row.quantityAfter}
-                        </td>
-                        <td className="py-3 px-3.5 text-slate-500 italic">
-                          {row.reason || '—'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="border-t border-[#E5EBE7] bg-[#FBFDFB] px-4 py-2.5">
-                <Pagination
-                  page={history.data?.page ?? 1}
-                  totalPages={history.data?.totalPages ?? 1}
-                  onPage={setHistoryPage}
-                />
-              </div>
-            </div>
-          )}
-        </Modal>
-      )}
-    </div>
+      </form>
+    </Modal>
   )
 }
 
-function MetricCard({
-  label,
-  value,
-  indicator,
-  isSelected = false,
-  onClick,
-}: {
-  label: string
-  value: string | number
-  indicator?: 'emerald' | 'amber' | 'rose'
-  isSelected?: boolean
-  onClick: () => void
-}) {
-  const dotColor =
-    indicator === 'emerald'
-      ? 'bg-emerald-500'
-      : indicator === 'amber'
-      ? 'bg-amber-500'
-      : indicator === 'rose'
-      ? 'bg-rose-500'
-      : null
+/* =============================================================
+   STOCK HISTORY
+============================================================= */
+
+function StockHistoryModal({ onClose }: { onClose: () => void }) {
+  const [page, setPage] = useState(1)
+  const history = useAsync(() => inventoryApi.history({ page, pageSize: PAGE_SIZE }), [page])
+  const items: InventoryHistory[] = history.data?.items ?? []
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`group relative rounded-3xl border p-4 text-left transition-all active:scale-[0.98] touch-manipulation ${
-        isSelected
-          ? 'border-[#285A48] bg-white ring-2 ring-[#285A48]/20 shadow-sm'
-          : 'border-[#E5EBE7] bg-white hover:border-slate-300'
-      }`}
+    <Modal
+      title="Stock history"
+      description={history.data ? `${history.data.totalCount} changes recorded` : undefined}
+      size="2xl"
+      onClose={onClose}
     >
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-          {label}
-        </span>
-        {dotColor && <span className={`h-2 w-2 rounded-full ${dotColor} animate-pulse`} />}
-      </div>
-      <p className="mt-2 text-xl font-black tracking-tight text-[#091413] sm:text-2xl">
-        {value}
-      </p>
-    </button>
+      {history.loading && !history.data && (
+        <div className="py-16">
+          <Spinner />
+        </div>
+      )}
+      {!history.loading && history.error && <ErrorState message={history.error} onRetry={() => void history.reload()} />}
+      {!history.loading && !history.error && items.length === 0 && (
+        <div className="py-12 text-center">
+          <EmptyState title="No stock changes yet" hint="Adjustments and sales will appear here." />
+        </div>
+      )}
+
+      {items.length > 0 && (
+        <>
+          <div className={`overflow-x-auto rounded-2xl ring-1 ring-slate-100 ${history.loading ? 'opacity-60' : ''}`}>
+            <table className="w-full text-left text-sm">
+              <thead className="border-b border-slate-100 text-xs text-slate-500">
+                <tr>
+                  <Th className="pl-4">Product</Th>
+                  <Th>Change</Th>
+                  <Th align="right">Change</Th>
+                  <Th align="right">Stock after</Th>
+                  <Th className="pr-4">When</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {items.map((row) => (
+                  <tr key={row.id}>
+                    <td className="py-3 pl-4 pr-3">
+                      <span className="block max-w-56 truncate font-medium">{row.productName}</span>
+                      <span className="text-xs text-slate-400">SKU {row.sku}</span>
+                    </td>
+                    <td className="px-3 py-3 text-slate-600">
+                      {row.type}
+                      {row.reason && <span className="block max-w-56 truncate text-xs text-slate-400">{row.reason}</span>}
+                    </td>
+                    <td className="px-3 py-3 text-right">
+                      <ChangeAmount value={row.quantityChange} />
+                    </td>
+                    <td className="px-3 py-3 text-right tabular-nums">{row.quantityAfter}</td>
+                    <td className="py-3 pl-3 pr-4 whitespace-nowrap text-slate-500">{formatDateTime(row.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {history.data && history.data.totalPages > 1 && (
+            <div className="mt-3">
+              <Pagination page={history.data.page} totalPages={history.data.totalPages} onPage={setPage} />
+            </div>
+          )}
+        </>
+      )}
+    </Modal>
   )
 }
 
-function ClearIcon({ size = 14 }: { size?: number }) {
+function ChangeAmount({ value }: { value: number }) {
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
-    </svg>
+    <span className={`font-medium tabular-nums ${value > 0 ? 'text-[#1F5E3B]' : value < 0 ? 'text-rose-600' : 'text-slate-400'}`}>
+      {value > 0 ? `+${value}` : value < 0 ? `−${Math.abs(value)}` : '0'}
+    </span>
   )
 }
 

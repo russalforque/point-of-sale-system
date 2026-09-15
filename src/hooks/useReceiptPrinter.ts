@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { printingApi } from '../api/printingApi'
-import { connectSavedPrinter, getPrinterService, printerErrorMessage } from '../services/printer'
+import { ensurePrinterConnected, getPrinterService, printerErrorMessage } from '../services/printer'
 import { getPrinterConfig } from '../utils/printerConfig'
 import type { Sale, StoreSetting } from '../types'
 
@@ -9,18 +9,27 @@ export function useReceiptPrinter() {
   const [lastPrintError, setLastPrintError] = useState<string | null>(null)
   const [isOpeningDrawer, setIsOpeningDrawer] = useState(false)
   const [lastDrawerError, setLastDrawerError] = useState<string | null>(null)
+  // `isPrinting` only disables the button after React re-renders; this ref closes the
+  // gap so a fast double tap joins the job already running instead of sending a second copy.
+  const printJob = useRef<Promise<void> | null>(null)
 
-  async function printReceipt(sale: Sale, settings: StoreSetting) {
+  function printReceipt(sale: Sale, settings: StoreSetting): Promise<void> {
+    if (printJob.current) return printJob.current
+
     setIsPrinting(true)
     setLastPrintError(null)
-    try {
-      await printingApi.printReceipt(sale, settings)
-    } catch (error) {
-      setLastPrintError(printerErrorMessage(error))
-      throw error
-    } finally {
-      setIsPrinting(false)
-    }
+    const job = printingApi
+      .printReceipt(sale, settings)
+      .catch((error: unknown) => {
+        setLastPrintError(printerErrorMessage(error))
+        throw error
+      })
+      .finally(() => {
+        printJob.current = null
+        setIsPrinting(false)
+      })
+    printJob.current = job
+    return job
   }
 
   /** Sends the ESC/POS drawer-kick command through the connected printer. */
@@ -28,11 +37,8 @@ export function useReceiptPrinter() {
     setIsOpeningDrawer(true)
     setLastDrawerError(null)
     try {
-      const service = getPrinterService()
-      if (service.getStatus() !== 'connected') {
-        await connectSavedPrinter()
-      }
-      await service.openCashDrawer(getPrinterConfig())
+      await ensurePrinterConnected()
+      await getPrinterService().openCashDrawer(getPrinterConfig())
     } catch (error) {
       setLastDrawerError(printerErrorMessage(error))
       throw error

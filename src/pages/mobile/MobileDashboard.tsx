@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import {
   Bar,
   BarChart,
+  Cell,
+  LabelList,
   ResponsiveContainer,
   Tooltip,
   XAxis,
-  YAxis,
 } from 'recharts'
 
 import { dashboardApi } from '../../api/dashboardApi'
@@ -14,8 +16,13 @@ import {
   ErrorState,
   Spinner,
 } from '../../components/ui/States'
+import { useNavigate } from 'react-router-dom'
+
+import { useAuth } from '../../context/AuthContext'
 import { useSettings } from '../../context/SettingsContext'
 import { useAsync } from '../../hooks/useAsync'
+import { useDismissOnBack } from '../../hooks/useDismissOnBack'
+import { usePersistentNotifications } from '../../hooks/usePersistentNotifications'
 import {
   formatDateTime,
   formatMoney,
@@ -39,11 +46,13 @@ export interface RecentTransaction {
   customerName?: string | null
   total: number
   createdAt: string | Date
+  paymentMethod?: string
 }
 
 export interface TopSellingProduct {
   productId: string | number
   name: string
+  imageUrl?: string | null
   quantitySold: number
 }
 
@@ -80,6 +89,17 @@ type MobileFilterTab =
   | 'inventory'
 
 /* =============================================================
+   CONSTANTS
+============================================================= */
+
+// Items shown per list on the overview tab; the full list lives in its own tab.
+const PREVIEW_LIMIT = 3
+
+const GREEN = '#1F5E3B'
+const BAR_PAST = '#D3E6DB'
+const BAR_EMPTY = '#EDF2EF'
+
+/* =============================================================
    HELPERS
 ============================================================= */
 
@@ -95,6 +115,17 @@ const safeFormatDateTime = (
 
   return formatDateTime(value)
 }
+
+const plural = (count: number, word: string) =>
+  `${count} ${word}${count === 1 ? '' : 's'}`
+
+const initials = (name: string) =>
+  name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('')
 
 /* =============================================================
    MAIN DASHBOARD
@@ -119,8 +150,23 @@ export function MobileDashboard() {
   const [isRefreshing, setIsRefreshing] =
     useState(false)
 
-  const [notifications, setNotifications] =
-    useState<AppNotification[]>([])
+  const { can } = useAuth()
+  const navigate = useNavigate()
+  const tabsAnchorRef = useRef<HTMLDivElement | null>(null)
+
+  /** Switch section; if the tabs have scrolled off-screen, bring them back so the new content starts in view. */
+  const selectTab = (tab: MobileFilterTab) => {
+    setActiveTab(tab)
+    window.requestAnimationFrame(() => {
+      const anchor = tabsAnchorRef.current
+      if (anchor && anchor.getBoundingClientRect().top < 0) {
+        anchor.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      }
+    })
+  }
+
+  const money = (value: number) =>
+    formatMoney(value, settings.currencySymbol)
 
   /* -------------------------------------------------------------
      GENERATED NOTIFICATIONS
@@ -133,33 +179,27 @@ export function MobileDashboard() {
       const items: AppNotification[] = []
 
       data.lowStockProducts
-        ?.filter(
-          (product) => product.stockQuantity <= 0,
-        )
+        ?.filter((product) => product.stockQuantity <= 0)
         .forEach((product) => {
           items.push({
             id: `oos-${product.id}`,
-            title: 'Stock Depleted',
-            description:
-              `${product.name} (${product.sku}) reached zero inventory.`,
-            timestamp: 'Immediate action',
+            title: 'Out of stock',
+            description: `${product.name} (${product.sku}) has no units left.`,
+            timestamp: 'Now',
             type: 'critical',
             read: false,
           })
         })
 
       data.lowStockProducts
-        ?.filter(
-          (product) => product.stockQuantity > 0,
-        )
+        ?.filter((product) => product.stockQuantity > 0)
         .slice(0, 3)
         .forEach((product) => {
           items.push({
             id: `low-${product.id}`,
-            title: 'Low Par Threshold',
-            description:
-              `${product.name} has ${product.stockQuantity} remaining (Par: ${product.reorderLevel}).`,
-            timestamp: 'Reorder suggested',
+            title: 'Running low',
+            description: `${product.name}: ${product.stockQuantity} left (reorder at ${product.reorderLevel}).`,
+            timestamp: 'Reorder',
             type: 'warning',
             read: false,
           })
@@ -170,15 +210,12 @@ export function MobileDashboard() {
         .forEach((transaction) => {
           items.push({
             id: `tx-${transaction.id}`,
-            title: 'Settled Ticket',
-            description:
-              `${transaction.invoiceNumber} • ${formatMoney(
-                transaction.total,
-                settings.currencySymbol,
-              )}`,
-            timestamp: safeFormatDateTime(
-              transaction.createdAt,
-            ),
+            title: 'Sale completed',
+            description: `${transaction.invoiceNumber} · ${formatMoney(
+              transaction.total,
+              settings.currencySymbol,
+            )}`,
+            timestamp: safeFormatDateTime(transaction.createdAt),
             type: 'info',
             read: false,
           })
@@ -188,52 +225,16 @@ export function MobileDashboard() {
     }, [data, settings.currencySymbol])
 
   /* -------------------------------------------------------------
-     SYNC NOTIFICATIONS
+     NOTIFICATION STATE — read / dismissed survives reloads
   ------------------------------------------------------------- */
 
-  useEffect(() => {
-    if (generatedNotifications.length > 0) {
-      setNotifications(generatedNotifications)
-    }
-  }, [generatedNotifications])
-
-  /* -------------------------------------------------------------
-     NOTIFICATION ACTIONS
-  ------------------------------------------------------------- */
-
-  const handleMarkAsRead = (id: string) => {
-    setNotifications((previous) =>
-      previous.map((notification) =>
-        notification.id === id
-          ? {
-              ...notification,
-              read: true,
-            }
-          : notification,
-      ),
-    )
-  }
-
-  const handleMarkAllAsRead = () => {
-    setNotifications((previous) =>
-      previous.map((notification) => ({
-        ...notification,
-        read: true,
-      })),
-    )
-  }
-
-  const handleClearAll = () => {
-    setNotifications([])
-  }
-
-  const handleDismiss = (id: string) => {
-    setNotifications((previous) =>
-      previous.filter(
-        (notification) => notification.id !== id,
-      ),
-    )
-  }
+  const {
+    notifications,
+    markAsRead: handleMarkAsRead,
+    markAllAsRead: handleMarkAllAsRead,
+    clearAll: handleClearAll,
+    dismiss: handleDismiss,
+  } = usePersistentNotifications(generatedNotifications, Boolean(data))
 
   /* -------------------------------------------------------------
      REFRESH
@@ -250,60 +251,37 @@ export function MobileDashboard() {
   }
 
   /* -------------------------------------------------------------
-     LOADING STATE
+     LOADING / ERROR / EMPTY
   ------------------------------------------------------------- */
 
   if (loading && !data) {
     return (
-      <div className="flex min-h-[70vh] flex-col items-center justify-center bg-[#F6F8F7] px-6 text-center">
-        <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[#DDE5E1] bg-white">
-          <Spinner />
-        </div>
-
-        <p className="mt-4 text-sm font-semibold text-[#091413]">
-          Loading dashboard
-        </p>
-
-        <p className="mt-1 max-w-[220px] text-xs leading-5 text-slate-500">
-          Synchronizing your latest store metrics.
+      <div className="flex min-h-[70vh] flex-col items-center justify-center bg-white px-6 text-center">
+        <Spinner />
+        <p className="mt-4 text-sm text-slate-500">
+          Loading dashboard…
         </p>
       </div>
     )
   }
 
-  /* -------------------------------------------------------------
-     ERROR STATE
-  ------------------------------------------------------------- */
-
-  if (error) {
-    return (
-      <div className="min-h-screen bg-[#F6F8F7] px-4 py-12">
-        <div className="mx-auto max-w-lg rounded-2xl border border-rose-200 bg-white p-5">
-          <ErrorState
-            message={error}
-            onRetry={() => void reload()}
-          />
-        </div>
-      </div>
-    )
-  }
-
-  /* -------------------------------------------------------------
-     EMPTY STATE
-  ------------------------------------------------------------- */
-
+  // Only replace the screen when there is nothing to show; a failed refresh keeps the last numbers.
   if (!data) {
     return (
-      <div className="min-h-screen bg-[#F6F8F7] px-4 py-12">
-        <div className="mx-auto max-w-lg rounded-2xl border border-[#DDE5E1] bg-white p-8 text-center">
-          <EmptyState title="No store metrics available" />
+      <div className="min-h-screen bg-white px-5 py-16">
+        <div className="mx-auto max-w-lg text-center">
+          {error ? (
+            <ErrorState message={error} onRetry={() => void reload()} />
+          ) : (
+            <EmptyState title="No store metrics available" />
+          )}
         </div>
       </div>
     )
   }
 
   /* -------------------------------------------------------------
-     DERIVED METRICS
+     DERIVED
   ------------------------------------------------------------- */
 
   const averageTicket =
@@ -311,61 +289,69 @@ export function MobileDashboard() {
       ? data.todaysSales / data.todaysTransactions
       : 0
 
-  const depletedCount =
-    data.lowStockProducts.filter(
-      (product) => product.stockQuantity <= 0,
-    ).length
+  const depletedCount = data.lowStockProducts.filter(
+    (product) => product.stockQuantity <= 0,
+  ).length
 
-  const healthyInventory =
-    data.lowStockCount === 0
+  const healthyInventory = data.lowStockCount === 0
 
-  const todayLabel =
-    new Date().toLocaleDateString('en-US', {
-      weekday: 'long',
-      month: 'short',
-      day: 'numeric',
-    })
+  const canUpdateStock = can('inventory.manage')
+
+  const isOverview = activeTab === 'all'
+
+  const showSales = isOverview || activeTab === 'sales'
+  const showTransactions = isOverview || activeTab === 'transactions'
+  const showInventory = isOverview || activeTab === 'inventory'
+
+  const limit = <T,>(items: T[], full: number) =>
+    items.slice(0, isOverview ? PREVIEW_LIMIT : full)
+
+  const todayLabel = new Date().toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  })
+
+  const hasSalesData = data.salesOverview.some(
+    (item) => item.amount > 0,
+  )
+
+  const lastIndex = data.salesOverview.length - 1
+
+  const tabs: { key: MobileFilterTab; label: string }[] = [
+    { key: 'all', label: 'Overview' },
+    { key: 'sales', label: 'Sales' },
+    { key: 'transactions', label: 'Tickets' },
+    { key: 'inventory', label: 'Stock' },
+  ]
 
   /* =============================================================
      RENDER
   ============================================================= */
 
   return (
-    <div className="min-h-screen bg-[#F6F8F7] pb-24 pt-[max(0.75rem,env(safe-area-inset-top,0px))] font-sans text-[#091413] antialiased selection:bg-[#285A48] selection:text-white">
+    <div className="min-h-screen bg-white pb-8 pt-[max(1.25rem,env(safe-area-inset-top,0px))] font-sans text-[#091413] antialiased">
+      <main className="mx-auto w-full max-w-2xl px-5 sm:px-6">
 
-      <main className="mx-auto w-full max-w-2xl px-4 sm:px-6">
+        {/* HEADER */}
 
-        {/* =====================================================
-            HEADER
-        ===================================================== */}
-
-        <header className="flex items-center justify-between gap-4 border-b border-[#DDE5E1] pb-4">
-
+        <header className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <p className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-[#285A48]">
-              Store overview
-            </p>
-
-            <h1 className="mt-1 text-[26px] font-bold tracking-[-0.04em] text-[#091413]">
+            <p className="text-sm text-slate-500">{todayLabel}</p>
+            <h1 className="mt-1 text-[28px] font-bold leading-tight tracking-tight">
               Dashboard
             </h1>
-
             
           </div>
 
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
+          <div className="flex shrink-0 items-center gap-3">
+            <IconButton
+              label="Refresh dashboard data"
               onClick={handleReload}
               disabled={isRefreshing}
-              aria-label="Refresh dashboard data"
-              className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-[#DDE5E1] bg-white text-[#091413] transition hover:bg-[#F0F4F2] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#285A48]"
             >
-              <RefreshIcon
-                size={17}
-                spinning={isRefreshing}
-              />
-            </button>
+              <RefreshIcon size={20} spinning={isRefreshing} />
+            </IconButton>
 
             <NotificationBell
               notifications={notifications}
@@ -377,692 +363,421 @@ export function MobileDashboard() {
           </div>
         </header>
 
-        {/* =====================================================
-            PRIMARY SALES BLOCK
-        ===================================================== */}
+        {error && (
+          <p role="alert" className="mt-4 rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            Couldn’t refresh. Showing the last loaded numbers.
+          </p>
+        )}
+
+        {/* SALES CARD */}
 
         <section
           aria-label="Today's sales"
-          className="mt-5"
+          className="mt-6 rounded-3xl bg-[#F2F8F4] p-5"
         >
-          <div className="rounded-[22px] bg-[#091413] p-5 text-white sm:p-6">
-
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/50">
-                  Gross sales
-                </p>
-
-                <p className="mt-2 text-[38px] font-black leading-none tracking-[-0.055em] tabular-nums sm:text-5xl">
-                  {formatMoney(
-                    data.todaysSales,
-                    settings.currencySymbol,
-                  )}
-                </p>
-              </div>
-
-              <div className="flex shrink-0 items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1.5">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-
-                <span className="text-[10px] font-semibold text-white/75">
-                  Live
-                </span>
-              </div>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-[#1F5E3B]">
+                Sales today
+              </p>
+              <p className="mt-2 truncate text-[40px] font-bold leading-none tracking-[-0.03em] tabular-nums">
+                {money(data.todaysSales)}
+              </p>
             </div>
 
-            <div className="mt-6 grid grid-cols-2 border-t border-white/10 pt-4">
-
-              <div>
-                <p className="text-[10px] font-medium uppercase tracking-wider text-white/45">
-                  Tickets
-                </p>
-
-                <p className="mt-1 text-xl font-bold tabular-nums">
-                  {data.todaysTransactions}
-                </p>
-
-                <p className="mt-0.5 text-[10px] text-white/45">
-                  settled today
-                </p>
-              </div>
-
-              <div className="border-l border-white/10 pl-4">
-                <p className="text-[10px] font-medium uppercase tracking-wider text-white/45">
-                  Avg. ticket
-                </p>
-
-                <p className="mt-1 text-xl font-bold tabular-nums">
-                  {formatMoney(
-                    averageTicket,
-                    settings.currencySymbol,
-                  )}
-                </p>
-
-                <p className="mt-0.5 text-[10px] text-white/45">
-                  per transaction
-                </p>
-              </div>
-
-            </div>
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#E1EFE6] text-[#1F5E3B]">
+              <TrendUpIcon size={20} />
+            </span>
           </div>
+
+          <dl className="mt-6 grid grid-cols-3 divide-x divide-[#DCE9E1]">
+            <Stat label="Tickets" value={String(data.todaysTransactions)} />
+            <Stat label="Avg. ticket" value={money(averageTicket)} />
+            <Stat label="All customers" value={String(data.totalCustomers)} />
+          </dl>
         </section>
 
-        {/* =====================================================
-            OPERATIONAL SNAPSHOT
-        ===================================================== */}
+        {/* ATTENTION — only when stock needs action */}
 
-        <section
-          aria-label="Operational snapshot"
-          className="mt-3 grid grid-cols-2 gap-3"
-        >
-
+        {!healthyInventory && activeTab !== 'inventory' && (
           <button
             type="button"
-            onClick={() => setActiveTab('all')}
-            className="group min-h-[118px] rounded-2xl border border-[#DDE5E1] bg-white p-4 text-left transition hover:border-[#BFCBC5] hover:bg-[#FBFCFB] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#285A48]"
+            onClick={() => selectTab('inventory')}
+            className="mt-3 flex min-h-12 w-full items-center gap-3 rounded-2xl bg-amber-50 px-4 py-3 text-left transition active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
           >
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
-                Customers
-              </span>
+            <span className="text-amber-600">
+              <AlertIcon size={16} />
+            </span>
 
-              <span className="text-[#285A48]">
-                <UsersIcon size={15} />
-              </span>
-            </div>
+            <span className="min-w-0 flex-1 text-sm text-amber-900">
+              <span className="font-medium">
+                {plural(data.lowStockCount, 'item')}
+              </span>{' '}
+              {depletedCount > 0
+                ? `low on stock · ${depletedCount} out`
+                : 'low on stock'}
+            </span>
 
-            <p className="mt-5 text-2xl font-bold tracking-tight tabular-nums">
-              {data.totalCustomers}
-            </p>
-
-            <p className="mt-0.5 text-[11px] text-slate-500">
-              registered accounts
-            </p>
+            <ChevronIcon size={16} className="text-amber-700" />
           </button>
+        )}
 
-          <button
-            type="button"
-            onClick={() => setActiveTab('inventory')}
-            className={`group min-h-[118px] rounded-2xl border p-4 text-left transition active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#285A48] ${
-              healthyInventory
-                ? 'border-[#DDE5E1] bg-white hover:border-[#BFCBC5]'
-                : 'border-amber-200 bg-[#FFFCF6] hover:border-amber-300'
-            }`}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
-                Inventory
-              </span>
+        {/* TABS */}
 
-              {healthyInventory ? (
-                <CheckCircleIcon
-                  size={16}
-                />
-              ) : (
-                <AlertIcon size={16} />
-              )}
-            </div>
-
-            <p className="mt-5 text-2xl font-bold tracking-tight tabular-nums">
-              {data.totalProducts}
-            </p>
-
-            <p className="mt-0.5 text-[11px] text-slate-500">
-              {healthyInventory
-                ? 'stock levels healthy'
-                : `${data.lowStockCount} item${data.lowStockCount === 1 ? '' : 's'} need attention`}
-            </p>
-          </button>
-
-        </section>
-
-        {/* =====================================================
-            SECTION NAVIGATION
-        ===================================================== */}
-
+        <div ref={tabsAnchorRef} aria-hidden="true" />
         <nav
           aria-label="Dashboard sections"
-          className="mt-6"
+          className="sticky top-0 z-30 -mx-5 mt-4 bg-white/90 px-5 py-2 backdrop-blur sm:-mx-6 sm:px-6"
         >
-          <div className="flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-
-            {[
-              {
-                key: 'all',
-                label: 'Overview',
-              },
-              {
-                key: 'sales',
-                label: 'Sales',
-              },
-              {
-                key: 'transactions',
-                label: 'Tickets',
-              },
-              {
-                key: 'inventory',
-                label:
-                  data.lowStockCount > 0
-                    ? `Stock · ${data.lowStockCount}`
-                    : 'Stock',
-              },
-            ].map((tab) => {
-              const isActive =
-                activeTab === tab.key
+          <div className="grid grid-cols-4 rounded-full bg-[#F1F4F3] p-1">
+            {tabs.map((tab) => {
+              const isActive = activeTab === tab.key
 
               return (
                 <button
                   key={tab.key}
                   type="button"
-                  onClick={() =>
-                    setActiveTab(
-                      tab.key as MobileFilterTab,
-                    )
-                  }
+                  onClick={() => selectTab(tab.key)}
                   aria-pressed={isActive}
-                  className={`min-h-11 shrink-0 rounded-full px-4 text-xs font-semibold transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#285A48] ${
+                  className={`relative min-h-11 rounded-full text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] focus-visible:ring-offset-2 ${
                     isActive
-                      ? 'bg-[#285A48] text-white'
-                      : 'border border-[#DDE5E1] bg-white text-slate-600 hover:bg-[#F0F4F2]'
+                      ? 'bg-[#1F5E3B] text-white shadow-sm'
+                      : 'text-slate-600 hover:text-[#091413]'
                   }`}
                 >
                   {tab.label}
+                  {tab.key === 'inventory' && !healthyInventory && !isActive && (
+                    <span
+                      aria-label={`${data.lowStockCount} alerts`}
+                      className="absolute right-3 top-2.5 h-1.5 w-1.5 rounded-full bg-amber-500"
+                    />
+                  )}
                 </button>
               )
             })}
-
           </div>
         </nav>
 
-        {/* =====================================================
-            SALES SECTION
-        ===================================================== */}
+        {/* WEEKLY CHART */}
 
-        {(activeTab === 'all' ||
-          activeTab === 'sales') && (
-          <section className="mt-5">
+        {showSales && (
+          <section className="mt-6">
+            <SectionHeader title="This week" />
 
-            <SectionHeading
-              eyebrow="Sales performance"
-              title="Weekly velocity"
-              description="Sales volume across recent days."
-            />
-
-            <div className="mt-3 overflow-hidden rounded-2xl border border-[#DDE5E1] bg-white">
-
-              {data.salesOverview.every(
-                (item) => item.amount === 0,
-              ) ? (
-                <div className="px-4 py-10 text-center">
-                  <EmptyState title="No sales data recorded" />
-                </div>
-              ) : (
-                <div className="h-56 w-full px-2 pb-3 pt-5 sm:h-64">
-                  <ResponsiveContainer
-                    width="100%"
-                    height="100%"
+            {hasSalesData ? (
+              <div className="mt-2 h-56 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={data.salesOverview}
+                    margin={{ top: 40, right: 4, left: 4, bottom: 0 }}
+                    barCategoryGap="30%"
                   >
-                    <BarChart
-                      data={data.salesOverview}
-                      margin={{
-                        top: 4,
-                        right: 4,
-                        left: -24,
-                        bottom: 0,
+                    <XAxis
+                      dataKey="label"
+                      tickLine={false}
+                      axisLine={false}
+                      interval={0}
+                      tick={({ x, y, payload, index }) => (
+                        <text
+                          x={Number(x)}
+                          y={Number(y) + 14}
+                          textAnchor="middle"
+                          fontSize={13}
+                          fontWeight={index === lastIndex ? 600 : 400}
+                          fill={index === lastIndex ? '#091413' : '#94A3B8'}
+                        >
+                          {index === lastIndex ? 'Today' : payload.value}
+                        </text>
+                      )}
+                    />
+
+                    <Tooltip
+                      cursor={false}
+                      content={({ active, payload, label }) => {
+                        if (!active || !payload?.length) return null
+
+                        return (
+                          <div className="rounded-lg bg-[#091413] px-2.5 py-1.5 text-white">
+                            <p className="text-[10px] text-white/60">{label}</p>
+                            <p className="text-xs font-semibold tabular-nums">
+                              {money(Number(payload[0]?.value ?? 0))}
+                            </p>
+                          </div>
+                        )
                       }}
+                    />
+
+                    <Bar
+                      dataKey="amount"
+                      radius={[6, 6, 6, 6]}
+                      maxBarSize={34}
+                      minPointSize={6}
                     >
-                      <XAxis
-                        dataKey="label"
-                        tick={{
-                          fontSize: 10,
-                          fill: '#64748B',
-                          fontWeight: 500,
-                        }}
-                        tickLine={false}
-                        axisLine={false}
-                      />
-
-                      <YAxis
-                        tick={{
-                          fontSize: 9,
-                          fill: '#94A3B8',
-                        }}
-                        tickLine={false}
-                        axisLine={false}
-                        width={34}
-                      />
-
-                      <Tooltip
-                        cursor={{
-                          fill: '#F6F8F7',
-                        }}
-                        content={({
-                          active,
-                          payload,
-                          label,
-                        }) => {
-                          if (
-                            !active ||
-                            !payload ||
-                            !payload.length
-                          ) {
-                            return null
+                      {data.salesOverview.map((item, index) => (
+                        <Cell
+                          key={item.label}
+                          fill={
+                            index === lastIndex
+                              ? GREEN
+                              : item.amount > 0
+                              ? BAR_PAST
+                              : BAR_EMPTY
                           }
+                        />
+                      ))}
 
-                          const value =
-                            payload[0]?.value
+                      {/* Value callout above today's bar */}
+                      <LabelList
+                        dataKey="amount"
+                        content={(props) => {
+                          if (props.index !== lastIndex) return null
+
+                          const x = Number(props.x ?? 0)
+                          const y = Number(props.y ?? 0)
+                          const width = Number(props.width ?? 0)
+                          const text = money(Number(props.value ?? 0))
+                          const pillWidth = text.length * 7.5 + 18
+                          const centerX = x + width / 2
 
                           return (
-                            <div className="rounded-xl border border-[#24302D] bg-[#091413] px-3 py-2 text-white">
-                              <p className="text-[9px] font-semibold uppercase tracking-wider text-white/50">
-                                {label}
-                              </p>
-
-                              <p className="mt-0.5 text-xs font-bold tabular-nums">
-                                {formatMoney(
-                                  Number(value ?? 0),
-                                  settings.currencySymbol,
-                                )}
-                              </p>
-                            </div>
+                            <g>
+                              <line
+                                x1={centerX}
+                                x2={centerX}
+                                y1={y - 12}
+                                y2={y - 4}
+                                stroke={GREEN}
+                                strokeWidth={1.5}
+                              />
+                              <circle cx={centerX} cy={y - 12} r={2.5} fill={GREEN} />
+                              <rect
+                                x={centerX - pillWidth / 2}
+                                y={y - 40}
+                                width={pillWidth}
+                                height={22}
+                                rx={11}
+                                fill={GREEN}
+                              />
+                              <text
+                                x={centerX}
+                                y={y - 25}
+                                textAnchor="middle"
+                                fontSize={12}
+                                fontWeight={600}
+                                fill="#fff"
+                              >
+                                {text}
+                              </text>
+                            </g>
                           )
                         }}
                       />
-
-                      <Bar
-                        dataKey="amount"
-                        fill="#285A48"
-                        radius={[5, 5, 0, 0]}
-                        maxBarSize={28}
-                      />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-
-            </div>
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <Empty text="No sales recorded this week." />
+            )}
           </section>
         )}
 
-        {/* =====================================================
-            TOP SELLING PRODUCTS
-        ===================================================== */}
+        {/* TOP SELLERS */}
 
-        {(activeTab === 'all' ||
-          activeTab === 'sales') && (
-          <section className="mt-7">
+        {showSales && (
+          <section className="mt-6 overflow-hidden rounded-2xl border border-slate-100 bg-white">
+            <button
+              type="button"
+              onClick={isOverview ? () => selectTab('sales') : undefined}
+              disabled={!isOverview}
+              className="flex min-h-[68px] w-full items-center gap-3 border-b border-slate-100 px-4 text-left transition enabled:active:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1F5E3B]"
+            >
+              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#EAF4EE] text-[#1F5E3B]">
+                <TrophyIcon size={18} />
+              </span>
 
-            <SectionHeading
-              eyebrow="Product performance"
-              title="Top sellers"
-              description="Items with the highest unit volume."
-            />
+              <span className="min-w-0 flex-1">
+                <h2 className="text-base font-semibold">Top sellers</h2>
+                <span className="block text-xs text-slate-400">All time, by units sold</span>
+              </span>
 
-            <div className="mt-3 overflow-hidden rounded-2xl border border-[#DDE5E1] bg-white">
-
-              {data.topSellingProducts.length ===
-              0 ? (
-                <div className="px-4 py-10 text-center">
-                  <EmptyState title="No items sold yet" />
-                </div>
-              ) : (
-                <div>
-                  {data.topSellingProducts
-                    .slice(0, 5)
-                    .map(
-                      (
-                        product,
-                        index,
-                      ) => (
-                        <div
-                          key={
-                            product.productId
-                          }
-                          className="flex min-h-[68px] items-center gap-3 border-b border-[#E8EEEB] px-4 last:border-b-0"
-                        >
-                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#F1F5F3] font-mono text-[11px] font-bold text-[#285A48]">
-                            {String(
-                              index + 1,
-                            ).padStart(2, '0')}
-                          </div>
-
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-semibold text-[#091413]">
-                              {product.name}
-                            </p>
-
-                            <p className="mt-0.5 text-[10px] text-slate-400">
-                              Product
-                            </p>
-                          </div>
-
-                          <div className="shrink-0 text-right">
-                            <p className="text-sm font-bold tabular-nums text-[#091413]">
-                              {
-                                product.quantitySold
-                              }
-                            </p>
-
-                            <p className="text-[10px] text-slate-400">
-                              sold
-                            </p>
-                          </div>
-                        </div>
-                      ),
-                    )}
-                </div>
+              {isOverview && (
+                <ChevronIcon size={18} className="text-slate-400" />
               )}
+            </button>
 
-            </div>
+            {data.topSellingProducts.length === 0 ? (
+              <Empty text="No items sold yet." inset />
+            ) : (
+              <ul>
+                {limit(data.topSellingProducts, 5).map((product, index) => (
+                  <li
+                    key={product.productId}
+                    className="flex min-h-[72px] items-center gap-3 border-b border-slate-100 px-4 py-3 last:border-b-0"
+                  >
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#EAF4EE] text-sm font-medium tabular-nums text-[#1F5E3B]">
+                      {index + 1}
+                    </span>
+
+                    <ProductThumb name={product.name} imageUrl={product.imageUrl} />
+
+                    <p className="min-w-0 flex-1 truncate text-[15px]">
+                      {product.name}
+                    </p>
+
+                    <span className="shrink-0 text-sm tabular-nums text-slate-500">
+                      {product.quantitySold} sold
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         )}
 
-        {/* =====================================================
-            RECENT TRANSACTIONS
-        ===================================================== */}
+        {/* RECENT TICKETS */}
 
-        {(activeTab === 'all' ||
-          activeTab === 'transactions') && (
-          <section className="mt-7">
-
-            <SectionHeading
-              eyebrow="Transaction journal"
+        {showTransactions && (
+          <section className="mt-8">
+            <SectionHeader
               title="Recent tickets"
-              description="Latest settled transactions."
+              onViewAll={
+                isOverview && data.recentTransactions.length > 0
+                  ? () => selectTab('transactions')
+                  : undefined
+              }
             />
 
-            <div className="mt-3 overflow-hidden rounded-2xl border border-[#DDE5E1] bg-white">
+            <Card>
+              {data.recentTransactions.length === 0 ? (
+                <Empty text="No transactions yet." inset />
+              ) : (
+                <ul>
+                  {limit(
+                    data.recentTransactions,
+                    data.recentTransactions.length,
+                  ).map((transaction) => (
+                    <li
+                      key={transaction.id}
+                      className="flex min-h-[64px] items-center gap-3 border-b border-slate-100 px-4 py-3 last:border-b-0"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[15px]">
+                          {transaction.customerName ?? 'Walk-in customer'}
+                        </p>
+                        <p className="mt-0.5 truncate text-xs text-slate-400">
+                          {transaction.invoiceNumber}
+                          {transaction.paymentMethod ? ` · ${transaction.paymentMethod}` : ''} ·{' '}
+                          {safeFormatDateTime(transaction.createdAt)}
+                        </p>
+                      </div>
 
-              {data.recentTransactions.length ===
-              0 ? (
-                <div className="px-4 py-10 text-center">
-                  <EmptyState title="No transactions logged" />
+                      <span className="shrink-0 text-[15px] font-medium tabular-nums">
+                        {money(transaction.total)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          </section>
+        )}
+
+        {/* LOW STOCK */}
+
+        {showInventory && (
+          <section className="mt-8">
+            <SectionHeader
+              title="Low stock"
+              actionLabel={isOverview ? 'View all' : 'Update stock'}
+              onViewAll={
+                data.lowStockProducts.length === 0
+                  ? undefined
+                  : isOverview
+                  ? () => selectTab('inventory')
+                  : canUpdateStock
+                  ? () => navigate('/inventory')
+                  : undefined
+              }
+            />
+
+            <Card>
+              {data.lowStockProducts.length === 0 ? (
+                <div className="flex items-center gap-2 px-4 py-5 text-sm text-slate-500">
+                  <span className="text-[#1F5E3B]">
+                    <CheckCircleIcon size={16} />
+                  </span>
+                  All {data.totalProducts} products are well stocked.
                 </div>
               ) : (
-                <div>
-                  {data.recentTransactions.map(
-                    (transaction) => (
-                      <div
-                        key={transaction.id}
-                        className="flex min-h-[76px] items-center gap-3 border-b border-[#E8EEEB] px-4 last:border-b-0"
+                <ul>
+                  {limit(
+                    data.lowStockProducts,
+                    data.lowStockProducts.length,
+                  ).map((product) => {
+                    const isDepleted = product.stockQuantity <= 0
+
+                    const ratio =
+                      product.reorderLevel > 0
+                        ? Math.min(
+                            100,
+                            Math.max(
+                              0,
+                              (product.stockQuantity / product.reorderLevel) * 100,
+                            ),
+                          )
+                        : 0
+
+                    return (
+                      <li
+                        key={product.id}
+                        className="border-b border-slate-100 px-4 py-4 last:border-b-0"
                       >
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#F1F5F3] text-[#285A48]">
-                          <ReceiptIcon
-                            size={16}
+                        <div className="flex items-baseline justify-between gap-3">
+                          <p className="min-w-0 truncate text-[15px]">
+                            {product.name}
+                          </p>
+
+                          <p
+                            className={`shrink-0 text-sm tabular-nums ${
+                              isDepleted
+                                ? 'font-medium text-rose-600'
+                                : 'text-slate-500'
+                            }`}
+                          >
+                            {isDepleted
+                              ? 'Out of stock'
+                              : `${product.stockQuantity} left`}
+                          </p>
+                        </div>
+
+                        <div
+                          className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100"
+                          role="progressbar"
+                          aria-valuenow={product.stockQuantity}
+                          aria-valuemin={0}
+                          aria-valuemax={product.reorderLevel}
+                          aria-label={`${product.name} stock level`}
+                        >
+                          <div
+                            className={`h-full rounded-full ${
+                              ratio <= 25 ? 'bg-rose-500' : 'bg-amber-400'
+                            }`}
+                            style={{ width: `${ratio}%` }}
                           />
                         </div>
 
-                        <div className="min-w-0 flex-1">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <p className="truncate font-mono text-xs font-bold text-[#091413]">
-                              {
-                                transaction.invoiceNumber
-                              }
-                            </p>
-                          </div>
-
-                          <p className="mt-1 truncate text-[11px] text-slate-500">
-                            {transaction.customerName ??
-                              'Counter Sale'}
-                          </p>
-
-                          <p className="mt-0.5 text-[10px] text-slate-400">
-                            {safeFormatDateTime(
-                              transaction.createdAt,
-                            )}
-                          </p>
-                        </div>
-
-                        <p className="shrink-0 text-sm font-bold tabular-nums text-[#091413]">
-                          {formatMoney(
-                            transaction.total,
-                            settings.currencySymbol,
-                          )}
+                        <p className="mt-1.5 text-xs text-slate-400">
+                          SKU {product.sku} · alert at {product.reorderLevel}
                         </p>
-                      </div>
-                    ),
-                  )}
-                </div>
+                      </li>
+                    )
+                  })}
+                </ul>
               )}
-
-            </div>
+            </Card>
           </section>
         )}
-
-        {/* =====================================================
-            INVENTORY ALERTS
-        ===================================================== */}
-
-        {(activeTab === 'all' ||
-          activeTab === 'inventory') && (
-          <section className="mt-7">
-
-            <div className="flex items-end justify-between gap-3">
-              <SectionHeading
-                eyebrow="Inventory control"
-                title="Stock attention"
-                description={
-                  healthyInventory
-                    ? 'Everything is above its reorder threshold.'
-                    : 'Items that may need replenishment.'
-                }
-              />
-
-              {!healthyInventory && (
-                <span className="mb-0.5 shrink-0 rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-bold text-amber-800">
-                  {data.lowStockCount} alert
-                  {data.lowStockCount === 1
-                    ? ''
-                    : 's'}
-                </span>
-              )}
-            </div>
-
-            <div className="mt-3 overflow-hidden rounded-2xl border border-[#DDE5E1] bg-white">
-
-              {data.lowStockProducts.length ===
-              0 ? (
-                <div className="px-5 py-10 text-center">
-
-                  <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-[#EAF1EE] text-[#285A48]">
-                    <CheckCircleIcon
-                      size={20}
-                    />
-                  </div>
-
-                  <p className="mt-3 text-sm font-bold text-[#091413]">
-                    Inventory looks good
-                  </p>
-
-                  <p className="mx-auto mt-1 max-w-[250px] text-xs leading-5 text-slate-400">
-                    All catalog items are currently
-                    above their reorder thresholds.
-                  </p>
-                </div>
-              ) : (
-                <div>
-                  {data.lowStockProducts.map(
-                    (product) => {
-                      const isDepleted =
-                        product.stockQuantity <=
-                        0
-
-                      const stockRatio =
-                        product.reorderLevel > 0
-                          ? Math.min(
-                              100,
-                              Math.max(
-                                0,
-                                (product.stockQuantity /
-                                  product.reorderLevel) *
-                                  100,
-                              ),
-                            )
-                          : 0
-
-                      return (
-                        <div
-                          key={product.id}
-                          className="border-b border-[#E8EEEB] px-4 py-4 last:border-b-0"
-                        >
-                          <div className="flex items-start gap-3">
-
-                            <div
-                              className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
-                                isDepleted
-                                  ? 'bg-rose-50 text-rose-600'
-                                  : 'bg-amber-50 text-amber-700'
-                              }`}
-                            >
-                              <BoxIcon
-                                size={16}
-                              />
-                            </div>
-
-                            <div className="min-w-0 flex-1">
-
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <p className="truncate text-sm font-semibold text-[#091413]">
-                                    {product.name}
-                                  </p>
-
-                                  <p className="mt-0.5 font-mono text-[10px] text-slate-400">
-                                    SKU {product.sku}
-                                  </p>
-                                </div>
-
-                                <div className="shrink-0 text-right">
-                                  <p
-                                    className={`text-lg font-black leading-none tabular-nums ${
-                                      isDepleted
-                                        ? 'text-rose-600'
-                                        : 'text-[#091413]'
-                                    }`}
-                                  >
-                                    {
-                                      product.stockQuantity
-                                    }
-                                  </p>
-
-                                  <p className="mt-0.5 text-[9px] uppercase tracking-wider text-slate-400">
-                                    /{' '}
-                                    {
-                                      product.reorderLevel
-                                    } par
-                                  </p>
-                                </div>
-                              </div>
-
-                              <div className="mt-3 flex items-center gap-2">
-                                <div
-                                  className="h-1.5 flex-1 overflow-hidden rounded-full bg-[#EEF2F0]"
-                                  role="progressbar"
-                                  aria-valuenow={
-                                    product.stockQuantity
-                                  }
-                                  aria-valuemin={0}
-                                  aria-valuemax={
-                                    product.reorderLevel
-                                  }
-                                  aria-label={`${product.name} stock level`}
-                                >
-                                  <div
-                                    className={`h-full rounded-full transition-all duration-500 ${
-                                      isDepleted
-                                        ? 'bg-rose-500'
-                                        : stockRatio <=
-                                            25
-                                        ? 'bg-rose-500'
-                                        : 'bg-amber-500'
-                                    }`}
-                                    style={{
-                                      width: `${
-                                        isDepleted
-                                          ? 0
-                                          : Math.max(
-                                              6,
-                                              stockRatio,
-                                            )
-                                      }%`,
-                                    }}
-                                  />
-                                </div>
-
-                                <span className="w-8 shrink-0 text-right font-mono text-[9px] tabular-nums text-slate-400">
-                                  {Math.round(
-                                    stockRatio,
-                                  )}
-                                  %
-                                </span>
-                              </div>
-
-                              <div className="mt-2">
-                                <span
-                                  className={`inline-flex rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-wider ${
-                                    isDepleted
-                                      ? 'bg-rose-50 text-rose-700'
-                                      : 'bg-amber-50 text-amber-800'
-                                  }`}
-                                >
-                                  {isDepleted
-                                    ? 'Stockout'
-                                    : 'Low stock'}
-                                </span>
-                              </div>
-
-                            </div>
-                          </div>
-                        </div>
-                      )
-                    },
-                  )}
-                </div>
-              )}
-
-            </div>
-          </section>
-        )}
-
-        {/* =====================================================
-            INVENTORY SUMMARY FOOTER
-        ===================================================== */}
-
-        {activeTab === 'inventory' &&
-          data.lowStockProducts.length > 0 && (
-            <div className="mt-3 flex items-center justify-between rounded-xl border border-[#DDE5E1] bg-white px-4 py-3">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                  Inventory status
-                </p>
-
-                <p className="mt-0.5 text-xs font-semibold text-[#091413]">
-                  {depletedCount > 0
-                    ? `${depletedCount} depleted item${
-                        depletedCount === 1
-                          ? ''
-                          : 's'
-                      }`
-                    : 'No depleted items'}
-                </p>
-              </div>
-
-              <BoxIcon
-                size={16}
-                className="text-slate-400"
-              />
-            </div>
-          )}
-
-        {/* =====================================================
-            LAST UPDATED
-        ===================================================== */}
-
-        <footer className="py-8 text-center">
-          <p className="font-mono text-[9px] uppercase tracking-[0.15em] text-slate-400">
-            Dashboard · Live register data
-          </p>
-        </footer>
 
       </main>
     </div>
@@ -1070,32 +785,115 @@ export function MobileDashboard() {
 }
 
 /* =============================================================
-   SECTION HEADING
+   BUILDING BLOCKS
 ============================================================= */
 
-function SectionHeading({
-  eyebrow,
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 px-4 first:pl-0 last:pr-0">
+      <dt className="text-sm text-slate-500">{label}</dt>
+      <dd className="mt-1.5 truncate text-xl font-semibold tabular-nums">
+        {value}
+      </dd>
+    </div>
+  )
+}
+
+function SectionHeader({
   title,
-  description,
+  onViewAll,
+  actionLabel = 'View all',
 }: {
-  eyebrow: string
   title: string
-  description: string
+  onViewAll?: () => void
+  actionLabel?: string
 }) {
   return (
-    <div>
-      <p className="text-[9px] font-bold uppercase tracking-[0.16em] text-[#285A48]">
-        {eyebrow}
-      </p>
+    <div className="flex min-h-11 items-center justify-between gap-3">
+      <h2 className="text-lg font-semibold">{title}</h2>
 
-      <h2 className="mt-1 text-lg font-bold tracking-[-0.025em] text-[#091413]">
-        {title}
-      </h2>
-
-      <p className="mt-0.5 text-[11px] leading-4 text-slate-500">
-        {description}
-      </p>
+      {onViewAll && (
+        <button
+          type="button"
+          onClick={onViewAll}
+          className="-mr-2 inline-flex min-h-11 items-center gap-1 rounded-lg px-2 text-sm font-medium text-[#1F5E3B] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+        >
+          {actionLabel}
+          <ChevronIcon size={16} />
+        </button>
+      )}
     </div>
+  )
+}
+
+/** Saved product photo; falls back to initials when there is none or it fails to load. */
+function ProductThumb({ name, imageUrl }: { name: string; imageUrl?: string | null }) {
+  const [failed, setFailed] = useState(false)
+  const showImage = Boolean(imageUrl) && !failed
+
+  return (
+    <span
+      aria-hidden="true"
+      className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-slate-100 text-xs font-semibold text-slate-500"
+    >
+      {showImage ? (
+        <img
+          src={imageUrl ?? undefined}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onError={() => setFailed(true)}
+          className="h-full w-full object-cover"
+        />
+      ) : (
+        initials(name)
+      )}
+    </span>
+  )
+}
+
+function Card({ children }: { children: ReactNode }) {
+  return (
+    <div className="mt-2 overflow-hidden rounded-2xl border border-slate-100 bg-white">
+      {children}
+    </div>
+  )
+}
+
+function Empty({ text, inset = false }: { text: string; inset?: boolean }) {
+  return (
+    <p className={`py-6 text-sm text-slate-400 ${inset ? 'px-4' : ''}`}>
+      {text}
+    </p>
+  )
+}
+
+function IconButton({
+  label,
+  onClick,
+  disabled,
+  active,
+  children,
+}: {
+  label: string
+  onClick: () => void
+  disabled?: boolean
+  active?: boolean
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      aria-expanded={active}
+      className={`relative inline-flex h-12 w-12 items-center justify-center rounded-full text-[#091413] transition active:scale-95 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] ${
+        active ? 'bg-[#E6ECE9]' : 'bg-[#F3F5F4] hover:bg-[#E9EEEB]'
+      }`}
+    >
+      {children}
+    </button>
   )
 }
 
@@ -1118,96 +916,74 @@ function NotificationBell({
   onClearAll,
   onDismiss,
 }: NotificationBellProps) {
-  const [isOpen, setIsOpen] =
-    useState(false)
+  const [isOpen, setIsOpen] = useState(false)
 
-  const containerRef =
-    useRef<HTMLDivElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Set by <CloseOnBack> while open; closing through it also consumes the history entry.
+  const closeRef = useRef<(() => void) | null>(null)
+  const requestClose = () => {
+    if (closeRef.current) closeRef.current()
+    else setIsOpen(false)
+  }
 
   const unreadCount = useMemo(
-    () =>
-      notifications.filter(
-        (notification) =>
-          !notification.read,
-      ).length,
+    () => notifications.filter((notification) => !notification.read).length,
     [notifications],
   )
 
-  /* -------------------------------------------------------------
-     OUTSIDE CLICK
-  ------------------------------------------------------------- */
-
   useEffect(() => {
-    const handleClickOutside = (
-      event: MouseEvent,
-    ) => {
+    if (!isOpen) return
+
+    const handleClickOutside = (event: MouseEvent) => {
       if (
         containerRef.current &&
-        !containerRef.current.contains(
-          event.target as Node,
-        )
+        !containerRef.current.contains(event.target as Node)
       ) {
-        setIsOpen(false)
+        requestClose()
       }
     }
 
-    if (isOpen) {
-      document.addEventListener(
-        'mousedown',
-        handleClickOutside,
-      )
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') requestClose()
     }
 
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleEscape)
+
     return () => {
-      document.removeEventListener(
-        'mousedown',
-        handleClickOutside,
-      )
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleEscape)
     }
   }, [isOpen])
 
   return (
-    <div
-      ref={containerRef}
-      className="relative"
-    >
-      {/* =======================================================
-          BELL BUTTON
-      ======================================================= */}
-
-      <button
-        type="button"
-        onClick={() =>
-          setIsOpen((previous) => !previous)
+    <div ref={containerRef} className="relative">
+      <IconButton
+        label={
+          unreadCount > 0
+            ? `Notifications, ${unreadCount} unread`
+            : 'Notifications'
         }
-        aria-label="Open notifications"
-        aria-expanded={isOpen}
-        className={`relative inline-flex h-11 w-11 items-center justify-center rounded-xl border transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#285A48] ${
-          isOpen
-            ? 'border-[#285A48] bg-[#285A48] text-white'
-            : 'border-[#DDE5E1] bg-white text-[#091413] hover:bg-[#F0F4F2]'
-        }`}
+        onClick={() => (isOpen ? requestClose() : setIsOpen(true))}
+        active={isOpen}
       >
-        <BellIcon size={17} />
+        <BellIcon size={20} />
 
         {unreadCount > 0 && (
-          <span className="absolute -right-1 -top-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-rose-600 px-1 font-mono text-[9px] font-bold text-white ring-2 ring-[#F6F8F7]">
-            {unreadCount > 9
-              ? '9+'
-              : unreadCount}
-          </span>
+          <span className="absolute right-1.5 top-1.5 h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-white" />
         )}
-      </button>
-
-      {/* =======================================================
-          NOTIFICATION PANEL
-      ======================================================= */}
+      </IconButton>
 
       {isOpen && (
         <>
+          <CloseOnBack
+            onDismiss={() => setIsOpen(false)}
+            closeRef={closeRef}
+          />
           <div
-            className="fixed inset-0 z-40 bg-[#091413]/20 sm:hidden"
-            onClick={() => setIsOpen(false)}
+            className="fixed inset-0 z-40 bg-black/10 sm:hidden"
+            onClick={requestClose}
             aria-hidden="true"
           />
 
@@ -1215,35 +991,19 @@ function NotificationBell({
             role="dialog"
             aria-modal="true"
             aria-label="Notifications"
-            className="fixed inset-x-3 top-[4.5rem] z-50 flex max-h-[72vh] flex-col overflow-hidden rounded-2xl border border-[#DDE5E1] bg-white shadow-[0_20px_60px_rgba(9,20,19,0.16)] sm:absolute sm:right-0 sm:top-full sm:mt-2 sm:w-[360px]"
+            className="fixed inset-x-3 top-[5.5rem] z-50 flex max-h-[70vh] flex-col overflow-hidden rounded-2xl bg-white shadow-[0_12px_40px_rgba(9,20,19,0.12)] ring-1 ring-slate-100 sm:absolute sm:right-0 sm:top-full sm:mt-2 sm:w-[360px]"
           >
+            <div className="flex items-center justify-between px-4 pb-2 pt-3">
+              <p className="text-sm font-semibold">Notifications</p>
 
-            {/* =================================================
-                PANEL HEADER
-            ================================================= */}
-
-            <div className="flex items-center justify-between border-b border-[#E5EBE8] bg-[#091413] px-4 py-3.5 text-white">
-
-              <div>
-                <p className="text-sm font-bold">
-                  Notifications
-                </p>
-
-                <p className="mt-0.5 text-[10px] text-white/45">
-                  {unreadCount > 0
-                    ? `${unreadCount} unread`
-                    : 'All caught up'}
-                </p>
-              </div>
-
-              <div className="flex items-center gap-3">
+              <div className="flex items-center">
                 {unreadCount > 0 && (
                   <button
                     type="button"
                     onClick={onMarkAllAsRead}
-                    className="min-h-10 px-1 text-[11px] font-semibold text-emerald-300 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                    className="min-h-10 rounded-lg px-2 text-xs font-medium text-[#1F5E3B] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
                   >
-                    Read all
+                    Mark all read
                   </button>
                 )}
 
@@ -1251,7 +1011,7 @@ function NotificationBell({
                   <button
                     type="button"
                     onClick={onClearAll}
-                    className="min-h-10 px-1 text-[11px] font-medium text-white/55 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                    className="min-h-10 rounded-lg px-2 text-xs text-slate-400 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
                   >
                     Clear
                   </button>
@@ -1259,134 +1019,70 @@ function NotificationBell({
               </div>
             </div>
 
-            {/* =================================================
-                LIST
-            ================================================= */}
-
             <div className="flex-1 overflow-y-auto overscroll-contain">
-
-              {notifications.length ===
-              0 ? (
-                <div className="px-6 py-12 text-center">
-
-                  <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-[#EAF1EE] text-[#285A48]">
-                    <CheckCircleIcon
-                      size={20}
-                    />
-                  </div>
-
-                  <p className="mt-3 text-sm font-bold text-[#091413]">
-                    Nothing needs attention
-                  </p>
-
-                  <p className="mx-auto mt-1 max-w-[220px] text-xs leading-5 text-slate-400">
-                    New stock and transaction alerts
-                    will appear here.
-                  </p>
-
-                </div>
+              {notifications.length === 0 ? (
+                <p className="px-4 pb-10 pt-8 text-center text-sm text-slate-400">
+                  You're all caught up.
+                </p>
               ) : (
-                notifications.map(
-                  (notification) => {
-                    const isUnread =
-                      !notification.read
+                <ul>
+                  {notifications.map((notification) => {
+                    const isUnread = !notification.read
 
-                    const isCritical =
-                      notification.type ===
-                      'critical'
-
-                    const isWarning =
-                      notification.type ===
-                      'warning'
+                    const dotColor =
+                      notification.type === 'critical'
+                        ? 'bg-rose-500'
+                        : notification.type === 'warning'
+                        ? 'bg-amber-400'
+                        : 'bg-slate-300'
 
                     return (
-                      <div
+                      <li
                         key={notification.id}
-                        className={`border-b border-[#E8EEEB] px-4 py-4 last:border-b-0 ${
-                          isUnread
-                            ? 'bg-[#F7FAF8]'
-                            : 'bg-white'
-                        }`}
+                        className="flex items-start gap-3 border-t border-slate-100 px-4 py-3"
                       >
-                        <div className="flex gap-3">
+                        <span
+                          className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
+                            isUnread ? dotColor : 'bg-transparent'
+                          }`}
+                        />
 
-                          {/* Severity marker */}
-
-                          <div className="pt-1.5">
-                            <span
-                              className={`block h-2 w-2 rounded-full ${
-                                isCritical
-                                  ? 'bg-rose-500'
-                                  : isWarning
-                                  ? 'bg-amber-500'
-                                  : 'bg-[#285A48]'
+                        <button
+                          type="button"
+                          onClick={() => isUnread && onMarkAsRead(notification.id)}
+                          className="min-w-0 flex-1 text-left focus-visible:outline-none"
+                        >
+                          <div className="flex items-baseline justify-between gap-3">
+                            <p
+                              className={`text-sm ${
+                                isUnread ? 'font-medium' : 'text-slate-500'
                               }`}
-                            />
+                            >
+                              {notification.title}
+                            </p>
+                            <span className="shrink-0 text-[11px] text-slate-400">
+                              {notification.timestamp}
+                            </span>
                           </div>
 
-                          {/* Content */}
+                          <p className="mt-0.5 text-xs leading-5 text-slate-500">
+                            {notification.description}
+                          </p>
+                        </button>
 
-                          <button
-                            type="button"
-                            onClick={() =>
-                              isUnread &&
-                              onMarkAsRead(
-                                notification.id,
-                              )
-                            }
-                            className="min-w-0 flex-1 text-left focus-visible:outline-none"
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <p
-                                className={`text-xs ${
-                                  isUnread
-                                    ? 'font-bold text-[#091413]'
-                                    : 'font-medium text-slate-700'
-                                }`}
-                              >
-                                {
-                                  notification.title
-                                }
-                              </p>
-
-                              <span className="shrink-0 text-[9px] text-slate-400">
-                                {
-                                  notification.timestamp
-                                }
-                              </span>
-                            </div>
-
-                            <p className="mt-1 text-[11px] leading-4 text-slate-500">
-                              {
-                                notification.description
-                              }
-                            </p>
-                          </button>
-
-                          {/* Dismiss */}
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onDismiss(
-                                notification.id,
-                              )
-                            }
-                            aria-label="Dismiss notification"
-                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#285A48]"
-                          >
-                            <ClearIcon
-                              size={13}
-                            />
-                          </button>
-
-                        </div>
-                      </div>
+                        <button
+                          type="button"
+                          onClick={() => onDismiss(notification.id)}
+                          aria-label="Dismiss notification"
+                          className="-mr-3 -mt-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-slate-300 transition hover:bg-slate-100 hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+                        >
+                          <ClearIcon size={14} />
+                        </button>
+                      </li>
                     )
-                  },
-                )
+                  })}
+                </ul>
               )}
-
             </div>
           </div>
         </>
@@ -1395,174 +1091,42 @@ function NotificationBell({
   )
 }
 
+/** Mounted only while the notification panel is open, so Android back closes it instead of leaving the page. */
+function CloseOnBack({
+  onDismiss,
+  closeRef,
+}: {
+  onDismiss: () => void
+  closeRef: { current: (() => void) | null }
+}) {
+  const { close } = useDismissOnBack('dashboardNotificationsOpen', onDismiss)
+
+  useEffect(() => {
+    closeRef.current = close
+  })
+
+  useEffect(
+    () => () => {
+      closeRef.current = null
+    },
+    [closeRef],
+  )
+
+  return null
+}
+
 /* =============================================================
    ICONS
 ============================================================= */
 
-function RefreshIcon({
-  size = 16,
-  spinning = false,
-}: {
-  size?: number
-  spinning?: boolean
-}) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={
-        spinning
-          ? 'animate-spin text-[#285A48]'
-          : ''
-      }
-      aria-hidden="true"
-    >
-      <path d="M21 12a9 9 0 1 1-9-9c2.5 0 4.9 1 6.7 2.7L21 8" />
-      <path d="M21 3v5h-5" />
-    </svg>
-  )
-}
-
-function BellIcon({
-  size = 16,
-}: {
-  size?: number
-}) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
-      <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
-    </svg>
-  )
-}
-
-function CheckCircleIcon({
-  size = 16,
-}: {
-  size?: number
-}) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle
-        cx="12"
-        cy="12"
-        r="9"
-      />
-      <polyline points="8 12 11 15 16 9" />
-    </svg>
-  )
-}
-
-function AlertIcon({
-  size = 16,
-}: {
-  size?: number
-}) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M10.3 3.6 2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0Z" />
-      <path d="M12 9v4" />
-      <path d="M12 17h.01" />
-    </svg>
-  )
-}
-
-function UsersIcon({
-  size = 16,
-}: {
-  size?: number
-}) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-      <circle
-        cx="9"
-        cy="7"
-        r="4"
-      />
-      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
-      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-    </svg>
-  )
-}
-
-function ReceiptIcon({
-  size = 16,
-}: {
-  size?: number
-}) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M6 2h12v20l-3-2-3 2-3-2-3 2V2Z" />
-      <path d="M9 7h6" />
-      <path d="M9 11h6" />
-      <path d="M9 15h3" />
-    </svg>
-  )
-}
-
-function BoxIcon({
-  size = 16,
+function Svg({
+  size,
   className = '',
+  children,
 }: {
-  size?: number
+  size: number
   className?: string
+  children: ReactNode
 }) {
   return (
     <svg
@@ -1571,49 +1135,89 @@ function BoxIcon({
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth="1.75"
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}
       aria-hidden="true"
     >
-      <path d="m21 8-9 5-9-5" />
-      <path d="m3 8 9-5 9 5v8l-9 5-9-5V8Z" />
-      <path d="M12 13v8" />
+      {children}
     </svg>
   )
 }
 
-function ClearIcon({
-  size = 14,
-}: {
-  size?: number
-}) {
+function RefreshIcon({ size = 16, spinning = false }: { size?: number; spinning?: boolean }) {
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <line
-        x1="18"
-        y1="6"
-        x2="6"
-        y2="18"
-      />
-      <line
-        x1="6"
-        y1="6"
-        x2="18"
-        y2="18"
-      />
-    </svg>
+    <Svg size={size} className={spinning ? 'animate-spin' : ''}>
+      <path d="M21 12a9 9 0 1 1-9-9c2.5 0 4.9 1 6.7 2.7L21 8" />
+      <path d="M21 3v5h-5" />
+    </Svg>
+  )
+}
+
+function BellIcon({ size = 16 }: { size?: number }) {
+  return (
+    <Svg size={size}>
+      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+      <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+    </Svg>
+  )
+}
+
+function TrophyIcon({ size = 16 }: { size?: number }) {
+  return (
+    <Svg size={size}>
+      <path d="M8 21h8" />
+      <path d="M12 17v4" />
+      <path d="M7 4h10v5a5 5 0 0 1-10 0V4Z" />
+      <path d="M17 5h3v2a3 3 0 0 1-3 3" />
+      <path d="M7 5H4v2a3 3 0 0 0 3 3" />
+    </Svg>
+  )
+}
+
+function TrendUpIcon({ size = 16 }: { size?: number }) {
+  return (
+    <Svg size={size}>
+      <polyline points="3 17 9 11 13 15 21 7" />
+      <polyline points="15 7 21 7 21 13" />
+    </Svg>
+  )
+}
+
+function CheckCircleIcon({ size = 16 }: { size?: number }) {
+  return (
+    <Svg size={size}>
+      <circle cx="12" cy="12" r="9" />
+      <polyline points="8 12 11 15 16 9" />
+    </Svg>
+  )
+}
+
+function AlertIcon({ size = 16 }: { size?: number }) {
+  return (
+    <Svg size={size}>
+      <path d="M10.3 3.6 2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0Z" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </Svg>
+  )
+}
+
+function ChevronIcon({ size = 16, className = '' }: { size?: number; className?: string }) {
+  return (
+    <Svg size={size} className={className}>
+      <path d="m9 18 6-6-6-6" />
+    </Svg>
+  )
+}
+
+function ClearIcon({ size = 14 }: { size?: number }) {
+  return (
+    <Svg size={size}>
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </Svg>
   )
 }
 

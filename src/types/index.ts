@@ -146,6 +146,7 @@ export type DashboardData = {
   topSellingProducts: {
     productId: number
     name: string
+    imageUrl: string | null
     quantitySold: number
     revenue: number
   }[]

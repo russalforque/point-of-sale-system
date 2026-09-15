@@ -1,28 +1,46 @@
-import { useState } from 'react'
-import {
-  Eye,
-  Pencil,
-  Plus,
-  Search,
-  Trash2,
-} from '../../components/ui/Icons'
+import { useMemo, useState } from 'react'
 
 import { supplierApi, type SupplierPayload } from '../../api/supplierApi'
-import { Badge } from '../../components/ui/Badge'
-import { Button } from '../../components/ui/Button'
-import { Field, Input, Textarea } from '../../components/ui/Field'
-import { FormSection } from '../../components/ui/FormSection'
+import {
+  DataCard,
+  DesktopPage,
+  DesktopSearch,
+  EmptyRow,
+  ErrorRow,
+  FilterPills,
+  HoverAction,
+  LoadingRow,
+  StatusCell,
+  Th,
+  Toolbar,
+} from '../../components/ui/DesktopKit'
+import { ChevronRight } from '../../components/ui/Icons'
+import {
+  AddButton,
+  Avatar,
+  ContactActions,
+  DetailList,
+  DetailRow,
+  EMAIL_PATTERN,
+  PrimaryButton,
+  SwitchRow,
+  TextAreaField,
+  TextButton,
+  TextField,
+} from '../../components/ui/MobileKit'
 import { ConfirmDialog, Modal } from '../../components/ui/Modal'
-import { PageHeader } from '../../components/ui/Page'
-import { EmptyState, ErrorState, Spinner } from '../../components/ui/States'
 import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
+import { useDebounced } from '../../hooks/useDebounced'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import type { Supplier } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
 import { MobileSuppliers } from '../mobile/MobileSuppliers'
 
 type StatusFilter = '' | 'active' | 'inactive'
+type FormErrors = Partial<Record<'companyName' | 'email' | 'phone', string>>
+
+const FORM_ID = 'supplier-form'
 
 const emptyForm: SupplierPayload = {
   companyName: '',
@@ -31,6 +49,25 @@ const emptyForm: SupplierPayload = {
   email: '',
   address: '',
   isActive: true,
+}
+
+function toForm(supplier: Supplier): SupplierPayload {
+  return {
+    companyName: supplier.companyName,
+    contactPerson: supplier.contactPerson ?? '',
+    phone: supplier.phone ?? '',
+    email: supplier.email ?? '',
+    address: supplier.address ?? '',
+    isActive: supplier.isActive,
+  }
+}
+
+function validate(form: SupplierPayload): FormErrors {
+  const errors: FormErrors = {}
+  if (!form.companyName.trim()) errors.companyName = 'Enter the company name.'
+  if (form.email?.trim() && !EMAIL_PATTERN.test(form.email.trim())) errors.email = 'Enter a valid email, like orders@company.com.'
+  if (form.phone?.trim() && form.phone.replace(/\D/g, '').length < 7) errors.phone = 'Phone number looks too short.'
+  return errors
 }
 
 export function SuppliersPage() {
@@ -44,55 +81,74 @@ function DesktopSuppliersPage() {
 
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<StatusFilter>('')
-  const [form, setForm] = useState<SupplierPayload>(emptyForm)
-  const [editing, setEditing] = useState<Supplier | null>(null)
-  const [open, setOpen] = useState(false)
+
   const [view, setView] = useState<Supplier | null>(null)
+  const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<Supplier | null>(null)
+  const [form, setForm] = useState<SupplierPayload>(emptyForm)
+  const [initialForm, setInitialForm] = useState<SupplierPayload>(emptyForm)
+  const [touched, setTouched] = useState<Partial<Record<keyof FormErrors, boolean>>>({})
   const [deactivate, setDeactivate] = useState<Supplier | null>(null)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [busy, setBusy] = useState(false)
 
-  const { data, loading, error, reload } = useAsync(
-    () =>
-      supplierApi.list({
-        search: search.trim() || undefined,
-        isActive: status === '' ? undefined : status === 'active',
-      }),
-    [search, status],
-  )
+  const q = useDebounced(search).trim()
 
-  const suppliersList = (Array.isArray(data) ? data : (data as any)?.items ?? []) as Supplier[]
+  // Load every status once (list isn't paged) so the filter counts are real totals.
+  const { data, loading, error, reload } = useAsync(() => supplierApi.list({ search: q || undefined }), [q])
+  const suppliers = useMemo(() => data ?? [], [data])
 
-  function openCreate() {
-    setEditing(null)
-    setForm(emptyForm)
-    setOpen(true)
-  }
+  const counts = useMemo(() => {
+    const active = suppliers.filter((s) => s.isActive).length
+    return { all: suppliers.length, active, inactive: suppliers.length - active }
+  }, [suppliers])
 
-  function openEdit(supplier: Supplier) {
+  const filtered = suppliers.filter((s) => (status === '' ? true : status === 'active' ? s.isActive : !s.isActive))
+
+  const errors = validate(form)
+  const isValid = Object.keys(errors).length === 0
+  const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm)
+  const hasFilters = q !== '' || status !== ''
+  const fieldError = (key: keyof FormErrors) => (touched[key] ? errors[key] : undefined)
+
+  function openForm(supplier: Supplier | null) {
+    const next = supplier ? toForm(supplier) : { ...emptyForm }
     setEditing(supplier)
-    setForm({
-      companyName: supplier.companyName,
-      contactPerson: supplier.contactPerson ?? '',
-      phone: supplier.phone ?? '',
-      email: supplier.email ?? '',
-      address: supplier.address ?? '',
-      isActive: supplier.isActive,
-    })
+    setForm(next)
+    setInitialForm(next)
+    setTouched({})
+    setView(null)
     setOpen(true)
   }
 
-  function closeModals() {
+  function closeForm() {
     setOpen(false)
-    setView(null)
+    setConfirmDiscard(false)
+  }
+
+  function requestCloseForm() {
+    if (busy) return
+    if (isDirty) setConfirmDiscard(true)
+    else closeForm()
   }
 
   async function save() {
+    setTouched({ companyName: true, phone: true, email: true })
+    if (!isValid || busy) return
     setBusy(true)
     try {
-      if (editing) await supplierApi.update(editing.id, form)
-      else await supplierApi.create(form)
-      notify(editing ? 'Supplier updated.' : 'Supplier added.')
-      closeModals()
+      const payload: SupplierPayload = {
+        ...form,
+        companyName: form.companyName.trim(),
+        contactPerson: form.contactPerson?.trim(),
+        phone: form.phone?.trim(),
+        email: form.email?.trim(),
+        address: form.address?.trim(),
+      }
+      const saved = editing ? await supplierApi.update(editing.id, payload) : await supplierApi.create(payload)
+      notify(editing ? 'Changes saved.' : `${saved.companyName} added.`)
+      closeForm()
+      setView(saved)
       await reload()
     } catch (err) {
       notify(getErrorMessage(err), 'error')
@@ -106,7 +162,8 @@ function DesktopSuppliersPage() {
     setBusy(true)
     try {
       await supplierApi.deactivate(deactivate.id)
-      notify('Supplier deactivated.')
+      notify(`${deactivate.companyName} deactivated.`)
+      if (view?.id === deactivate.id) setView({ ...view, isActive: false })
       setDeactivate(null)
       await reload()
     } catch (err) {
@@ -116,390 +173,262 @@ function DesktopSuppliersPage() {
     }
   }
 
-  function handleFilterStatus(targetStatus: StatusFilter) {
-    setStatus((prev) => (prev === targetStatus ? '' : targetStatus))
+  async function reactivate(supplier: Supplier) {
+    setBusy(true)
+    try {
+      const updated = await supplierApi.update(supplier.id, { ...toForm(supplier), isActive: true })
+      notify(`${supplier.companyName} is active again.`)
+      setView(updated)
+      await reload()
+    } catch (err) {
+      notify(getErrorMessage(err), 'error')
+    } finally {
+      setBusy(false)
+    }
   }
-
-  function resetFilters() {
-    setSearch('')
-    setStatus('')
-  }
-
-  const hasFilters = Boolean(search.trim() || status)
-  const totalSuppliers = suppliersList.length
-  const activeSuppliers = suppliersList.filter((supplier) => supplier.isActive).length
-  const inactiveSuppliers = totalSuppliers - activeSuppliers
 
   return (
-    <div className="min-h-screen bg-[#091413]/[0.02] text-[#091413] antialiased">
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 md:px-8">
-        {/* Page Header */}
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <PageHeader
-            title="Suppliers"
-            subtitle="Vendor accounts and purchasing contacts"
+    <DesktopPage
+      title="Suppliers"
+      subtitle={data ? `${counts.all} ${counts.all === 1 ? 'supplier' : 'suppliers'} · ${counts.active} active` : 'Vendors and their contacts'}
+      actions={<AddButton label="Add supplier" onClick={() => openForm(null)} />}
+    >
+      <Toolbar>
+        <DesktopSearch value={search} onChange={setSearch} placeholder="Search company, contact or code" label="Search suppliers" />
+        <FilterPills
+          label="Supplier status"
+          value={status}
+          onChange={setStatus}
+          options={[
+            { key: '', label: 'All', count: data ? counts.all : undefined },
+            { key: 'active', label: 'Active', count: data ? counts.active : undefined },
+            { key: 'inactive', label: 'Inactive', count: data ? counts.inactive : undefined },
+          ]}
+        />
+      </Toolbar>
+
+      <DataCard className="mt-4">
+        {loading && !data && <LoadingRow />}
+        {!loading && error && <ErrorRow message={error} onRetry={() => void reload()} />}
+        {!loading && !error && filtered.length === 0 && (
+          <EmptyRow
+            title={hasFilters ? 'No suppliers found' : 'No suppliers yet'}
+            hint={q ? `Nothing matches “${q}”.` : hasFilters ? 'No suppliers have this status.' : 'Add the vendors you buy stock from.'}
+            actionLabel={hasFilters ? 'Clear filters' : 'Add first supplier'}
+            secondary={hasFilters}
+            onAction={
+              hasFilters
+                ? () => {
+                    setSearch('')
+                    setStatus('')
+                  }
+                : () => openForm(null)
+            }
           />
-          <button
-            type="button"
-            onClick={openCreate}
-            className="inline-flex items-center justify-center gap-2 self-start rounded-lg bg-[#285A48] px-3.5 py-2 text-xs font-medium text-white shadow-xs transition-colors hover:bg-[#1e4537] active:scale-[0.98] sm:self-auto"
-          >
-            <Plus size={15} />
-            <span>Add supplier</span>
-          </button>
-        </div>
+        )}
 
-        {/* Interactive KPI Cards */}
-        <div className="mt-4 grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-3">
-          <MetricCard
-            label="Total"
-            value={totalSuppliers}
-            isSelected={status === ''}
-            onClick={() => handleFilterStatus('')}
-          />
-          <MetricCard
-            label="Active"
-            value={activeSuppliers}
-            indicator="pine"
-            isSelected={status === 'active'}
-            onClick={() => handleFilterStatus('active')}
-          />
-          <MetricCard
-            label="Inactive"
-            value={inactiveSuppliers}
-            indicator="rose"
-            isSelected={status === 'inactive'}
-            onClick={() => handleFilterStatus('inactive')}
-          />
-        </div>
-
-        {/* Filter Toolbar */}
-        <div className="mt-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          {/* Segmented Status Pills */}
-          <div className="flex flex-wrap items-center gap-1 rounded-2xl border border-[#E5EBE7] bg-white p-1 self-start shadow-2xs">
-            <button
-              type="button"
-              onClick={() => handleFilterStatus('')}
-              className={`rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                status === ''
-                  ? 'bg-[#285A48] text-white shadow-xs'
-                  : 'text-slate-500 hover:text-[#091413]'
-              }`}
-            >
-              All
-            </button>
-            <button
-              type="button"
-              onClick={() => handleFilterStatus('active')}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                status === 'active'
-                  ? 'bg-[#285A48] text-white shadow-xs'
-                  : 'text-slate-500 hover:text-[#091413]'
-              }`}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${status === 'active' ? 'bg-white/80' : 'bg-[#285A48]'}`} />
-              Active
-            </button>
-            <button
-              type="button"
-              onClick={() => handleFilterStatus('inactive')}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                status === 'inactive'
-                  ? 'bg-[#285A48] text-white shadow-xs'
-                  : 'text-slate-500 hover:text-[#091413]'
-              }`}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${status === 'inactive' ? 'bg-white/80' : 'bg-rose-500'}`} />
-              Inactive
-            </button>
-          </div>
-
-          {/* Search Input & Reset */}
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1 lg:max-w-md lg:justify-end">
-            <div className="relative w-full">
-              <Search
-                size={16}
-                className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
-              />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search company, contact, or code..."
-                className="h-11 w-full rounded-2xl border border-[#E5EBE7] bg-white pl-10 pr-9 text-xs font-semibold text-[#091413] placeholder-slate-400 outline-none transition focus:border-[#285A48] focus:ring-2 focus:ring-[#285A48]/15"
-              />
-              {search && (
-                <button
-                  type="button"
-                  onClick={() => setSearch('')}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-1 text-slate-400 hover:text-slate-700"
-                  title="Clear search"
-                >
-                  <ClearIcon size={14} />
-                </button>
-              )}
-            </div>
-
-            {hasFilters && (
-              <button
-                type="button"
-                onClick={resetFilters}
-                className="flex h-11 shrink-0 items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white px-3.5 text-xs font-bold text-slate-600 shadow-2xs hover:bg-[#F0F5F2] hover:text-[#091413] active:scale-95 touch-manipulation"
-              >
-                Reset
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Suppliers Table Container */}
-        <main className="mt-4 overflow-hidden rounded-xl border border-[#091413]/10 bg-white shadow-xs">
-          {loading && (
-            <div className="py-16">
-              <Spinner />
-            </div>
-          )}
-
-          {error && (
-            <div className="p-6">
-              <ErrorState message={error} onRetry={() => void reload()} />
-            </div>
-          )}
-
-          {!loading && !error && suppliersList.length === 0 && (
-            <div className="p-8 text-center">
-              <EmptyState
-                title="No suppliers found"
-                hint={
-                  hasFilters
-                    ? 'Try clearing active filters or searching a different keyword.'
-                    : 'Get started by onboarding your first vendor account.'
-                }
-              />
-              {hasFilters && (
-                <button
-                  type="button"
-                  onClick={resetFilters}
-                  className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-[#285A48] underline hover:text-[#1e4537]"
-                >
-                  Clear all filters
-                </button>
-              )}
-            </div>
-          )}
-
-          {!loading && !error && suppliersList.length > 0 && (
-            <>
-              {/* Tablet & Desktop Table */}
-              <div className="hidden md:block w-full overflow-x-auto">
-                <table className="w-full text-left text-xs text-[#091413]/80">
-                  <thead className="border-b border-[#091413]/10 bg-[#091413]/[0.02] text-[11px] font-medium uppercase tracking-wider text-[#091413]/50">
-                    <tr>
-                      <th className="py-3 pl-4 pr-3 sm:pl-6 font-medium">Supplier</th>
-                      <th className="py-3 px-3 font-medium">Contact Person</th>
-                      <th className="py-3 px-3 font-medium">Phone</th>
-                      <th className="hidden py-3 px-3 lg:table-cell font-medium">Email</th>
-                      <th className="py-3 px-3 text-center font-medium">Status</th>
-                      <th className="py-3 pl-3 pr-4 sm:pr-6 text-right font-medium">Actions</th>
-                    </tr>
-                  </thead>
-
-                  <tbody className="divide-y divide-[#091413]/5 font-normal">
-                    {suppliersList.map((supplier) => (
-                      <tr
-                        key={supplier.id}
-                        className="transition-colors hover:bg-[#285A48]/[0.03]"
-                      >
-                        <td className="py-3.5 pl-4 pr-3 sm:pl-6">
-                          <SupplierIdentity supplier={supplier} />
-                        </td>
-
-                        <td className="py-3.5 px-3 text-[#091413]">
-                          {supplier.contactPerson || '—'}
-                        </td>
-
-                        <td className="py-3.5 px-3 font-mono text-[#091413]/70">
-                          {supplier.phone || '—'}
-                        </td>
-
-                        <td className="hidden py-3.5 px-3 text-[#091413]/60 lg:table-cell">
-                          {supplier.email || '—'}
-                        </td>
-
-                        <td className="py-3.5 px-3 text-center">
-                          <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${
-                              supplier.isActive
-                                ? 'bg-[#285A48]/10 text-[#285A48] border border-[#285A48]/20'
-                                : 'bg-[#091413]/[0.05] text-[#091413]/60 border border-[#091413]/10'
+        {filtered.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className={`w-full text-left text-sm transition-opacity ${loading ? 'opacity-60' : ''}`}>
+              <thead className="border-b border-slate-100 text-xs text-slate-500">
+                <tr>
+                  <Th className="pl-6">Supplier</Th>
+                  <Th>Contact person</Th>
+                  <Th>Phone</Th>
+                  <Th className="hidden lg:table-cell">Email</Th>
+                  <Th>Status</Th>
+                  <Th className="pr-6">
+                    <span className="sr-only">Actions</span>
+                  </Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filtered.map((supplier) => (
+                  <tr key={supplier.id} onClick={() => setView(supplier)} className="group cursor-pointer hover:bg-slate-50">
+                    <td className="py-3 pl-6 pr-3">
+                      <div className="flex items-center gap-3">
+                        <Avatar name={supplier.companyName} inactive={!supplier.isActive} square />
+                        <div className="min-w-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setView(supplier)
+                            }}
+                            className={`block max-w-64 truncate text-left font-medium focus-visible:underline focus-visible:outline-none ${
+                              supplier.isActive ? '' : 'text-slate-400'
                             }`}
                           >
-                            {supplier.isActive ? 'Active' : 'Inactive'}
-                          </span>
-                        </td>
-
-                        <td className="py-3.5 pl-3 pr-4 sm:pr-6 text-right">
-                          <RowActions
-                            onView={() => setView(supplier)}
-                            onEdit={() => openEdit(supplier)}
-                            onDeactivate={() => setDeactivate(supplier)}
-                            showDeactivate={supplier.isActive}
-                          />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Mobile Compact Cards (<md) */}
-              <div className="divide-y divide-[#091413]/5 md:hidden">
-                {suppliersList.map((supplier) => (
-                  <SupplierCard
-                    key={supplier.id}
-                    supplier={supplier}
-                    onView={() => setView(supplier)}
-                    onEdit={() => openEdit(supplier)}
-                    onDeactivate={() => setDeactivate(supplier)}
-                  />
+                            {supplier.companyName}
+                          </button>
+                          <span className="text-xs text-slate-400">{supplier.supplierCode}</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td className={`px-3 py-3 ${supplier.contactPerson ? '' : 'text-slate-300'}`}>{supplier.contactPerson || 'Not added'}</td>
+                    <td className={`px-3 py-3 tabular-nums ${supplier.phone ? '' : 'text-slate-300'}`}>{supplier.phone || 'Not added'}</td>
+                    <td className={`hidden max-w-60 truncate px-3 py-3 lg:table-cell ${supplier.email ? 'text-slate-600' : 'text-slate-300'}`}>
+                      {supplier.email || 'Not added'}
+                    </td>
+                    <td className="px-3 py-3">
+                      <StatusCell active={supplier.isActive} />
+                    </td>
+                    <td className="py-3 pl-3 pr-6">
+                      <div className="flex items-center justify-end gap-1">
+                        <HoverAction label="Edit" ariaLabel={`Edit ${supplier.companyName}`} onClick={() => openForm(supplier)} />
+                        <ChevronRight size={12} className="text-slate-300" />
+                      </div>
+                    </td>
+                  </tr>
                 ))}
-              </div>
-            </>
-          )}
-        </main>
-      </div>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </DataCard>
 
-      {/* =====================================================
-          ADD / EDIT SUPPLIER MODAL
-      ====================================================== */}
-      {open && (
+      {/* PROFILE */}
+      {view && (
         <Modal
-          title={editing ? 'Edit supplier' : 'Add supplier'}
-          description={
-            editing
-              ? 'Update vendor contact details and status.'
-              : 'Onboard a new vendor account.'
-          }
-          wide
-          onClose={closeModals}
-          preventClose={busy}
+          title={view.companyName}
+          description={`${view.supplierCode}${view.isActive ? '' : ' · Inactive'}`}
+          size="lg"
+          onClose={() => setView(null)}
           footer={
-            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <Button variant="secondary" onClick={closeModals}>
-                Cancel
-              </Button>
-              <button
-                type="button"
-                onClick={() => void save()}
-                disabled={busy || !form.companyName.trim()}
-                className="inline-flex items-center justify-center rounded-lg bg-[#285A48] px-4 py-2 text-xs font-medium text-white shadow-xs transition-colors hover:bg-[#1e4537] disabled:opacity-50"
-              >
-                {busy ? 'Saving…' : 'Save changes'}
-              </button>
+            <div className="flex w-full items-center gap-2">
+              {view.isActive ? (
+                <TextButton tone="danger" onClick={() => setDeactivate(view)} disabled={busy} className="h-12">
+                  Deactivate
+                </TextButton>
+              ) : (
+                <TextButton tone="accent" onClick={() => void reactivate(view)} disabled={busy} className="h-12">
+                  {busy ? 'Activating…' : 'Reactivate'}
+                </TextButton>
+              )}
+              <div className="flex-1" />
+              <PrimaryButton onClick={() => openForm(view)} className="h-12 flex-none px-8">
+                Edit details
+              </PrimaryButton>
             </div>
           }
         >
-          <div className="space-y-5 text-xs">
-            <FormSection title="Company Details">
-              <Field label="Company name" required>
-                <Input
-                  value={form.companyName}
-                  onChange={(e) =>
-                    setForm({ ...form, companyName: e.target.value })
-                  }
-                  required
-                />
-              </Field>
+          <div className="space-y-5">
+            <ContactActions phone={view.phone} email={view.email} />
+            <DetailList>
+              <DetailRow label="Contact person" value={view.contactPerson} />
+              <DetailRow label="Phone" value={view.phone} />
+              <DetailRow label="Email" value={view.email} />
+              <DetailRow label="Address" value={view.address} />
+            </DetailList>
+          </div>
+        </Modal>
+      )}
 
-              <Field label="Contact person">
-                <Input
-                  value={form.contactPerson}
-                  onChange={(e) =>
-                    setForm({ ...form, contactPerson: e.target.value })
-                  }
-                />
-              </Field>
-            </FormSection>
-
-            <FormSection title="Contact Information">
-              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
-                <Field label="Phone">
-                  <Input
-                    value={form.phone}
-                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                  />
-                </Field>
-
-                <Field label="Email">
-                  <Input
-                    type="email"
-                    value={form.email}
-                    onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  />
-                </Field>
-              </div>
-
-              <Field label="Address">
-                <Textarea
-                  value={form.address}
-                  onChange={(e) =>
-                    setForm({ ...form, address: e.target.value })
-                  }
-                />
-              </Field>
-            </FormSection>
-
-            <label className="flex items-center gap-2 text-xs font-medium text-[#091413]/80 cursor-pointer pt-1">
-              <input
-                type="checkbox"
-                checked={form.isActive}
-                onChange={(e) =>
-                  setForm({ ...form, isActive: e.target.checked })
-                }
-                className="h-4 w-4 rounded border-[#091413]/20 text-[#285A48] focus:ring-[#285A48]"
+      {/* ADD / EDIT */}
+      {open && (
+        <Modal
+          title={editing ? 'Edit supplier' : 'Add supplier'}
+          description={editing ? editing.supplierCode : undefined}
+          size="lg"
+          onClose={requestCloseForm}
+          preventClose={busy}
+          footer={
+            <div className="flex w-full items-center justify-end gap-2">
+              <TextButton onClick={requestCloseForm} disabled={busy} className="h-12">
+                Cancel
+              </TextButton>
+              <PrimaryButton type="submit" form={FORM_ID} disabled={busy || (editing !== null && !isDirty)} className="h-12 flex-none px-8">
+                {busy ? 'Saving…' : editing ? (isDirty ? 'Save changes' : 'No changes') : 'Add supplier'}
+              </PrimaryButton>
+            </div>
+          }
+        >
+          <form
+            id={FORM_ID}
+            noValidate
+            onSubmit={(e) => {
+              e.preventDefault()
+              void save()
+            }}
+            className="space-y-4"
+          >
+            <div className="grid gap-4 sm:grid-cols-2">
+              <TextField
+                label="Company name"
+                value={form.companyName}
+                onChange={(companyName) => setForm({ ...form, companyName })}
+                onBlur={() => setTouched((t) => ({ ...t, companyName: true }))}
+                error={fieldError('companyName')}
+                placeholder="e.g. Metro Beverages Inc."
+                autoFocus
+                autoCapitalize="words"
               />
-              Active supplier
-            </label>
-          </div>
-        </Modal>
-      )}
-
-      {/* =====================================================
-          SUPPLIER DETAIL MODAL
-      ====================================================== */}
-      {view && (
-        <Modal title="Supplier details" onClose={closeModals}>
-          <div className="divide-y divide-[#091413]/5 text-xs">
-            <DetailRow label="Code" value={view.supplierCode ?? '—'} mono />
-            <DetailRow label="Company name" value={view.companyName} />
-            <DetailRow label="Contact person" value={view.contactPerson ?? '—'} />
-            <DetailRow label="Phone" value={view.phone ?? '—'} mono />
-            <DetailRow label="Email" value={view.email ?? '—'} />
-            <DetailRow label="Address" value={view.address ?? '—'} />
-            <DetailRow
-              label="Status"
-              value={
-                <span
-                  className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${
-                    view.isActive
-                      ? 'bg-[#285A48]/10 text-[#285A48] border border-[#285A48]/20'
-                      : 'bg-[#091413]/[0.05] text-[#091413]/60 border border-[#091413]/10'
-                  }`}
-                >
-                  {view.isActive ? 'Active' : 'Inactive'}
-                </span>
-              }
+              <TextField
+                label="Contact person"
+                optional
+                value={form.contactPerson ?? ''}
+                onChange={(contactPerson) => setForm({ ...form, contactPerson })}
+                placeholder="Who do you talk to?"
+                autoCapitalize="words"
+              />
+              <TextField
+                label="Phone"
+                optional
+                type="tel"
+                inputMode="tel"
+                value={form.phone ?? ''}
+                onChange={(phone) => setForm({ ...form, phone })}
+                onBlur={() => setTouched((t) => ({ ...t, phone: true }))}
+                error={fieldError('phone')}
+                placeholder="e.g. 0912 345 6789"
+              />
+              <TextField
+                label="Email"
+                optional
+                type="email"
+                inputMode="email"
+                autoCapitalize="none"
+                value={form.email ?? ''}
+                onChange={(email) => setForm({ ...form, email })}
+                onBlur={() => setTouched((t) => ({ ...t, email: true }))}
+                error={fieldError('email')}
+                placeholder="e.g. orders@company.com"
+              />
+            </div>
+            <TextAreaField
+              label="Address"
+              optional
+              value={form.address ?? ''}
+              onChange={(address) => setForm({ ...form, address })}
+              placeholder="Warehouse or office address"
             />
-          </div>
+            {editing && (
+              <SwitchRow
+                label="Active"
+                description="Inactive suppliers can’t be linked to products"
+                checked={form.isActive}
+                onChange={(isActive) => setForm({ ...form, isActive })}
+              />
+            )}
+          </form>
         </Modal>
       )}
 
-      {/* =====================================================
-          DEACTIVATE DIALOG
-      ====================================================== */}
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard changes?"
+          message="The information you entered will not be saved."
+          confirmLabel="Discard"
+          danger
+          onCancel={() => setConfirmDiscard(false)}
+          onConfirm={closeForm}
+        />
+      )}
+
       {deactivate && (
         <ConfirmDialog
-          title="Deactivate supplier"
-          message={`Deactivate ${deactivate.companyName}? It will no longer be available for purchasing orders.`}
+          title={`Deactivate ${deactivate.companyName}?`}
+          message="They won’t be available when adding products. Their details are kept, and you can reactivate them anytime."
           confirmLabel="Deactivate"
           danger
           busy={busy}
@@ -507,199 +436,8 @@ function DesktopSuppliersPage() {
           onConfirm={() => void confirmDeactivate()}
         />
       )}
-    </div>
+    </DesktopPage>
   )
 }
 
-/* =============================================================
-   REFINED MICRO-COMPONENTS
-============================================================= */
-
-function MetricCard({
-  label,
-  value,
-  indicator,
-  isSelected = false,
-  onClick,
-}: {
-  label: string
-  value: string | number
-  indicator?: 'pine' | 'amber' | 'rose'
-  isSelected?: boolean
-  onClick: () => void
-}) {
-  const dotColor =
-    indicator === 'pine'
-      ? 'bg-[#285A48]'
-      : indicator === 'amber'
-        ? 'bg-amber-500'
-        : indicator === 'rose'
-          ? 'bg-rose-500'
-          : null
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`group relative rounded-3xl border p-4 text-left transition-all active:scale-[0.98] touch-manipulation ${
-        isSelected
-          ? 'border-[#285A48] bg-white ring-2 ring-[#285A48]/20 shadow-sm'
-          : 'border-[#E5EBE7] bg-white hover:border-slate-300'
-      }`}
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-          {label}
-        </span>
-        {dotColor && <span className={`h-2 w-2 rounded-full ${dotColor} animate-pulse`} />}
-      </div>
-      <p className="mt-2 text-xl font-black tracking-tight text-[#091413] sm:text-2xl">
-        {value}
-      </p>
-    </button>
-  )
-}
-
-function SupplierIdentity({ supplier }: { supplier: Supplier }) {
-  return (
-    <div className="flex min-w-0 items-center gap-3">
-      <div className="h-9 w-9 shrink-0 overflow-hidden rounded-lg border border-[#285A48]/20 bg-[#285A48]/10 flex items-center justify-center text-xs font-semibold text-[#285A48]">
-        {supplier.companyName.slice(0, 1).toUpperCase()}
-      </div>
-
-      <div className="min-w-0">
-        <p className="truncate text-xs font-medium text-[#091413]">
-          {supplier.companyName}
-        </p>
-        <p className="truncate font-mono text-[11px] text-[#091413]/40">
-          {supplier.supplierCode || 'No code'}
-        </p>
-      </div>
-    </div>
-  )
-}
-
-function RowActions({
-  onView,
-  onEdit,
-  onDeactivate,
-  showDeactivate,
-}: {
-  onView: () => void
-  onEdit: () => void
-  onDeactivate: () => void
-  showDeactivate: boolean
-}) {
-  return (
-    <div className="flex items-center justify-end gap-1">
-      <button
-        type="button"
-        title="View details"
-        aria-label="View details"
-        onClick={onView}
-        className="flex h-8 w-8 items-center justify-center rounded-md text-[#091413]/40 transition-colors hover:bg-[#285A48]/10 hover:text-[#285A48] active:scale-95"
-      >
-        <Eye size={15} />
-      </button>
-
-      <button
-        type="button"
-        title="Edit supplier"
-        aria-label="Edit supplier"
-        onClick={onEdit}
-        className="flex h-8 w-8 items-center justify-center rounded-md text-[#091413]/40 transition-colors hover:bg-[#285A48]/10 hover:text-[#285A48] active:scale-95"
-      >
-        <Pencil size={15} />
-      </button>
-
-      {showDeactivate && (
-        <button
-          type="button"
-          title="Deactivate supplier"
-          aria-label="Deactivate supplier"
-          onClick={onDeactivate}
-          className="flex h-8 w-8 items-center justify-center rounded-md text-[#091413]/40 transition-colors hover:bg-rose-50 hover:text-rose-600 active:scale-95"
-        >
-          <Trash2 size={15} />
-        </button>
-      )}
-    </div>
-  )
-}
-
-function SupplierCard({
-  supplier,
-  onView,
-  onEdit,
-  onDeactivate,
-}: {
-  supplier: Supplier
-  onView: () => void
-  onEdit: () => void
-  onDeactivate: () => void
-}) {
-  return (
-    <div className="flex items-center gap-3 p-3.5">
-      <SupplierIdentity supplier={supplier} />
-
-      <div className="ml-auto flex shrink-0 items-center gap-3">
-        <div className="text-right hidden sm:block">
-          <p className="text-xs font-medium text-[#091413]">
-            {supplier.contactPerson || '—'}
-          </p>
-          <p className="text-[11px] font-mono text-[#091413]/50">
-            {supplier.phone || '—'}
-          </p>
-        </div>
-
-        <RowActions
-          onView={onView}
-          onEdit={onEdit}
-          onDeactivate={onDeactivate}
-          showDeactivate={supplier.isActive}
-        />
-      </div>
-    </div>
-  )
-}
-
-function DetailRow({
-  label,
-  value,
-  mono = false,
-}: {
-  label: string
-  value: React.ReactNode
-  mono?: boolean
-}) {
-  return (
-    <div className="flex justify-between items-center py-2.5">
-      <span className="text-[#091413]/50">{label}</span>
-      <span
-        className={`text-[#091413] text-right ${
-          mono ? 'font-mono' : 'font-medium'
-        }`}
-      >
-        {value}
-      </span>
-    </div>
-  )
-}
-
-function ClearIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
-    </svg>
-  )
-}
+export default SuppliersPage

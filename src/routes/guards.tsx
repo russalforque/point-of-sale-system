@@ -1,18 +1,18 @@
 import { Navigate, Outlet } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
-import { Spinner } from '../components/ui/States'
+import { AppLoader } from '../components/ui/States'
 import type { Permission } from '../utils/permissions'
 
 export function ProtectedRoute() {
   const { user, ready } = useAuth()
-  if (!ready) return <Spinner label="Checking session…" />
+  if (!ready) return <AppLoader />
   if (!user) return <Navigate to="/login" replace />
   return <Outlet />
 }
 
 export function GuestRoute() {
   const { user, ready } = useAuth()
-  if (!ready) return <Spinner label="Checking session…" />
+  if (!ready) return <AppLoader />
   if (user) return <Navigate to="/dashboard" replace />
   return <Outlet />
 }

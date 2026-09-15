@@ -1,16 +1,17 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { salesApi } from '../../api/salesApi'
 
-import { Button } from '../../components/ui/Button'
-import { ConfirmDialog, Modal } from '../../components/ui/Modal'
+import { ConfirmDialog } from '../../components/ui/Modal'
 
 import { useAuth } from '../../context/AuthContext'
 import { useCheckout } from '../../context/CheckoutContext'
 import { useSettings } from '../../context/SettingsContext'
 import { useToast } from '../../context/ToastContext'
 import { useReceiptPrinter } from '../../hooks/useReceiptPrinter'
+import { ReceiptPreview } from '../../components/pos/ReceiptPreview'
 
 import { printerErrorMessage } from '../../services/printer'
 import type { PaymentMethod, Sale } from '../../types'
@@ -19,13 +20,35 @@ import { formatMoney } from '../../utils/format'
 import { getPrinterConfig } from '../../utils/printerConfig'
 import {
   buildPaymentBreakdown,
-  calculateChange,
   calculateTotals,
   getPaymentReceived,
   PAYMENT_OPTIONS,
 } from '../../utils/pos'
 
 const CASH_PAYMENT_METHOD: PaymentMethod = 0
+
+// Common bill denominations used to suggest "round up" cash amounts.
+const BILL_STEPS = [20, 50, 100, 200, 500, 1000]
+
+const MAX_CASH_DIGITS = 9
+
+type KeypadKey = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '.' | 'back'
+
+/** Pure reducer for the cash keypad so keyboard and touch input share one rule set. */
+function nextCash(prev: string, key: KeypadKey): string {
+  if (key === 'back') return prev.slice(0, -1)
+
+  if (key === '.') {
+    if (prev.includes('.')) return prev
+    return prev === '' ? '0.' : `${prev}.`
+  }
+
+  const [whole = '', decimals] = prev.split('.')
+  if (decimals !== undefined && decimals.length >= 2) return prev
+  if (decimals === undefined && whole.length >= MAX_CASH_DIGITS) return prev
+
+  return prev === '0' ? key : `${prev}${key}`
+}
 
 export function MobilePayment() {
   const navigate = useNavigate()
@@ -44,108 +67,78 @@ export function MobilePayment() {
   const [isMounted, setIsMounted] = useState(false)
   const [busy, setBusy] = useState(false)
   const [receipt, setReceipt] = useState<Sale | null>(null)
-  const [cartDrawerOpen, setCartDrawerOpen] = useState(false)
+  const [showItems, setShowItems] = useState(false)
   const [showVoidConfirm, setShowVoidConfirm] = useState(false)
 
-  // Payment State
+  // Payment state
   const [method, setMethod] = useState<PaymentMethod>(checkout.method)
   const [cash, setCash] = useState(checkout.cash)
-  const [paymentReference, setPaymentReference] = useState(
-    checkout.paymentReference,
-  )
+  const [paymentReference, setPaymentReference] = useState(checkout.paymentReference)
+
+  const money = (value: number) => formatMoney(value, settings.currencySymbol)
 
   useEffect(() => {
     const id = window.setTimeout(() => setIsMounted(true), 40)
     return () => window.clearTimeout(id)
   }, [])
 
-  // Guard: Redirect to sales screen if cart is empty
+  // Guard: nothing to pay for → back to sales. Skipped once a sale completes,
+  // because completing a sale clears the cart and the success screen must stay.
   useEffect(() => {
-    if (!isMounted) return
+    if (!isMounted || receipt) return
     if (checkout.cart.length === 0) {
       navigate('/sales', { replace: true })
     }
-  }, [isMounted, checkout.cart.length, navigate])
+  }, [isMounted, receipt, checkout.cart.length, navigate])
 
   const totals = useMemo(
-    () =>
-      calculateTotals(
-        checkout.cart,
-        checkout.discount,
-        settings.taxRate,
-      ),
+    () => calculateTotals(checkout.cart, checkout.discount, settings.taxRate),
     [checkout.cart, checkout.discount, settings.taxRate],
   )
 
+  const isCash = method === CASH_PAYMENT_METHOD
   const cashValue = Number(cash) || 0
-  const paymentBreakdown = useMemo(
-    () => buildPaymentBreakdown(method, cashValue),
-    [method, cashValue],
-  )
-  const amountReceived =
-    method === 0 ? cashValue : getPaymentReceived(paymentBreakdown)
-  const change =
-    method === 0
-      ? Math.max(cashValue - totals.total, 0)
-      : calculateChange(totals.total, paymentBreakdown)
-
   const isCashSufficient = cashValue >= totals.total
-  const remainingDue = Math.max(totals.total - cashValue, 0)
+  const change = Math.max(cashValue - totals.total, 0)
+  const shortBy = Math.max(totals.total - cashValue, 0)
+  const itemCount = checkout.cart.reduce((sum, line) => sum + line.quantity, 0)
+  const methodLabel = PAYMENT_OPTIONS.find((opt) => opt.value === method)?.label ?? 'Payment'
 
-  // Quick denomination suggestions for cash
   const quickCashOptions = useMemo(() => {
-    const t = totals.total
-    if (t <= 0) return []
-    const opts = new Set<number>()
-    opts.add(Math.ceil(t * 100) / 100) // Exact
-    const next10 = Math.ceil(t / 10) * 10
-    if (next10 > t) opts.add(next10)
-    const next20 = Math.ceil(t / 20) * 20
-    if (next20 > t) opts.add(next20)
-    const next50 = Math.ceil(t / 50) * 50
-    if (next50 > t) opts.add(next50)
-    const next100 = Math.ceil(t / 100) * 100
-    if (next100 > t) opts.add(next100)
-    const next500 = Math.ceil(t / 500) * 500
-    if (next500 > t) opts.add(next500)
-    const next1000 = Math.ceil(t / 1000) * 1000
-    if (next1000 > t) opts.add(next1000)
-    return Array.from(opts).slice(0, 4)
+    const total = totals.total
+    if (total <= 0) return []
+
+    const exact = Math.ceil(total * 100) / 100
+    const rounded = BILL_STEPS.map((step) => Math.ceil(total / step) * step).filter(
+      (amount) => amount > exact,
+    )
+
+    return [exact, ...Array.from(new Set(rounded))].slice(0, 4)
   }, [totals.total])
 
-  function handleNumpadPress(digit: string) {
-    if (digit === '.') {
-      if (!cash.includes('.')) {
-        setCash((prev) => (prev === '' ? '0.' : `${prev}.`))
-      }
-      return
-    }
+  const isReadyToComplete = isCash
+    ? totals.total > 0 && isCashSufficient
+    : paymentReference.trim().length > 0
 
-    if (digit === '00') {
-      if (cash !== '' && !cash.includes('.')) {
-        setCash((prev) => `${prev}00`)
-      }
-      return
-    }
+  // Tells the cashier why the primary button is disabled.
+  const blockedReason = isReadyToComplete
+    ? null
+    : isCash
+    ? cashValue === 0
+      ? 'Enter the cash received'
+      : `${money(shortBy)} short`
+    : `Enter the ${methodLabel} reference number`
 
-    const decimalPart = cash.split('.')[1]
-    if (decimalPart && decimalPart.length >= 2) {
-      return
-    }
+  function pressKey(key: KeypadKey) {
+    setCash((prev) => nextCash(prev, key))
+  }
 
-    setCash((prev) => (prev === '0' ? digit : `${prev}${digit}`))
+  function selectMethod(value: PaymentMethod) {
+    setMethod(value)
   }
 
   async function completeSale() {
-    if (method === 0 && !isCashSufficient) {
-      notify('Tendered cash is less than the total balance.', 'error')
-      return
-    }
-
-    if (method !== 0 && !paymentReference.trim()) {
-      notify('Please enter an authorization or reference code.', 'error')
-      return
-    }
+    if (busy || !isReadyToComplete) return
 
     setBusy(true)
 
@@ -154,8 +147,8 @@ export function MobilePayment() {
         customerId: checkout.customerId,
         discount: totals.discount,
         paymentMethod: method,
-        amountReceived: method === 0 ? cashValue : amountReceived,
-        reference: paymentReference.trim() || undefined,
+        amountReceived: isCash ? cashValue : getPaymentReceived(buildPaymentBreakdown(method, 0)),
+        reference: isCash ? undefined : paymentReference.trim() || undefined,
         items: checkout.cart.map((line) => ({
           productId: line.product.id,
           quantity: line.quantity,
@@ -164,13 +157,10 @@ export function MobilePayment() {
 
       setReceipt(sale)
       clearCheckout()
-      notify('Sale completed successfully.')
       void sendReceiptToPrinter(sale, settings).then(
-        () => {
-          notify('Receipt printed successfully.')
-          maybeAutoOpenDrawer(method)
-        },
-        () => notify('Sale completed, but receipt printing failed.', 'error'),
+        () => maybeAutoOpenDrawer(method),
+        // The sale is already committed to SQLite - a print failure never undoes it.
+        (err) => notify(`Payment completed, but receipt printing failed. ${printerErrorMessage(err)}`, 'error'),
       )
     } catch (err) {
       notify(getErrorMessage(err), 'error')
@@ -196,8 +186,8 @@ export function MobilePayment() {
   function printReceipt() {
     if (!receipt) return
     void sendReceiptToPrinter(receipt, settings).then(
-      () => notify('Receipt printed successfully.'),
-      () => notify('Receipt print failed. Please retry.', 'error'),
+      () => notify('Receipt printed.'),
+      (err) => notify(printerErrorMessage(err), 'error'),
     )
   }
 
@@ -217,161 +207,267 @@ export function MobilePayment() {
     navigate('/sales', { replace: true })
   }
 
-  const selectedMethodOption = PAYMENT_OPTIONS.find(
-    (opt) => opt.value === method,
-  )
+  function startNewSale() {
+    setReceipt(null)
+    navigate('/sales', { replace: true })
+  }
 
-  const isReadyToSettle =
-    (method === 0 && isCashSufficient) ||
-    (method !== 0 && paymentReference.trim().length > 0)
+  // Hardware keyboard support (tablets / USB keyboards). Kept in a ref so the
+  // listener always calls the latest completeSale without re-subscribing.
+  const completeRef = useRef(completeSale)
+  completeRef.current = completeSale
 
-  return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-[#F6F8F7] text-[#091413] pb-48 pt-[env(safe-area-inset-top,0px)] font-sans antialiased selection:bg-[#285A48] selection:text-white">
-      <div className="mx-auto max-w-md px-4 pt-3">
+  useEffect(() => {
+    if (receipt || showVoidConfirm) return
 
-        {/* =========================================================
-            HEADER BAR
-        ========================================================= */}
-        <header className="flex items-center justify-between pb-2">
-          <div className="flex items-center gap-2.5">
-            <button
-              type="button"
-              onClick={goBack}
-              aria-label="Back to Cart"
-              className="flex h-11 w-11 items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white text-[#285A48] shadow-xs active:scale-95 touch-manipulation transition-all hover:bg-[#EAF1EE]"
-            >
-              <ArrowLeftIcon size={18} />
-            </button>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-base font-black tracking-tight text-[#091413]">
-                  Settlement
-                </h1>
-                <span className="rounded-full bg-[#EAF1EE] px-2 py-0.5 text-[10px] font-bold text-[#285A48]">
-                  POS
-                </span>
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const typingInField = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA'
+
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        void completeRef.current()
+        return
+      }
+
+      if (!isCash || typingInField) return
+
+      if (/^[0-9]$/.test(event.key)) pressKey(event.key as KeypadKey)
+      else if (event.key === '.') pressKey('.')
+      else if (event.key === 'Backspace') pressKey('back')
+      else if (event.key === 'Escape') setCash('')
+    }
+
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [isCash, receipt, showVoidConfirm])
+
+  /* ==================================================================
+     SUCCESS SCREEN
+  ================================================================== */
+
+  if (receipt) {
+    const receiptChange = receipt.change ?? 0
+
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col bg-white pt-[env(safe-area-inset-top,0px)] text-[#091413] antialiased">
+        <div className="flex-1 overflow-y-auto overscroll-contain px-5">
+          <div className="mx-auto max-w-md pb-6 pt-12 text-center">
+            <span className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-[#E6F1EA] text-[#1F5E3B] animate-in zoom-in duration-300">
+              <CheckIcon size={30} />
+            </span>
+
+            <h1 className="mt-5 text-2xl font-bold tracking-tight">Sale complete</h1>
+            <p className="mt-1 text-sm text-slate-500">
+              {receipt.invoiceNumber} · {receipt.paymentMethod}
+            </p>
+
+            {/* The one number the cashier needs right now */}
+            {receiptChange > 0 ? (
+              <div className="mt-8 rounded-3xl bg-[#F2F8F4] px-5 py-6">
+                <p className="text-sm font-medium text-[#1F5E3B]">Give change</p>
+                <p className="mt-1 text-[44px] font-bold leading-none tracking-[-0.03em] tabular-nums">
+                  {money(receiptChange)}
+                </p>
+                {receipt.amountReceived != null && (
+                  <p className="mt-3 text-sm text-slate-500">
+                    Received {money(receipt.amountReceived)} · Total {money(receipt.total)}
+                  </p>
+                )}
               </div>
-              <p className="text-[11px] font-medium text-slate-400">
-                Register Terminal 01
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {can('drawer.open') && (
-              <button
-                type="button"
-                onClick={handleOpenDrawer}
-                disabled={isOpeningDrawer}
-                aria-label="Open cash drawer"
-                className="flex h-11 w-11 items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white text-[#285A48] shadow-xs active:scale-95 touch-manipulation hover:bg-[#EAF1EE] disabled:opacity-50"
-              >
-                <DrawerIcon size={16} />
-              </button>
+            ) : (
+              <div className="mt-8 rounded-3xl bg-[#F2F8F4] px-5 py-6">
+                <p className="text-sm font-medium text-[#1F5E3B]">Total paid</p>
+                <p className="mt-1 text-[44px] font-bold leading-none tracking-[-0.03em] tabular-nums">
+                  {money(receipt.total)}
+                </p>
+              </div>
             )}
-            <button
-              type="button"
-              onClick={() => setShowVoidConfirm(true)}
-              className="flex h-11 items-center gap-1 rounded-2xl border border-rose-200/80 bg-white px-3 text-xs font-bold text-rose-600 shadow-xs active:scale-95 touch-manipulation hover:bg-rose-50"
-            >
-              <TrashIcon size={14} />
-              <span>Void</span>
-            </button>
+
+            {/* Receipt details — available, but out of the way */}
+            <details className="group mt-4 rounded-2xl text-left ring-1 ring-slate-100">
+              <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between px-4 text-[15px] [&::-webkit-details-marker]:hidden">
+                Receipt details
+                <ChevronDownIcon size={16} className="text-slate-400 transition-transform group-open:rotate-180" />
+              </summary>
+
+              <div className="border-t border-slate-100 px-4 pb-4">
+                <ul>
+                  {receipt.items.map((item) => (
+                    <li
+                      key={item.productId}
+                      className="flex items-baseline justify-between gap-3 border-b border-slate-100 py-2.5 text-sm last:border-b-0"
+                    >
+                      <span className="min-w-0 truncate">
+                        {item.productName}
+                        <span className="text-slate-400"> × {item.quantity}</span>
+                      </span>
+                      <span className="shrink-0 tabular-nums">{money(item.lineTotal)}</span>
+                    </li>
+                  ))}
+                </ul>
+
+                <dl className="mt-2 space-y-1.5 border-t border-slate-100 pt-3 text-sm">
+                  <SummaryRow label="Subtotal" value={money(receipt.subtotal)} />
+                  {receipt.discount > 0 && (
+                    <SummaryRow label="Discount" value={`−${money(receipt.discount)}`} />
+                  )}
+                  <SummaryRow label="Tax" value={money(receipt.tax)} />
+                  <SummaryRow label="Total" value={money(receipt.total)} strong />
+                </dl>
+              </div>
+            </details>
+
+            {/* Exactly what the printer receives (58mm / 32 columns) */}
+            <details className="group mt-3 rounded-2xl text-left ring-1 ring-slate-100">
+              <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between px-4 text-[15px] [&::-webkit-details-marker]:hidden">
+                Receipt preview
+                <ChevronDownIcon size={16} className="text-slate-400 transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="border-t border-slate-100 p-3">
+                <ReceiptPreview sale={receipt} settings={settings} />
+              </div>
+            </details>
           </div>
-        </header>
-
-        {/* =========================================================
-            TOTAL DUE HERO CARD
-        ========================================================= */}
-        <section className="mt-2.5 overflow-hidden rounded-3xl bg-gradient-to-br from-[#091413] via-[#163329] to-[#285A48] p-5 text-white shadow-xl shadow-[#091413]/10">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-100/70">
-              Total Amount Due
-            </span>
-            <span className="rounded-full bg-white/10 px-2.5 py-0.5 text-[10px] font-bold text-emerald-200 backdrop-blur-sm border border-white/10">
-              {checkout.cart.length} item{checkout.cart.length !== 1 ? 's' : ''}
-            </span>
-          </div>
-
-          <div className="my-2.5">
-            <h2 className="text-3xl font-black tracking-tight text-white sm:text-4xl">
-              {formatMoney(totals.total, settings.currencySymbol)}
-            </h2>
-          </div>
-
-          <div className="flex items-center justify-between pt-2 border-t border-white/15 text-[11px] font-medium text-emerald-100/80">
-            <span>Subtotal: {formatMoney(totals.subtotal, settings.currencySymbol)}</span>
-            {totals.discount > 0 && (
-              <span className="text-emerald-300 font-bold">
-                Disc: -{formatMoney(totals.discount, settings.currencySymbol)}
-              </span>
-            )}
-            <span>Tax ({settings.taxRate}%): {formatMoney(totals.tax, settings.currencySymbol)}</span>
-          </div>
-        </section>
-
-        {/* =========================================================
-            COLLAPSIBLE CART DRAWER (Inspect Line Items)
-        ========================================================= */}
-        <div className="mt-3 rounded-2xl border border-[#E5EBE7] bg-white overflow-hidden shadow-2xs">
-          <button
-            type="button"
-            onClick={() => setCartDrawerOpen((prev) => !prev)}
-            className="flex w-full items-center justify-between px-3.5 py-2.5 text-left transition hover:bg-[#F9FAF9] active:bg-[#F0F5F2]"
-          >
-            <div className="flex items-center gap-2 text-xs font-bold text-[#091413]">
-              <ShoppingBagIcon size={14} />
-              <span>Inspect Order Breakdown</span>
-            </div>
-            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#285A48]">
-              <span>{cartDrawerOpen ? 'Hide' : 'Show Details'}</span>
-              <ChevronDownIcon
-                size={14}
-                className={`transition-transform duration-200 ${
-                  cartDrawerOpen ? 'rotate-180' : ''
-                }`}
-              />
-            </div>
-          </button>
-
-          {cartDrawerOpen && (
-            <div className="divide-y divide-slate-100 border-t border-[#E5EBE7] px-3.5 py-1 max-h-48 overflow-y-auto overscroll-contain">
-              {checkout.cart.map((line) => (
-                <div key={line.product.id} className="flex justify-between py-2 text-xs">
-                  <div className="min-w-0 pr-2">
-                    <p className="truncate font-bold text-[#091413]">{line.product.name}</p>
-                    <p className="text-[10px] text-slate-400">
-                      {line.quantity} × {formatMoney(line.product.sellingPrice, settings.currencySymbol)}
-                    </p>
-                  </div>
-                  <span className="font-extrabold text-[#091413] shrink-0">
-                    {formatMoney(line.product.sellingPrice * line.quantity, settings.currencySymbol)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
 
-        {/* =========================================================
-            PAYMENT METHOD SELECTOR
-        ========================================================= */}
-        <div className="mt-3.5">
-          <div className="grid grid-cols-3 gap-2">
+        <footer className="border-t border-slate-100 px-5 pb-[max(1rem,env(safe-area-inset-bottom,0px))] pt-3">
+          <div className="mx-auto max-w-md space-y-2">
+            {(isPrinting || lastPrintError) && (
+              <p aria-live="polite" className={`text-center text-sm ${isPrinting ? 'text-slate-500' : 'text-rose-600'}`}>
+                {isPrinting ? 'Printing receipt…' : 'Payment completed, but receipt printing failed.'}
+              </p>
+            )}
+            <PrimaryButton onClick={startNewSale}>New sale</PrimaryButton>
+
+            <button
+              type="button"
+              onClick={printReceipt}
+              disabled={isPrinting}
+              className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl text-[15px] font-medium text-[#1F5E3B] transition active:bg-[#F2F8F4] disabled:opacity-50"
+            >
+              <PrinterIcon size={16} />
+              {isPrinting ? 'Printing…' : lastPrintError ? 'Retry printing' : 'Print receipt again'}
+            </button>
+          </div>
+        </footer>
+      </div>
+    )
+  }
+
+  /* ==================================================================
+     PAYMENT SCREEN
+  ================================================================== */
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-white pt-[env(safe-area-inset-top,0px)] text-[#091413] antialiased">
+      {/* HEADER */}
+      <header className="flex items-center gap-2 px-2 pt-2">
+        <button
+          type="button"
+          onClick={goBack}
+          disabled={busy}
+          aria-label="Back to order"
+          className="flex h-11 w-11 items-center justify-center rounded-full transition active:bg-slate-100 disabled:opacity-40"
+        >
+          <ArrowLeftIcon size={20} />
+        </button>
+
+        <h1 className="flex-1 text-lg font-semibold">Payment</h1>
+
+        {can('drawer.open') && (
+          <button
+            type="button"
+            onClick={handleOpenDrawer}
+            disabled={isOpeningDrawer || busy}
+            aria-label="Open cash drawer"
+            title="Open cash drawer"
+            className="flex h-11 w-11 items-center justify-center rounded-full text-slate-600 transition active:bg-slate-100 disabled:opacity-40"
+          >
+            <DrawerIcon size={18} />
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={() => setShowVoidConfirm(true)}
+          disabled={busy}
+          className="h-11 rounded-full px-3 text-sm font-medium text-rose-600 transition active:bg-rose-50 disabled:opacity-40"
+        >
+          Cancel sale
+        </button>
+      </header>
+
+      <main className="flex-1 overflow-y-auto overscroll-contain px-5">
+        <div className="mx-auto max-w-md pb-4">
+          {/* AMOUNT DUE */}
+          <section className="pt-4 text-center">
+            <p className="text-sm text-slate-500">Amount due</p>
+            <p className="mt-1 text-[44px] font-bold leading-none tracking-[-0.03em] tabular-nums">
+              {money(totals.total)}
+            </p>
+
+            <button
+              type="button"
+              onClick={() => setShowItems((open) => !open)}
+              aria-expanded={showItems}
+              className="mt-2 inline-flex h-9 items-center gap-1 rounded-full px-3 text-sm text-[#1F5E3B] active:bg-[#F2F8F4]"
+            >
+              {itemCount} {itemCount === 1 ? 'item' : 'items'}
+              {totals.discount > 0 && ` · ${money(totals.discount)} off`}
+              <ChevronDownIcon
+                size={14}
+                className={`transition-transform ${showItems ? 'rotate-180' : ''}`}
+              />
+            </button>
+          </section>
+
+          {showItems && (
+            <div className="mt-2 rounded-2xl bg-[#F6F8F7] px-4 py-2">
+              <ul className="max-h-48 overflow-y-auto overscroll-contain">
+                {checkout.cart.map((line) => (
+                  <li
+                    key={line.product.id}
+                    className="flex items-baseline justify-between gap-3 border-b border-slate-200/60 py-2.5 text-sm last:border-b-0"
+                  >
+                    <span className="min-w-0 truncate">
+                      {line.product.name}
+                      <span className="text-slate-400"> × {line.quantity}</span>
+                    </span>
+                    <span className="shrink-0 tabular-nums">
+                      {money(line.product.sellingPrice * line.quantity)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+
+              <dl className="space-y-1 border-t border-slate-200/60 py-2.5 text-sm">
+                <SummaryRow label="Subtotal" value={money(totals.subtotal)} />
+                {totals.discount > 0 && (
+                  <SummaryRow label="Discount" value={`−${money(totals.discount)}`} />
+                )}
+                <SummaryRow label={`Tax (${Math.round(settings.taxRate * 10000) / 100}%)`} value={money(totals.tax)} />
+              </dl>
+            </div>
+          )}
+
+          {/* METHOD */}
+          <div
+            role="radiogroup"
+            aria-label="Payment method"
+            className="mt-6 grid grid-cols-4 rounded-full bg-[#F1F4F3] p-1"
+          >
             {PAYMENT_OPTIONS.map((option) => {
               const isSelected = method === option.value
               return (
                 <button
                   key={option.value}
                   type="button"
-                  onClick={() => {
-                    setMethod(Number(option.value) as PaymentMethod)
-                    setCash('')
-                  }}
-                  className={`flex min-h-[46px] items-center justify-center rounded-2xl px-2 py-2 text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                    isSelected
-                      ? 'bg-[#285A48] text-white shadow-md shadow-[#285A48]/20'
-                      : 'border border-[#E5EBE7] bg-white text-slate-600 hover:bg-[#F0F5F2]'
+                  role="radio"
+                  aria-checked={isSelected}
+                  onClick={() => selectMethod(option.value as PaymentMethod)}
+                  className={`min-h-11 rounded-full text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] focus-visible:ring-offset-2 ${
+                    isSelected ? 'bg-[#1F5E3B] text-white shadow-sm' : 'text-slate-600'
                   }`}
                 >
                   {option.label}
@@ -379,488 +475,284 @@ export function MobilePayment() {
               )
             })}
           </div>
-        </div>
 
-        {/* =========================================================
-            CASH TENDER MODE
-        ========================================================= */}
-        {method === 0 ? (
-          <div className="mt-3 space-y-2.5">
-            {/* Cash Input Status Display */}
-            <div className="rounded-2xl border border-[#E5EBE7] bg-white p-3.5 shadow-2xs">
-              <div className="flex items-center justify-between text-xs text-slate-500 font-semibold">
-                <span>Amount Tendered</span>
-                {cash && (
-                  <button
-                    type="button"
-                    onClick={() => setCash('')}
-                    className="flex items-center gap-1 rounded-lg bg-[#F6F8F7] px-2 py-0.5 text-[10px] font-bold text-slate-600 hover:text-rose-600"
+          {isCash ? (
+            <section aria-label="Cash payment" className="mt-5">
+              {/* Received + live change / short feedback */}
+              <div className="flex items-end justify-between gap-3 rounded-2xl bg-[#F6F8F7] px-4 py-3">
+                <div className="min-w-0">
+                  <p className="text-sm text-slate-500">Cash received</p>
+                  <p
+                    aria-live="polite"
+                    className={`mt-0.5 truncate text-3xl font-semibold tabular-nums ${
+                      cash ? '' : 'text-slate-300'
+                    }`}
                   >
-                    <RotateCcwIcon size={10} />
-                    <span>Clear</span>
-                  </button>
+                    {money(cashValue)}
+                  </p>
+                </div>
+
+                {cashValue > 0 && (
+                  <div className="shrink-0 text-right" aria-live="polite">
+                    <p className={`text-sm ${isCashSufficient ? 'text-[#1F5E3B]' : 'text-amber-700'}`}>
+                      {isCashSufficient ? 'Change' : 'Short'}
+                    </p>
+                    <p
+                      className={`text-lg font-semibold tabular-nums ${
+                        isCashSufficient ? 'text-[#1F5E3B]' : 'text-amber-700'
+                      }`}
+                    >
+                      {money(isCashSufficient ? change : shortBy)}
+                    </p>
+                  </div>
                 )}
               </div>
 
-              <div className="mt-1 flex items-baseline justify-between">
-                <span className="text-2xl font-black text-[#091413] tracking-tight sm:text-3xl">
-                  {cash ? formatMoney(cashValue, settings.currencySymbol) : formatMoney(0, settings.currencySymbol)}
-                </span>
-                <span className="text-[11px] font-bold text-[#285A48]">
-                  Target: {formatMoney(totals.total, settings.currencySymbol)}
-                </span>
+              {/* Quick amounts */}
+              <div className="mt-3 grid grid-cols-4 gap-2">
+                {quickCashOptions.map((amount, index) => {
+                  const isSelected = cashValue === amount
+                  return (
+                    <button
+                      key={amount}
+                      type="button"
+                      onClick={() => setCash(String(amount))}
+                      aria-pressed={isSelected}
+                      className={`flex h-12 flex-col items-center justify-center rounded-xl text-sm font-medium tabular-nums transition active:scale-95 ${
+                        isSelected
+                          ? 'bg-[#1F5E3B] text-white'
+                          : 'bg-[#E6F1EA] text-[#1F5E3B]'
+                      }`}
+                    >
+                      {index === 0 ? 'Exact' : money(amount)}
+                    </button>
+                  )
+                })}
               </div>
-            </div>
 
-            {/* Smart Cash Bill Pills */}
-            <div className="grid grid-cols-4 gap-1.5">
-              {quickCashOptions.map((amount) => {
-                const isExact = amount === totals.total
-                const isSelected = cashValue === amount
-
-                return (
-                  <button
-                    key={amount}
-                    type="button"
-                    onClick={() => setCash(String(amount))}
-                    className={`flex min-h-[44px] flex-col items-center justify-center rounded-2xl text-xs font-bold transition-all active:scale-95 touch-manipulation ${
-                      isSelected
-                        ? 'bg-[#285A48] text-white shadow-sm'
-                        : isExact
-                        ? 'border-2 border-[#285A48] bg-[#EAF1EE] text-[#285A48]'
-                        : 'border border-[#E5EBE7] bg-white text-[#285A48] hover:bg-[#EAF1EE]'
-                    }`}
-                  >
-                    <span>{formatMoney(amount, settings.currencySymbol)}</span>
-                    {isExact && <span className="text-[8px] font-medium opacity-80">Exact</span>}
-                  </button>
-                )
-              })}
-            </div>
-
-            {/* Standard 4x3 POS Numpad */}
-            <div className="space-y-1.5 pt-1">
-              <div className="grid grid-cols-3 gap-1.5">
-                {['7', '8', '9', '4', '5', '6', '1', '2', '3'].map((num) => (
-                  <button
-                    key={num}
-                    type="button"
-                    onClick={() => handleNumpadPress(num)}
-                    className="flex min-h-[48px] items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white text-base font-extrabold text-[#091413] shadow-2xs active:bg-[#EAF1EE] active:scale-95 touch-manipulation transition-colors"
-                  >
-                    {num}
-                  </button>
+              {/* Keypad — phone layout; clear lives away from digits */}
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                {(['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0'] as KeypadKey[]).map((key) => (
+                  <KeypadButton key={key} onClick={() => pressKey(key)} label={key === '.' ? 'Decimal point' : key}>
+                    {key}
+                  </KeypadButton>
                 ))}
+                <KeypadButton onClick={() => pressKey('back')} label="Delete last digit">
+                  <DeleteIcon size={20} />
+                </KeypadButton>
+              </div>
 
-                {/* Bottom Row */}
+              {cash && (
                 <button
                   type="button"
                   onClick={() => setCash('')}
-                  className="flex min-h-[48px] items-center justify-center rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] text-xs font-black text-rose-600 active:scale-95 touch-manipulation"
+                  className="mx-auto mt-2 flex h-10 items-center rounded-full px-4 text-sm text-slate-500 active:bg-slate-100"
                 >
-                  C
+                  Clear amount
                 </button>
-                <button
-                  type="button"
-                  onClick={() => handleNumpadPress('0')}
-                  className="flex min-h-[48px] items-center justify-center rounded-2xl border border-[#E5EBE7] bg-white text-base font-extrabold text-[#091413] shadow-2xs active:bg-[#EAF1EE] active:scale-95 touch-manipulation"
-                >
-                  0
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCash((prev) => prev.slice(0, -1))}
-                  className="flex min-h-[48px] items-center justify-center rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] text-[#091413] active:scale-95 touch-manipulation"
-                  aria-label="Backspace"
-                >
-                  <DeleteIcon size={16} />
-                </button>
-              </div>
-
-              {/* Decimal & Double-Zero Row */}
-              <div className="grid grid-cols-2 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => handleNumpadPress('.')}
-                  className="flex min-h-[42px] items-center justify-center rounded-xl border border-[#E5EBE7] bg-white text-xs font-black text-slate-700 active:scale-95 touch-manipulation"
-                >
-                  . (decimal)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleNumpadPress('00')}
-                  className="flex min-h-[42px] items-center justify-center rounded-xl border border-[#E5EBE7] bg-white text-xs font-black text-slate-700 active:scale-95 touch-manipulation"
-                >
-                  00
-                </button>
-              </div>
-            </div>
-
-            {/* Dynamic change feedback */}
-            {cashValue > 0 && (
-              <div
-                className={`flex items-center justify-between rounded-2xl p-3 border transition-all ${
-                  isCashSufficient
-                    ? 'border-[#285A48]/20 bg-[#EAF1EE]'
-                    : 'border-amber-200 bg-amber-50'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <div
-                    className={`flex h-6 w-6 items-center justify-center rounded-full text-white ${
-                      isCashSufficient ? 'bg-[#285A48]' : 'bg-amber-500'
-                    }`}
-                  >
-                    {isCashSufficient ? <CheckIcon size={11} /> : <span className="text-xs font-bold">!</span>}
-                  </div>
-                  <span className={`text-xs font-bold ${isCashSufficient ? 'text-[#285A48]' : 'text-amber-800'}`}>
-                    {isCashSufficient ? 'Change Due' : 'Still Needed'}
-                  </span>
-                </div>
-                <span className={`text-lg font-black ${isCashSufficient ? 'text-[#285A48]' : 'text-amber-800'}`}>
-                  {formatMoney(isCashSufficient ? change : remainingDue, settings.currencySymbol)}
-                </span>
-              </div>
-            )}
-
-            {/* 🟢 INLINE SETTLE BUTTON (Always visible directly below keypad) */}
-            <div className="pt-2">
-              <button
-                type="button"
-                disabled={busy || !isReadyToSettle}
-                onClick={() => void completeSale()}
-                className="flex h-[52px] w-full items-center justify-center gap-2 rounded-2xl bg-[#285A48] text-sm font-extrabold text-white shadow-lg shadow-[#285A48]/25 transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 touch-manipulation"
-              >
-                <CheckIcon size={18} />
-                <span className="truncate">
-                  {busy
-                    ? 'Finalizing Transaction…'
-                    : isCashSufficient && change > 0
-                    ? `Done • Give ${formatMoney(change, settings.currencySymbol)}`
-                    : `Settle ${formatMoney(totals.total, settings.currencySymbol)}`}
-                </span>
-              </button>
-            </div>
-          </div>
-        ) : (
-          /* =========================================================
-             CARD / DIGITAL WALLET AUTH MODE
-          ========================================================= */
-          <div className="mt-3.5 space-y-3 rounded-2xl border border-[#E5EBE7] bg-white p-4 shadow-2xs">
-            <div className="rounded-xl bg-[#F6F8F7] p-3 text-center">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                Amount to Charge
-              </span>
-              <p className="text-2xl font-black text-[#091413]">
-                {formatMoney(totals.total, settings.currencySymbol)}
+              )}
+            </section>
+          ) : (
+            <section aria-label={`${methodLabel} payment`} className="mt-6">
+              <p className="text-sm text-slate-500">
+                Collect <span className="font-medium text-[#091413]">{money(totals.total)}</span> via{' '}
+                {methodLabel}, then enter the reference number from the terminal or app.
               </p>
-              <p className="text-[10px] text-slate-400 mt-0.5">
-                Collect via {selectedMethodOption?.label} terminal
-              </p>
-            </div>
 
-            <div>
-              <label className="mb-1.5 block text-xs font-bold text-slate-700">
-                {selectedMethodOption?.label} Approval / Reference # <span className="text-rose-500">*</span>
+              <label htmlFor="payment-reference" className="mt-4 block text-sm font-medium">
+                Reference number
               </label>
               <input
+                id="payment-reference"
                 type="text"
                 autoFocus
+                autoComplete="off"
+                autoCapitalize="characters"
+                enterKeyHint="done"
                 value={paymentReference}
                 onChange={(e) => setPaymentReference(e.target.value)}
-                placeholder="e.g. GCash Ref, Terminal Auth Code"
-                className="h-12 w-full rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] px-4 text-xs font-semibold text-[#091413] placeholder-slate-400 outline-none transition focus:border-[#285A48] focus:bg-white focus:ring-2 focus:ring-[#285A48]/15"
+                placeholder={method === 2 ? 'e.g. 1234 567 890123' : 'e.g. approval code'}
+                className="mt-1.5 h-14 w-full rounded-2xl border-0 bg-[#F3F5F4] px-4 text-lg tracking-wide placeholder:text-base placeholder:tracking-normal placeholder:text-slate-400 outline-none transition focus:bg-white focus:ring-2 focus:ring-[#1F5E3B]"
               />
-            </div>
-
-            {/* 🟢 INLINE SETTLE BUTTON */}
-            <div className="pt-2">
-              <button
-                type="button"
-                disabled={busy || !isReadyToSettle}
-                onClick={() => void completeSale()}
-                className="flex h-[52px] w-full items-center justify-center gap-2 rounded-2xl bg-[#285A48] text-sm font-extrabold text-white shadow-lg shadow-[#285A48]/25 transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 touch-manipulation"
-              >
-                <CheckIcon size={18} />
-                <span className="truncate">
-                  {busy
-                    ? 'Finalizing Transaction…'
-                    : `Settle ${formatMoney(totals.total, settings.currencySymbol)}`}
-                </span>
-              </button>
-            </div>
-          </div>
-        )}
-
-      </div>
-
-      {/* =========================================================
-          🟢 FLOATING BOTTOM ACTION BAR (Raised above Bottom Nav with bottom-20)
-      ========================================================= */}
-      <div
-        className="fixed inset-x-0 bottom-20 sm:bottom-0 z-[9999] border-t border-[#E5EBE7] bg-white/95 px-4 py-2.5 shadow-xl backdrop-blur-md"
-      >
-        <div className="mx-auto flex max-w-md items-center gap-2.5">
-          {/* Direct "Back to Register" action button */}
-          <button
-            type="button"
-            onClick={goBack}
-            className="flex h-[50px] items-center justify-center gap-1.5 rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] px-4 text-xs font-bold text-[#091413] shadow-xs active:scale-95 touch-manipulation transition hover:bg-[#EAF1EE]"
-          >
-            <ArrowLeftIcon size={16} />
-            <span>Register</span>
-          </button>
-
-          {/* Settle / Checkout Action Button */}
-          <button
-            type="button"
-            disabled={busy || !isReadyToSettle}
-            onClick={() => void completeSale()}
-            className="flex h-[50px] flex-1 items-center justify-center gap-2 rounded-2xl bg-[#285A48] text-sm font-extrabold text-white shadow-lg shadow-[#285A48]/25 transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 touch-manipulation"
-          >
-            <CheckIcon size={18} />
-            <span className="truncate">
-              {busy
-                ? 'Finalizing Transaction…'
-                : method === 0 && isCashSufficient && change > 0
-                ? `Done • Give ${formatMoney(change, settings.currencySymbol)}`
-                : `Settle ${formatMoney(totals.total, settings.currencySymbol)}`}
-            </span>
-          </button>
+            </section>
+          )}
         </div>
-      </div>
+      </main>
 
-      {/* =========================================================
-          VOID ORDER CONFIRMATION MODAL
-      ========================================================= */}
+      {/* SINGLE PRIMARY ACTION */}
+      <footer className="border-t border-slate-100 px-5 pb-[max(1rem,env(safe-area-inset-bottom,0px))] pt-3">
+        <div className="mx-auto max-w-md">
+          <p
+            aria-live="polite"
+            className={`mb-2 h-5 text-center text-sm ${
+              blockedReason ? 'text-slate-500' : 'text-transparent'
+            }`}
+          >
+            {blockedReason ?? ' '}
+          </p>
+
+          <PrimaryButton onClick={() => void completeSale()} disabled={busy || !isReadyToComplete}>
+            {busy ? (
+              'Completing sale…'
+            ) : isCash && isCashSufficient && change > 0 ? (
+              <span className="flex w-full items-center justify-between">
+                <span>Complete sale</span>
+                <span className="tabular-nums">Change {money(change)}</span>
+              </span>
+            ) : (
+              <span className="flex w-full items-center justify-between">
+                <span>Complete sale</span>
+                <span className="tabular-nums">{money(totals.total)}</span>
+              </span>
+            )}
+          </PrimaryButton>
+        </div>
+      </footer>
+
       {showVoidConfirm && (
         <ConfirmDialog
-          title="Void current ticket?"
-          message={`This will discard this sale with ${checkout.cart.length} item${checkout.cart.length !== 1 ? 's' : ''} and reset the register to an empty ticket.`}
-          confirmLabel="Void Cart"
+          title="Cancel this sale?"
+          message={`The ${itemCount} ${itemCount === 1 ? 'item' : 'items'} in this order will be removed. This can't be undone.`}
+          confirmLabel="Cancel sale"
           danger
           onCancel={() => setShowVoidConfirm(false)}
           onConfirm={confirmVoid}
         />
-      )}
-
-      {/* =========================================================
-          DIGITAL RECEIPT & SUCCESS MODAL
-      ========================================================= */}
-      {receipt && (
-        <Modal
-          title="Ticket Settled"
-          onClose={() => {
-            setReceipt(null)
-            navigate('/sales', { replace: true })
-          }}
-          footer={
-            <div className="flex flex-col-reverse gap-2 w-full sm:flex-row sm:justify-end">
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  setReceipt(null)
-                  navigate('/sales', { replace: true })
-                }}
-              >
-                Back to Register
-              </Button>
-              <Button onClick={printReceipt} disabled={isPrinting}>
-                {isPrinting ? (
-                  'Printing…'
-                ) : (
-                  <span className="inline-flex items-center gap-1.5">
-                    <PrinterIcon size={14} />
-                    <span>{lastPrintError ? 'Retry Print' : 'Print Receipt'}</span>
-                  </span>
-                )}
-              </Button>
-            </div>
-          }
-        >
-          <div className="space-y-3 text-xs text-[#091413]">
-            <div className="space-y-1 text-center border-b border-[#E5EBE7] pb-3">
-              {settings.showLogoOnReceipt && (
-                <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-2xl bg-[#EAF1EE] text-sm font-black text-[#285A48]">
-                  {settings.storeName.slice(0, 1).toUpperCase() || 'S'}
-                </div>
-              )}
-              <h3 className="text-base font-extrabold text-[#091413]">
-                {settings.storeName}
-              </h3>
-              {(settings.phone || settings.email || settings.address) && (
-                <div className="space-y-0.5 text-[11px] text-slate-400">
-                  {settings.address && <p>{settings.address}</p>}
-                  {settings.phone && <p>{settings.phone}</p>}
-                  {settings.email && <p>{settings.email}</p>}
-                </div>
-              )}
-              <p className="pt-1 text-[11px] font-bold text-[#285A48]">
-                Invoice #{receipt.invoiceNumber}
-              </p>
-            </div>
-
-            <div className="divide-y divide-slate-100 py-1 max-h-40 overflow-y-auto overscroll-contain">
-              {receipt.items.map((item) => (
-                <div key={item.productId} className="flex justify-between py-1.5">
-                  <span className="text-slate-700 font-medium">
-                    {item.productName}{' '}
-                    <span className="text-slate-400 font-bold">× {item.quantity}</span>
-                  </span>
-                  <span className="font-extrabold text-[#091413]">
-                    {formatMoney(item.lineTotal, settings.currencySymbol)}
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            <div className="space-y-1 border-t border-[#E5EBE7] pt-2 text-slate-500">
-              <div className="flex justify-between text-xs">
-                <span>Subtotal</span>
-                <span className="font-bold text-[#091413]">
-                  {formatMoney(receipt.subtotal, settings.currencySymbol)}
-                </span>
-              </div>
-              {receipt.discount > 0 && (
-                <div className="flex justify-between text-xs">
-                  <span>Discount</span>
-                  <span className="font-bold text-emerald-700">
-                    -{formatMoney(receipt.discount, settings.currencySymbol)}
-                  </span>
-                </div>
-              )}
-              <div className="flex justify-between text-xs">
-                <span>Tax</span>
-                <span className="font-bold text-[#091413]">
-                  {formatMoney(receipt.tax, settings.currencySymbol)}
-                </span>
-              </div>
-              <div className="flex justify-between border-t border-[#E5EBE7] pt-1.5 text-sm font-black text-[#091413]">
-                <span>Total Paid</span>
-                <span className="text-[#285A48]">
-                  {formatMoney(receipt.total, settings.currencySymbol)}
-                </span>
-              </div>
-            </div>
-
-            <div className="rounded-2xl bg-[#EAF1EE] p-2.5 text-[11px] text-[#285A48] space-y-1">
-              <div className="flex justify-between">
-                <span>Method</span>
-                <span className="font-bold uppercase">{receipt.paymentMethod}</span>
-              </div>
-              {receipt.amountReceived != null && (
-                <div className="flex justify-between">
-                  <span>Tendered</span>
-                  <span className="font-bold">
-                    {formatMoney(receipt.amountReceived, settings.currencySymbol)}
-                  </span>
-                </div>
-              )}
-              {receipt.change != null && (
-                <div className="flex justify-between font-bold">
-                  <span>Change</span>
-                  <span>{formatMoney(receipt.change, settings.currencySymbol)}</span>
-                </div>
-              )}
-            </div>
-
-            {settings.receiptFooter && (
-              <p className="pt-2 text-center text-[10px] text-slate-400 italic">
-                {settings.receiptFooter}
-              </p>
-            )}
-          </div>
-        </Modal>
       )}
     </div>
   )
 }
 
 /* ===============================================================
-   MINIMAL SVG ICON COMPONENTS
-   =============================================================== */
+   BUILDING BLOCKS
+=============================================================== */
 
-function ArrowLeftIcon({ size = 16 }: { size?: number }) {
+function PrimaryButton({
+  onClick,
+  disabled,
+  children,
+}: {
+  onClick: () => void
+  disabled?: boolean
+  children: ReactNode
+}) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="19" y1="12" x2="5" y2="12" />
-      <polyline points="12 19 5 12 12 5" />
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="flex h-14 w-full items-center justify-center rounded-2xl bg-[#1F5E3B] px-5 text-[15px] font-semibold text-white transition active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] focus-visible:ring-offset-2"
+    >
+      {children}
+    </button>
+  )
+}
+
+function KeypadButton({
+  onClick,
+  label,
+  children,
+}: {
+  onClick: () => void
+  label: string
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      className="flex h-14 touch-manipulation items-center justify-center rounded-2xl bg-[#F6F8F7] text-2xl font-medium transition-colors active:bg-[#E6F1EA]"
+    >
+      {children}
+    </button>
+  )
+}
+
+function SummaryRow({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <div className={`flex justify-between ${strong ? 'font-semibold text-[#091413]' : 'text-slate-500'}`}>
+      <dt>{label}</dt>
+      <dd className="tabular-nums">{value}</dd>
+    </div>
+  )
+}
+
+/* ===============================================================
+   ICONS
+=============================================================== */
+
+function Svg({ size, className = '', children }: { size: number; className?: string; children: ReactNode }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      {children}
     </svg>
   )
 }
 
-function RotateCcwIcon({ size = 14 }: { size?: number }) {
+function ArrowLeftIcon({ size = 16 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-      <path d="M3 3v5h5" />
-    </svg>
+    <Svg size={size}>
+      <line x1="19" y1="12" x2="5" y2="12" />
+      <polyline points="12 19 5 12 12 5" />
+    </Svg>
   )
 }
 
 function DeleteIcon({ size = 16 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+    <Svg size={size}>
       <path d="M21 4H8l-7 8 7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z" />
       <line x1="18" y1="9" x2="12" y2="15" />
       <line x1="12" y1="9" x2="18" y2="15" />
-    </svg>
+    </Svg>
   )
 }
 
 function CheckIcon({ size = 16 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+    <Svg size={size}>
       <polyline points="20 6 9 17 4 12" />
-    </svg>
-  )
-}
-
-function TrashIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 6h18" />
-      <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
-      <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
-    </svg>
+    </Svg>
   )
 }
 
 function DrawerIcon({ size = 14 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <Svg size={size}>
       <rect x="2" y="4" width="20" height="16" rx="1" />
       <line x1="2" y1="11" x2="22" y2="11" />
       <line x1="10" y1="15.5" x2="14" y2="15.5" />
-    </svg>
+    </Svg>
   )
 }
 
-function ShoppingBagIcon({ size = 16 }: { size?: number }) {
+function ChevronDownIcon({ size = 16, className = '' }: { size?: number; className?: string }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z" />
-      <line x1="3" y1="6" x2="21" y2="6" />
-      <path d="M16 10a4 4 0 0 1-8 0" />
-    </svg>
-  )
-}
-
-function ChevronDownIcon({ size = 16, className }: { size?: number; className?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <Svg size={size} className={className}>
       <polyline points="6 9 12 15 18 9" />
-    </svg>
+    </Svg>
   )
 }
 
 function PrinterIcon({ size = 14 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <Svg size={size}>
       <polyline points="6 9 6 2 18 2 18 9" />
       <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
       <rect x="6" y="14" width="12" height="8" />
-    </svg>
+    </Svg>
   )
 }
 

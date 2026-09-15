@@ -1,3 +1,20 @@
+import sellixMark from '../../assets/sellix-mark.png'
+
+/**
+ * Full-screen startup loader (session check). Mirrors the static loader in index.html -
+ * same markup and `.app-loader` classes, styled there - so startup reads as one screen.
+ */
+export function AppLoader({ label = 'Loading…' }: { label?: string }) {
+  return (
+    <div className="app-loader" role="status" aria-live="polite">
+      <img className="app-loader__logo" src={sellixMark} alt="" width={64} height={64} />
+      <p className="app-loader__name">Sellix</p>
+      <p className="app-loader__status">{label}</p>
+      <span className="app-loader__spinner" aria-hidden="true" />
+    </div>
+  )
+}
+
 export function Spinner({ label = 'Loading…' }: { label?: string }) {
   return (
     <div className="flex items-center justify-center gap-2 py-16 text-sm text-gray-500">

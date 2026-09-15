@@ -1,14 +1,13 @@
-import { faRightFromBracket } from '@fortawesome/free-solid-svg-icons'
-import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { Capacitor } from '@capacitor/core'
+
 import { authApi } from '../api/authApi'
 import { settingsApi, type SettingsPayload } from '../api/settingsApi'
-import { Badge } from '../components/ui/Badge'
-import { Button } from '../components/ui/Button'
-import { Field, Input, Textarea } from '../components/ui/Field'
-import { FormSection } from '../components/ui/FormSection'
+import { DesktopPage, SectionCard } from '../components/ui/DesktopKit'
+import { ChevronRight } from '../components/ui/Icons'
+import { Avatar, EMAIL_PATTERN, PrimaryButton, SwitchRow, TextAreaField, TextButton, TextField } from '../components/ui/MobileKit'
 import { ConfirmDialog } from '../components/ui/Modal'
-import { Card, PageHeader } from '../components/ui/Page'
 import { ErrorState, Spinner } from '../components/ui/States'
 import { useAuth } from '../context/AuthContext'
 import { useSettings } from '../context/SettingsContext'
@@ -16,7 +15,12 @@ import { useToast } from '../context/ToastContext'
 import { useAsync } from '../hooks/useAsync'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { getErrorMessage } from '../utils/errors'
+import { ROLE_LABELS, type Role } from '../utils/permissions'
 import { MobileSettings } from './mobile/MobileSettings'
+
+const MIN_PASSWORD = 8
+
+type StoreErrors = Partial<Record<'storeName' | 'email' | 'currencySymbol' | 'taxRate', string>>
 
 export function SettingsPage() {
   const isMobile = useIsMobile()
@@ -24,43 +28,81 @@ export function SettingsPage() {
   return <DesktopSettingsPage />
 }
 
+function toPayload(data: SettingsPayload): SettingsPayload {
+  return {
+    storeName: data.storeName,
+    phone: data.phone,
+    email: data.email,
+    address: data.address,
+    currency: data.currency,
+    currencySymbol: data.currencySymbol,
+    taxRate: data.taxRate,
+    receiptFooter: data.receiptFooter,
+    showLogoOnReceipt: data.showLogoOnReceipt,
+  }
+}
+
+const percent = (fraction: number) => String(Math.round(fraction * 10000) / 100)
+
 function DesktopSettingsPage() {
   const { notify } = useToast()
   const { user, logout, can } = useAuth()
   const canManageSettings = can('settings.manage')
   const { reload: reloadSettings } = useSettings()
+  const navigate = useNavigate()
   const store = useAsync(() => settingsApi.get(), [])
+
   const [form, setForm] = useState<SettingsPayload | null>(null)
+  const [saved, setSaved] = useState<SettingsPayload | null>(null)
+  const [taxInput, setTaxInput] = useState('')
   const [busy, setBusy] = useState(false)
+
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
-  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
+  const [showPasswords, setShowPasswords] = useState(false)
+  const [passwordBusy, setPasswordBusy] = useState(false)
+  const [confirmLogout, setConfirmLogout] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
 
+  const passwordChangeSupported = Capacitor.isNativePlatform()
+
   useEffect(() => {
-    if (store.data) {
-      setForm({
-        storeName: store.data.storeName,
-        phone: store.data.phone,
-        email: store.data.email,
-        address: store.data.address,
-        currency: store.data.currency,
-        currencySymbol: store.data.currencySymbol,
-        taxRate: store.data.taxRate,
-        receiptFooter: store.data.receiptFooter,
-        showLogoOnReceipt: store.data.showLogoOnReceipt,
-      })
-    }
+    if (!store.data) return
+    const next = toPayload(store.data)
+    setForm(next)
+    setSaved(next)
+    setTaxInput(percent(next.taxRate))
   }, [store.data])
 
+  const isDirty = Boolean(form && saved && JSON.stringify(form) !== JSON.stringify(saved))
+
+  const errors: StoreErrors = {}
+  if (form) {
+    if (!form.storeName.trim()) errors.storeName = 'Enter your store name. It appears on receipts.'
+    if (form.email?.trim() && !EMAIL_PATTERN.test(form.email.trim())) errors.email = 'Enter a valid email.'
+    if (!form.currencySymbol.trim()) errors.currencySymbol = 'Required.'
+    const tax = Number(taxInput)
+    if (taxInput.trim() === '' || Number.isNaN(tax) || tax < 0 || tax > 100) errors.taxRate = 'Enter a rate from 0 to 100.'
+  }
+  const isValid = Object.keys(errors).length === 0
+
+  const passwordError =
+    newPassword.length > 0 && newPassword.length < MIN_PASSWORD
+      ? `Use at least ${MIN_PASSWORD} characters.`
+      : newPassword && newPassword === currentPassword
+      ? 'Choose a password different from the current one.'
+      : undefined
+
+  const update = (patch: Partial<SettingsPayload>) => setForm((current) => (current ? { ...current, ...patch } : current))
+
   async function saveStore() {
-    if (!form) return
+    if (!form || !isValid || busy) return
     setBusy(true)
     try {
-      await settingsApi.update(form)
+      await settingsApi.update({ ...form, storeName: form.storeName.trim() })
       await reloadSettings()
-      await store.reload()
-      notify('Store settings saved.')
+      setSaved(form)
+      notify('Settings saved.')
     } catch (err) {
       notify(getErrorMessage(err), 'error')
     } finally {
@@ -68,8 +110,15 @@ function DesktopSettingsPage() {
     }
   }
 
+  function discardChanges() {
+    if (!saved) return
+    setForm(saved)
+    setTaxInput(percent(saved.taxRate))
+  }
+
   async function changePassword() {
-    setBusy(true)
+    if (passwordError || !currentPassword || newPassword.length < MIN_PASSWORD) return
+    setPasswordBusy(true)
     try {
       await authApi.changePassword(currentPassword, newPassword)
       setCurrentPassword('')
@@ -78,238 +127,267 @@ function DesktopSettingsPage() {
     } catch (err) {
       notify(getErrorMessage(err), 'error')
     } finally {
-      setBusy(false)
+      setPasswordBusy(false)
     }
   }
 
-  const initials =
-    user?.fullName
-      ?.split(' ')
-      .filter(Boolean)
-      .map((n) => n[0])
-      .join('')
-      .toUpperCase()
-      .slice(0, 2) || '?'
+  const links = [
+    can('printer.configure') && { label: 'Receipt printer', hint: 'Bluetooth printer and cash drawer', to: '/printer-settings' },
+    can('users.manage') && { label: 'Users', hint: 'Staff accounts and roles', to: '/users' },
+  ].filter(Boolean) as { label: string; hint: string; to: string }[]
 
   return (
-    <div className="min-h-screen bg-[#F6F8F7] text-[#091413] pb-16 antialiased selection:bg-[#285A48] selection:text-white">
-      <div className="mx-auto max-w-7xl px-3.5 pt-4 pb-10 sm:px-6 sm:pt-6 md:px-8">
-        <PageHeader title="Settings" subtitle="Store profile, tax, receipts, and account" />
+    <DesktopPage title="Settings" subtitle="Store, receipts and your account" maxWidth="max-w-5xl">
+      {store.loading && !form && (
+        <div className="py-20">
+          <Spinner />
+        </div>
+      )}
+      {store.error && !form && (
+        <div className="mt-6">
+          <ErrorState message={store.error} onRetry={() => void store.reload()} />
+        </div>
+      )}
 
-        {store.loading && (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <Spinner />
-            <p className="mt-3 text-xs font-semibold text-slate-400">Loading settings…</p>
-          </div>
-        )}
+      <div className={`mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] ${isDirty ? 'pb-24' : ''}`}>
+        <div className="min-w-0 space-y-6">
+          {form && (
+            <fieldset disabled={!canManageSettings || busy} className="min-w-0 space-y-6">
+              {!canManageSettings && (
+                <p className="rounded-2xl bg-white px-5 py-3 text-sm text-slate-500 ring-1 ring-slate-100">
+                  Only admins can change store settings. You can still view them here.
+                </p>
+              )}
 
-        {store.error && (
-          <div className="mt-2">
-            <ErrorState message={store.error} onRetry={() => void store.reload()} />
-          </div>
-        )}
+              <SectionCard title="Store" description="Shown at the top of every receipt.">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <TextField label="Store name" value={form.storeName} onChange={(storeName) => update({ storeName })} error={errors.storeName} />
+                  <TextField label="Phone" optional type="tel" value={form.phone ?? ''} onChange={(phone) => update({ phone })} />
+                  <TextField
+                    label="Email"
+                    optional
+                    type="email"
+                    autoCapitalize="none"
+                    value={form.email ?? ''}
+                    onChange={(email) => update({ email })}
+                    error={errors.email}
+                  />
+                  <TextAreaField label="Address" optional rows={2} value={form.address ?? ''} onChange={(address) => update({ address })} />
+                </div>
+              </SectionCard>
 
-        {form ? (
-          <div className="mt-2 grid gap-4 xl:grid-cols-2">
-            {/* =====================================================
-                STORE INFORMATION
-            ====================================================== */}
-            <Card className="p-4 sm:p-5">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">Store Information</h2>
-                {!canManageSettings && <Badge tone="amber">Read-only</Badge>}
+              <SectionCard title="Currency & tax">
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <TextField
+                    label="Currency code"
+                    value={form.currency}
+                    onChange={(currency) => update({ currency: currency.toUpperCase() })}
+                    placeholder="PHP"
+                    maxLength={3}
+                  />
+                  <TextField
+                    label="Symbol"
+                    value={form.currencySymbol}
+                    onChange={(currencySymbol) => update({ currencySymbol })}
+                    error={errors.currencySymbol}
+                    placeholder="₱"
+                    maxLength={3}
+                  />
+                  <TextField
+                    label="Tax rate"
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    max={100}
+                    step="0.01"
+                    value={taxInput}
+                    onChange={(value) => {
+                      setTaxInput(value)
+                      const tax = Number(value)
+                      if (value.trim() !== '' && !Number.isNaN(tax)) update({ taxRate: tax / 100 })
+                    }}
+                    error={errors.taxRate}
+                    trailing={<span className="px-3 text-sm text-slate-400">%</span>}
+                  />
+                </div>
+                <p className="mt-2 text-xs text-slate-500">Tax is added to every sale. Use 0 if your prices already include tax.</p>
+              </SectionCard>
+
+              <SectionCard title="Receipt">
+                <div className="space-y-4">
+                  <TextAreaField
+                    label="Footer message"
+                    optional
+                    rows={2}
+                    value={form.receiptFooter}
+                    onChange={(receiptFooter) => update({ receiptFooter })}
+                    placeholder="e.g. Thank you, come again!"
+                  />
+                  <SwitchRow
+                    label="Show logo"
+                    description="Print your store initial at the top"
+                    checked={form.showLogoOnReceipt}
+                    onChange={(showLogoOnReceipt) => update({ showLogoOnReceipt })}
+                    disabled={!canManageSettings}
+                  />
+                </div>
+              </SectionCard>
+            </fieldset>
+          )}
+
+          <SectionCard
+            title="Password"
+            description={passwordChangeSupported ? 'Change the password you use to sign in.' : 'Password changes are only available in the Android app.'}
+          >
+            <fieldset disabled={!passwordChangeSupported || passwordBusy} className="min-w-0">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <TextField
+                  label="Current password"
+                  type={showPasswords ? 'text' : 'password'}
+                  autoComplete="current-password"
+                  value={currentPassword}
+                  onChange={setCurrentPassword}
+                />
+                <TextField
+                  label="New password"
+                  type={showPasswords ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={setNewPassword}
+                  error={passwordError}
+                  hint={`At least ${MIN_PASSWORD} characters.`}
+                  trailing={
+                    <button
+                      type="button"
+                      onClick={() => setShowPasswords((visible) => !visible)}
+                      className="h-10 rounded-xl px-3 text-sm font-medium text-[#1F5E3B] hover:bg-[#E6F1EA]"
+                    >
+                      {showPasswords ? 'Hide' : 'Show'}
+                    </button>
+                  }
+                />
               </div>
-              <fieldset disabled={!canManageSettings} className="space-y-5 text-xs disabled:opacity-60">
-                <FormSection title="Basic Information">
-                  <Field label="Store name" required>
-                    <Input
-                      value={form.storeName}
-                      onChange={(e) => setForm({ ...form, storeName: e.target.value })}
-                      required
-                    />
-                  </Field>
-                  <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
-                    <Field label="Phone">
-                      <Input value={form.phone ?? ''} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-                    </Field>
-                    <Field label="Email">
-                      <Input
-                        type="email"
-                        value={form.email ?? ''}
-                        onChange={(e) => setForm({ ...form, email: e.target.value })}
-                      />
-                    </Field>
-                  </div>
-                  <Field label="Address">
-                    <Textarea value={form.address ?? ''} onChange={(e) => setForm({ ...form, address: e.target.value })} />
-                  </Field>
-                </FormSection>
+              <button
+                type="button"
+                onClick={() => void changePassword()}
+                disabled={!currentPassword || newPassword.length < MIN_PASSWORD || Boolean(passwordError)}
+                className="mt-4 h-11 rounded-full bg-[#F3F5F4] px-5 text-sm font-medium transition hover:bg-[#E9EEEB] disabled:text-slate-400"
+              >
+                {passwordBusy ? 'Updating…' : 'Update password'}
+              </button>
+            </fieldset>
+          </SectionCard>
+        </div>
 
-                <FormSection title="Tax & Currency">
-                  <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
-                    <Field label="Currency">
-                      <Input value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} />
-                    </Field>
-                    <Field label="Symbol">
-                      <Input
-                        value={form.currencySymbol}
-                        onChange={(e) => setForm({ ...form, currencySymbol: e.target.value })}
-                      />
-                    </Field>
-                  </div>
-                  <Field label="Tax rate (%)">
-                    <Input
-                      type="number"
-                      min={0}
-                      max={100}
-                      step="0.01"
-                      value={Math.round(form.taxRate * 10000) / 100}
-                      onChange={(e) => setForm({ ...form, taxRate: Number(e.target.value) / 100 })}
-                    />
-                  </Field>
-                </FormSection>
+        <aside className="space-y-6 lg:sticky lg:top-6 lg:self-start">
+          <section className="rounded-2xl bg-white p-5 ring-1 ring-slate-100">
+            <div className="flex items-center gap-3">
+              <Avatar name={user?.fullName ?? '?'} large />
+              <div className="min-w-0">
+                <p className="truncate font-semibold">{user?.fullName}</p>
+                <p className="truncate text-sm text-slate-500">{user?.email}</p>
+                {user?.role && <p className="text-xs text-[#1F5E3B]">{ROLE_LABELS[user.role as Role] ?? user.role}</p>}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setConfirmLogout(true)}
+              className="mt-4 h-11 w-full rounded-full text-sm font-medium text-rose-600 ring-1 ring-rose-100 hover:bg-rose-50"
+            >
+              Log out
+            </button>
+          </section>
 
-                <FormSection title="Receipt">
-                  <Field label="Receipt footer">
-                    <Textarea
-                      value={form.receiptFooter}
-                      onChange={(e) => setForm({ ...form, receiptFooter: e.target.value })}
-                    />
-                  </Field>
-                  <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-[#091413]/80">
-                    <input
-                      type="checkbox"
-                      checked={form.showLogoOnReceipt}
-                      onChange={(e) => setForm({ ...form, showLogoOnReceipt: e.target.checked })}
-                      className="h-4 w-4 rounded border-[#091413]/20 text-[#285A48] focus:ring-[#285A48]"
-                    />
-                    Show logo on receipt
-                  </label>
-                </FormSection>
-
-                {canManageSettings && (
-                  <Button onClick={() => void saveStore()} disabled={busy || !form.storeName.trim()} className="w-full sm:w-auto">
-                    {busy ? 'Saving…' : 'Save store settings'}
-                  </Button>
-                )}
-              </fieldset>
-            </Card>
-
-            {/* =====================================================
-                RECEIPT PREVIEW
-            ====================================================== */}
-            <Card className="p-4 sm:p-5">
-              <h2 className="mb-4 text-xs font-bold uppercase tracking-wider text-slate-400">Receipt Preview</h2>
-              <div className="rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] p-4 text-sm text-slate-700">
-                <div className="mb-3 flex items-center justify-center">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#EAF1EE] text-sm font-black text-[#285A48]">
+          {form && (
+            <section className="rounded-2xl bg-white p-5 ring-1 ring-slate-100">
+              <h2 className="text-sm font-semibold">Receipt preview</h2>
+              <div className="mt-3 rounded-xl bg-[#F6F8F7] p-4 font-mono text-xs text-slate-700">
+                {form.showLogoOnReceipt && (
+                  <div className="mx-auto mb-2 flex h-9 w-9 items-center justify-center rounded-full bg-[#091413] font-sans text-sm font-bold text-white">
                     {form.storeName.trim().slice(0, 1).toUpperCase() || 'S'}
                   </div>
-                </div>
-                <p className="text-center text-lg font-bold text-[#091413]">{form.storeName || 'Store name'}</p>
-                {(form.address || form.phone || form.email) && (
-                  <div className="mt-2 space-y-0.5 text-center text-[11px] text-slate-400">
-                    {form.address && <p>{form.address}</p>}
-                    {form.phone && <p>{form.phone}</p>}
-                    {form.email && <p>{form.email}</p>}
-                  </div>
                 )}
-                <div className="my-3 border-t border-[#E5EBE7]" />
-                <div className="space-y-1 text-xs">
-                  <div className="flex justify-between">
-                    <span>Item A</span>
-                    <span>₱150.00</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Item B</span>
-                    <span>₱95.00</span>
-                  </div>
-                </div>
-                <div className="my-3 border-t border-[#E5EBE7]" />
-                <div className="flex justify-between text-xs font-bold text-[#091413]">
-                  <span>Total</span>
-                  <span>₱245.00</span>
-                </div>
-                {form.receiptFooter && (
-                  <p className="mt-3 text-center text-[11px] text-slate-400">{form.receiptFooter}</p>
-                )}
+                <p className="text-center text-sm font-bold text-[#091413]">{form.storeName || 'Store name'}</p>
+                {[form.address, form.phone, form.email].filter(Boolean).map((line) => (
+                  <p key={line} className="text-center text-[11px] text-slate-500">
+                    {line}
+                  </p>
+                ))}
+                <div className="my-2 border-t border-dashed border-slate-300" />
+                <PreviewLine label="Item A × 2" value={`${form.currencySymbol}150.00`} />
+                <PreviewLine label="Item B" value={`${form.currencySymbol}95.00`} />
+                <div className="my-2 border-t border-dashed border-slate-300" />
+                <PreviewLine label="Total" value={`${form.currencySymbol}245.00`} />
+                {form.receiptFooter && <p className="mt-2 text-center text-[11px] text-slate-500">{form.receiptFooter}</p>}
               </div>
-            </Card>
+            </section>
+          )}
 
-            {/* =====================================================
-                ACCOUNT
-            ====================================================== */}
-            <Card className="p-4 sm:p-5 xl:col-span-2">
-              <h2 className="mb-4 text-xs font-bold uppercase tracking-wider text-slate-400">Account</h2>
-
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                <div className="flex items-center gap-3 rounded-2xl border border-[#E5EBE7] bg-[#F6F8F7] p-3 sm:min-w-72">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-gray-100 to-gray-200 text-xs font-semibold text-gray-700 ring-1 ring-gray-200">
-                    {initials}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold text-[#091413]">{user?.fullName || 'Admin'}</p>
-                    <p className="truncate text-xs text-slate-500">{user?.email}</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowLogoutConfirm(true)}
-                    className="flex h-9 shrink-0 items-center gap-1.5 rounded-xl px-3 text-xs font-bold text-rose-600 transition-colors hover:bg-rose-50 active:scale-95"
-                  >
-                    <FontAwesomeIcon icon={faRightFromBracket} className="h-3.5 w-3.5" />
-                    <span>Log out</span>
-                  </button>
-                </div>
-
-                <div className="w-full space-y-3 sm:max-w-sm">
-                  <Field label="Current password" required>
-                    <Input
-                      type="password"
-                      value={currentPassword}
-                      onChange={(e) => setCurrentPassword(e.target.value)}
-                      required
-                    />
-                  </Field>
-                  <Field label="New password" required hint="Minimum 8 characters">
-                    <Input
-                      type="password"
-                      value={newPassword}
-                      onChange={(e) => setNewPassword(e.target.value)}
-                      required
-                    />
-                  </Field>
-                  <Button
-                    variant="secondary"
-                    onClick={() => void changePassword()}
-                    disabled={busy || !currentPassword || newPassword.length < 8}
-                    className="w-full sm:w-auto"
-                  >
-                    Update password
-                  </Button>
-                </div>
-              </div>
-            </Card>
-          </div>
-        ) : null}
+          {links.length > 0 && (
+            <nav aria-label="More settings" className="overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100">
+              {links.map((link) => (
+                <button
+                  key={link.to}
+                  type="button"
+                  onClick={() => navigate(link.to)}
+                  className="flex min-h-16 w-full items-center gap-3 border-b border-slate-100 px-5 py-3 text-left last:border-b-0 hover:bg-slate-50"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-medium">{link.label}</span>
+                    <span className="block text-xs text-slate-400">{link.hint}</span>
+                  </span>
+                  <ChevronRight size={12} className="text-slate-300" />
+                </button>
+              ))}
+            </nav>
+          )}
+        </aside>
       </div>
 
-      {showLogoutConfirm && (
+      {/* SAVE BAR — only when there is something to save */}
+      {isDirty && canManageSettings && (
+        <div className="fixed inset-x-0 bottom-6 z-40 px-6">
+          <div className="mx-auto flex max-w-lg items-center gap-2 rounded-2xl bg-white p-2 shadow-[0_8px_30px_rgba(9,20,19,0.15)] ring-1 ring-slate-100">
+            <span className="px-3 text-sm text-slate-500">Unsaved changes</span>
+            <div className="flex-1" />
+            <TextButton onClick={discardChanges} disabled={busy} className="h-11">
+              Discard
+            </TextButton>
+            <PrimaryButton onClick={() => void saveStore()} disabled={busy || !isValid} className="h-11 flex-none px-6">
+              {busy ? 'Saving…' : isValid ? 'Save changes' : 'Fix errors to save'}
+            </PrimaryButton>
+          </div>
+        </div>
+      )}
+
+      {confirmLogout && (
         <ConfirmDialog
           title="Log out?"
-          message="Are you sure you want to log out?"
+          message={isDirty ? 'You have unsaved settings changes that will be lost.' : 'You’ll need your email and password to sign back in.'}
           confirmLabel="Log out"
           danger
           busy={loggingOut}
-          onCancel={() => setShowLogoutConfirm(false)}
+          onCancel={() => setConfirmLogout(false)}
           onConfirm={() => {
             setLoggingOut(true)
             void logout().finally(() => {
               setLoggingOut(false)
-              setShowLogoutConfirm(false)
+              setConfirmLogout(false)
             })
           }}
         />
       )}
+    </DesktopPage>
+  )
+}
+
+function PreviewLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <span>{label}</span>
+      <span>{value}</span>
     </div>
   )
 }
+
+export default SettingsPage

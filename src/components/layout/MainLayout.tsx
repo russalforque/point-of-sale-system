@@ -1,27 +1,31 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { MobileBottomNav } from '../../pages/mobile/MobileButtomNav'
+import { useAndroidBackButton } from '../../hooks/useAndroidBackButton'
+
+const SIDEBAR_STORAGE_KEY = 'sellix.sidebar'
+
+// Start as an icon rail on tablets and desktops so it doesn't eat into the page width;
+// hovering or tabbing into the rail previews it. A saved choice always wins.
+function getInitialCollapsed() {
+  try {
+    const saved = localStorage.getItem(SIDEBAR_STORAGE_KEY)
+    if (saved !== null) return saved === '1'
+  } catch {
+    // Storage can be unavailable (private mode); fall back to the default.
+  }
+  return true
+}
 
 export function MainLayout() {
   const location = useLocation()
+  useAndroidBackButton()
   const [pageLoading, setPageLoading] = useState(false)
+  const [collapsed, setCollapsed] = useState(getInitialCollapsed)
 
   // 🟢 Detect if we are on the payment/checkout screen
   const isPaymentPage = location.pathname.startsWith('/payment')
-
-  // Auto-collapse the sidebar to an icon rail on tablets too, not just desktop,
-  // so it doesn't eat into the limited width — hover near the edge still expands it.
-  const shouldAutoHideSidebar = () => window.innerWidth >= 768
-
-  const [collapsed, setCollapsed] = useState(() => {
-    const saved = localStorage.getItem('sellix.sidebar')
-    if (saved !== null) return saved === '1'
-    return shouldAutoHideSidebar()
-  })
-  const [mobileOpen, setMobileOpen] = useState(false)
-  const [hoveredSidebar, setHoveredSidebar] = useState(false)
-  const manualToggleLockRef = useRef(false)
 
   // Progress bar indicator on page change
   useEffect(() => {
@@ -30,53 +34,16 @@ export function MainLayout() {
     return () => window.clearTimeout(id)
   }, [location.pathname])
 
-  // Automatically close mobile menu drawer when route changes
   useEffect(() => {
-    setMobileOpen(false)
-  }, [location.pathname])
-
-  useEffect(() => {
-    const handleResize = () => {
-      if (!shouldAutoHideSidebar()) {
-        setHoveredSidebar(false)
-      }
+    try {
+      localStorage.setItem(SIDEBAR_STORAGE_KEY, collapsed ? '1' : '0')
+    } catch {
+      // Not persisting is fine; the toggle still works for this session.
     }
-
-    window.addEventListener('resize', handleResize)
-    return () => window.removeEventListener('resize', handleResize)
-  }, [])
-
-  function toggle() {
-    setCollapsed((prev) => {
-      const next = !prev
-      localStorage.setItem('sellix.sidebar', next ? '1' : '0')
-      setHoveredSidebar(false)
-      manualToggleLockRef.current = true
-      window.setTimeout(() => {
-        manualToggleLockRef.current = false
-      }, 250)
-      return next
-    })
-  }
-
-  const sidebarExpanded = !collapsed || hoveredSidebar
-
-  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (manualToggleLockRef.current) return
-
-    const isNearLeft = shouldAutoHideSidebar() && e.clientX < 10
-    setHoveredSidebar(isNearLeft)
-  }
+  }, [collapsed])
 
   return (
-    <div
-      className="flex h-screen h-[100dvh] w-full overflow-hidden bg-white selection:bg-[#285A48] selection:text-white"
-      onPointerMove={handlePointerMove}
-      onPointerLeave={() => {
-        setHoveredSidebar(false)
-        manualToggleLockRef.current = false
-      }}
-    >
+    <div className="flex h-screen h-[100dvh] w-full overflow-hidden bg-white selection:bg-[#285A48] selection:text-white">
       {/* Brand Top Page Loading Bar */}
       <div
         aria-hidden="true"
@@ -85,13 +52,8 @@ export function MainLayout() {
         }`}
       />
 
-      {/* Desktop Persistent Sidebar & Slide-in Mobile Drawer */}
-      <Sidebar
-        collapsed={!sidebarExpanded}
-        mobileOpen={mobileOpen}
-        onCloseMobile={() => setMobileOpen(false)}
-        onToggle={toggle}
-      />
+      {/* Tablet / desktop sidebar (phones use the bottom navigation) */}
+      <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((prev) => !prev)} />
 
       {/* Main Canvas Area */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -110,7 +72,7 @@ export function MainLayout() {
 
         {/* 🟢 Bottom Navigation: Hidden on the payment screen to leave room for Pay/Settle */}
         {!isPaymentPage && (
-          <MobileBottomNav onOpenMenu={() => setMobileOpen(true)} />
+          <MobileBottomNav />
         )}
       </div>
     </div>

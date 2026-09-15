@@ -1,18 +1,41 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { supplierApi, type SupplierPayload } from '../../api/supplierApi'
-import { Truck } from '../../components/ui/Icons'
-import { Button } from '../../components/ui/Button'
-import { Field, Input, Textarea } from '../../components/ui/Field'
-import { FormSection } from '../../components/ui/FormSection'
-import { ConfirmDialog, Modal } from '../../components/ui/Modal'
-import { MobileEmpty, MobileError, MobileLoading, StickyToolbar } from '../../components/ui/MobileStates'
+import {
+  AddButton,
+  Avatar,
+  ContactActions,
+  DetailList,
+  DetailRow,
+  EMAIL_PATTERN,
+  EmptyBlock,
+  ErrorBlock,
+  InactivePill,
+  LoadingBlock,
+  PageHeader,
+  PrimaryButton,
+  RowButton,
+  SearchField,
+  Segmented,
+  Sheet,
+  SheetBody,
+  SheetFooter,
+  SheetHeader,
+  SwitchRow,
+  TextAreaField,
+  TextButton,
+  TextField,
+  useEscapeKey,
+} from '../../components/ui/MobileKit'
+import { ConfirmDialog } from '../../components/ui/Modal'
 import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
+import { useDebounced } from '../../hooks/useDebounced'
 import type { Supplier } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
 
 type StatusFilter = '' | 'active' | 'inactive'
+type FormErrors = Partial<Record<keyof SupplierPayload, string>>
 
 const emptyForm: SupplierPayload = {
   companyName: '',
@@ -23,60 +46,101 @@ const emptyForm: SupplierPayload = {
   isActive: true,
 }
 
+function toForm(supplier: Supplier): SupplierPayload {
+  return {
+    companyName: supplier.companyName,
+    contactPerson: supplier.contactPerson ?? '',
+    phone: supplier.phone ?? '',
+    email: supplier.email ?? '',
+    address: supplier.address ?? '',
+    isActive: supplier.isActive,
+  }
+}
+
+function validate(form: SupplierPayload): FormErrors {
+  const errors: FormErrors = {}
+  if (!form.companyName.trim()) errors.companyName = 'Enter the company name.'
+  if (form.email?.trim() && !EMAIL_PATTERN.test(form.email.trim())) errors.email = 'Enter a valid email, like orders@company.com.'
+  if (form.phone?.trim() && form.phone.replace(/\D/g, '').length < 7) errors.phone = 'Phone number looks too short.'
+  return errors
+}
+
 export function MobileSuppliers() {
   const { notify } = useToast()
 
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<StatusFilter>('')
-  const [form, setForm] = useState<SupplierPayload>(emptyForm)
-  const [editing, setEditing] = useState<Supplier | null>(null)
-  const [open, setOpen] = useState(false)
+
   const [view, setView] = useState<Supplier | null>(null)
+  const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<Supplier | null>(null)
+  const [form, setForm] = useState<SupplierPayload>(emptyForm)
+  const [initialForm, setInitialForm] = useState<SupplierPayload>(emptyForm)
+  const [touched, setTouched] = useState<Partial<Record<keyof SupplierPayload, boolean>>>({})
   const [deactivate, setDeactivate] = useState<Supplier | null>(null)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [busy, setBusy] = useState(false)
 
-  const { data, loading, error, reload } = useAsync(
-    () =>
-      supplierApi.list({
-        search: search.trim() || undefined,
-        isActive: status === '' ? undefined : status === 'active',
-      }),
-    [search, status],
-  )
+  const q = useDebounced(search).trim()
 
-  const suppliersList = data ?? []
+  // Load every status once so the filter counts are real totals.
+  const { data, loading, error, reload } = useAsync(() => supplierApi.list({ search: q || undefined }), [q])
+  const suppliers = data ?? []
 
-  function openCreate() {
-    setEditing(null)
-    setForm(emptyForm)
-    setOpen(true)
-  }
+  const counts = useMemo(() => {
+    const active = suppliers.filter((s) => s.isActive).length
+    return { all: suppliers.length, active, inactive: suppliers.length - active }
+  }, [suppliers])
 
-  function openEdit(supplier: Supplier) {
+  const filtered = suppliers.filter((s) => (status === '' ? true : status === 'active' ? s.isActive : !s.isActive))
+
+  const errors = validate(form)
+  const isValid = Object.keys(errors).length === 0
+  const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm)
+  const hasFilters = q !== '' || status !== ''
+  const fieldError = (key: keyof SupplierPayload) => (touched[key] ? errors[key] : undefined)
+
+  function openForm(supplier: Supplier | null) {
+    const next = supplier ? toForm(supplier) : { ...emptyForm }
     setEditing(supplier)
-    setForm({
-      companyName: supplier.companyName,
-      contactPerson: supplier.contactPerson ?? '',
-      phone: supplier.phone ?? '',
-      email: supplier.email ?? '',
-      address: supplier.address ?? '',
-      isActive: supplier.isActive,
-    })
+    setForm(next)
+    setInitialForm(next)
+    setTouched({})
+    setView(null)
     setOpen(true)
   }
 
-  function closeModals() {
+  function closeForm() {
     setOpen(false)
-    setView(null)
+    setConfirmDiscard(false)
   }
+
+  function requestCloseForm() {
+    if (busy) return
+    if (isDirty) setConfirmDiscard(true)
+    else closeForm()
+  }
+
+  useEscapeKey(() => (open ? requestCloseForm() : setView(null)), (open || view !== null) && !deactivate && !confirmDiscard)
 
   async function save() {
+    setTouched({ companyName: true, phone: true, email: true })
+    if (!isValid || busy) return
+
     setBusy(true)
     try {
-      if (editing) await supplierApi.update(editing.id, form)
-      else await supplierApi.create(form)
-      notify(editing ? 'Supplier updated.' : 'Supplier added.')
-      closeModals()
+      const payload: SupplierPayload = {
+        ...form,
+        companyName: form.companyName.trim(),
+        contactPerson: form.contactPerson?.trim(),
+        phone: form.phone?.trim(),
+        email: form.email?.trim(),
+        address: form.address?.trim(),
+      }
+      const saved = editing ? await supplierApi.update(editing.id, payload) : await supplierApi.create(payload)
+      notify(editing ? 'Changes saved.' : `${saved.companyName} added.`)
+      closeForm()
+      setView(saved)
       await reload()
     } catch (err) {
       notify(getErrorMessage(err), 'error')
@@ -90,7 +154,8 @@ export function MobileSuppliers() {
     setBusy(true)
     try {
       await supplierApi.deactivate(deactivate.id)
-      notify('Supplier deactivated.')
+      notify(`${deactivate.companyName} deactivated.`)
+      if (view?.id === deactivate.id) setView({ ...view, isActive: false })
       setDeactivate(null)
       await reload()
     } catch (err) {
@@ -100,247 +165,222 @@ export function MobileSuppliers() {
     }
   }
 
-  function handleFilterStatus(target: StatusFilter) {
-    setStatus((prev) => (prev === target ? '' : target))
+  async function reactivate(supplier: Supplier) {
+    setBusy(true)
+    try {
+      const updated = await supplierApi.update(supplier.id, { ...toForm(supplier), isActive: true })
+      notify(`${supplier.companyName} is active again.`)
+      setView(updated)
+      await reload()
+    } catch (err) {
+      notify(getErrorMessage(err), 'error')
+    } finally {
+      setBusy(false)
+    }
   }
 
-  const hasFilters = Boolean(search.trim() || status)
-  const totalSuppliers = suppliersList.length
-  const activeSuppliers = suppliersList.filter((s) => s.isActive).length
-  const inactiveSuppliers = totalSuppliers - activeSuppliers
-
   return (
-    <div className="min-h-screen bg-[#F6F8F7] pb-28 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-[#091413] antialiased">
-      <main className="mx-auto w-full max-w-2xl px-4 sm:px-6">
-        <header className="flex items-center justify-between gap-3 pb-3">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-black tracking-tight text-[#091413]">Suppliers</h1>
-            <p className="mt-0.5 text-xs text-slate-500">Vendor accounts &amp; contacts</p>
-          </div>
-          <button
-            type="button"
-            onClick={openCreate}
-            className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-2xl bg-[#285A48] px-4 text-sm font-bold text-white shadow-md shadow-[#285A48]/20 active:scale-95 touch-manipulation"
-          >
-            <PlusIcon size={18} />
-            <span>Add</span>
-          </button>
-        </header>
+    <div className="flex min-h-full flex-col bg-white text-[#091413] antialiased">
+      <PageHeader
+        title="Suppliers"
+        subtitle={data ? `${counts.active} active suppliers` : 'Vendors and their contacts'}
+        action={<AddButton onClick={() => openForm(null)} />}
+      >
+        <SearchField value={search} onChange={setSearch} placeholder="Company, contact or code" label="Search suppliers" />
+        <Segmented
+          label="Supplier status"
+          value={status}
+          onChange={setStatus}
+          options={[
+            { key: '', label: 'All', count: data ? counts.all : undefined },
+            { key: 'active', label: 'Active', count: data ? counts.active : undefined },
+            { key: 'inactive', label: 'Inactive', count: data ? counts.inactive : undefined },
+          ]}
+        />
+      </PageHeader>
 
-        <section className="grid grid-cols-3 gap-2">
-          <MetricTile label="Total" value={totalSuppliers} active={status === ''} onClick={() => handleFilterStatus('')} />
-          <MetricTile label="Active" value={activeSuppliers} tone="emerald" active={status === 'active'} onClick={() => handleFilterStatus('active')} />
-          <MetricTile label="Inactive" value={inactiveSuppliers} tone="rose" active={status === 'inactive'} onClick={() => handleFilterStatus('inactive')} />
-        </section>
+      <main className="flex-1 px-5 pb-6">
+        {loading && !data && <LoadingBlock />}
+        {!loading && error && <ErrorBlock message={error} onRetry={() => void reload()} />}
 
-        <StickyToolbar>
-          <div className="relative mt-2">
-            <SearchIcon size={17} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search company, contact, or code..."
-              className="h-12 w-full rounded-2xl border border-[#E5EBE7] bg-white pl-10 pr-9 text-sm font-medium text-[#091413] placeholder-slate-400 shadow-2xs outline-none transition focus:border-[#285A48] focus:ring-2 focus:ring-[#285A48]/15"
-            />
-          </div>
-          {hasFilters && (
-            <button
-              type="button"
-              onClick={() => {
-                setSearch('')
-                setStatus('')
-              }}
-              className="mt-2 text-xs font-bold text-[#285A48]"
-            >
-              Reset filters
-            </button>
-          )}
-        </StickyToolbar>
+        {!loading && !error && filtered.length === 0 && (
+          <EmptyBlock
+            title={hasFilters ? 'No suppliers found' : 'No suppliers yet'}
+            hint={q ? `Nothing matches “${q}”.` : hasFilters ? 'No suppliers have this status.' : 'Add the vendors you buy stock from.'}
+            actionLabel={hasFilters ? 'Clear filters' : 'Add first supplier'}
+            secondary={hasFilters}
+            onAction={
+              hasFilters
+                ? () => {
+                    setSearch('')
+                    setStatus('')
+                  }
+                : () => openForm(null)
+            }
+          />
+        )}
 
-        <section className="mt-2">
-          {loading && <MobileLoading label="Loading suppliers…" />}
-
-          {error && <MobileError message={error} onRetry={() => void reload()} />}
-
-          {!loading && !error && suppliersList.length === 0 && (
-            <MobileEmpty
-              icon={<Truck size={22} />}
-              title="No suppliers found"
-              hint={hasFilters ? 'Try clearing filters or search a different keyword.' : 'Onboard your first vendor account.'}
-              action={
-                !hasFilters ? (
-                  <Button onClick={openCreate} className="min-h-12 w-full text-sm">
-                    Add Supplier
-                  </Button>
-                ) : undefined
-              }
-            />
-          )}
-
-          {!loading && !error && suppliersList.length > 0 && (
-            <div className="space-y-3">
-              {suppliersList.map((supplier) => (
-                <article key={supplier.id} className="rounded-3xl border border-[#E5EBE7] bg-white p-4 shadow-xs">
-                  <div className="flex items-start gap-3">
-                    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-[#285A48]/20 bg-[#285A48]/10 text-sm font-bold text-[#285A48]">
-                      {supplier.companyName.slice(0, 1).toUpperCase()}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-bold text-[#091413]">{supplier.companyName}</p>
-                          <p className="text-[11px] font-mono text-slate-400">{supplier.supplierCode || 'No code'}</p>
-                        </div>
-                        <span
-                          className={`shrink-0 inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-bold ${
-                            supplier.isActive ? 'bg-[#EAF1EE] text-[#285A48]' : 'bg-slate-100 text-slate-500'
-                          }`}
-                        >
-                          {supplier.isActive ? 'Active' : 'Inactive'}
-                        </span>
-                      </div>
-                      <p className="mt-1 truncate text-xs text-slate-500">{supplier.contactPerson || 'No contact person'}</p>
-                      <p className="text-xs font-mono text-slate-400">{supplier.phone || 'No phone'}</p>
-                    </div>
+        {filtered.length > 0 && (
+          <ul className={loading ? 'opacity-60 transition-opacity' : 'transition-opacity'}>
+            {filtered.map((supplier) => (
+              <li key={supplier.id} className="border-b border-slate-100 last:border-b-0">
+                <RowButton onClick={() => setView(supplier)}>
+                  <Avatar name={supplier.companyName} inactive={!supplier.isActive} square />
+                  <div className="min-w-0 flex-1">
+                    <p className={`truncate text-[15px] ${supplier.isActive ? '' : 'text-slate-400'}`}>{supplier.companyName}</p>
+                    <p className="mt-0.5 truncate text-xs text-slate-400">
+                      {[supplier.contactPerson, supplier.phone].filter(Boolean).join(' · ') || 'No contact info'}
+                    </p>
                   </div>
-
-                  <div className="mt-3 flex items-center gap-2 border-t border-slate-100 pt-3">
-                    <button
-                      type="button"
-                      onClick={() => setView(supplier)}
-                      className="flex h-11 flex-1 items-center justify-center rounded-xl border border-[#E5EBE7] bg-white text-xs font-bold text-slate-600 active:scale-95 touch-manipulation"
-                    >
-                      View
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => openEdit(supplier)}
-                      className="flex h-11 flex-1 items-center justify-center rounded-xl border border-[#E5EBE7] bg-white text-xs font-bold text-[#285A48] active:scale-95 touch-manipulation"
-                    >
-                      Edit
-                    </button>
-                    {supplier.isActive && (
-                      <button
-                        type="button"
-                        onClick={() => setDeactivate(supplier)}
-                        aria-label="Deactivate supplier"
-                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-rose-200 bg-rose-50 text-rose-600 active:scale-95 touch-manipulation"
-                      >
-                        <TrashIcon size={15} />
-                      </button>
-                    )}
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
+                  {!supplier.isActive && <InactivePill />}
+                </RowButton>
+              </li>
+            ))}
+          </ul>
+        )}
       </main>
 
-      {open && (
-        <Modal
-          title={editing ? 'Edit supplier' : 'Add supplier'}
-          description={
-            editing
-              ? 'Update vendor contact details and status.'
-              : 'Onboard a new vendor account.'
-          }
-          wide
-          onClose={closeModals}
-          preventClose={busy}
-          footer={
-            <div className="flex flex-col-reverse gap-2 w-full">
-              <Button variant="secondary" onClick={closeModals} className="min-h-12 text-sm">
-                Cancel
-              </Button>
-              <Button onClick={() => void save()} disabled={busy || !form.companyName.trim()} className="min-h-12 text-sm">
-                {busy ? 'Saving…' : 'Save changes'}
-              </Button>
-            </div>
-          }
-        >
-          <div className="space-y-5 text-sm">
-            <FormSection title="Company Details">
-              <Field label="Company name" required>
-                <Input
-                  value={form.companyName}
-                  onChange={(e) => setForm({ ...form, companyName: e.target.value })}
-                  className="min-h-12 rounded-2xl text-sm"
-                  required
-                />
-              </Field>
+      {/* PROFILE */}
+      {view && (
+        <Sheet label={`${view.companyName} details`} onClose={() => setView(null)}>
+          <SheetHeader
+            title={view.companyName}
+            subtitle={
+              <>
+                {view.supplierCode}
+                {!view.isActive && ' · Inactive'}
+              </>
+            }
+            leading={<Avatar name={view.companyName} inactive={!view.isActive} large square />}
+            onClose={() => setView(null)}
+          />
 
-              <Field label="Contact person">
-                <Input
-                  value={form.contactPerson}
-                  onChange={(e) => setForm({ ...form, contactPerson: e.target.value })}
-                  className="min-h-12 rounded-2xl text-sm"
-                />
-              </Field>
-            </FormSection>
+          <SheetBody>
+            <ContactActions phone={view.phone} email={view.email} />
+            <DetailList>
+              <DetailRow label="Contact person" value={view.contactPerson} />
+              <DetailRow label="Phone" value={view.phone} />
+              <DetailRow label="Email" value={view.email} />
+              <DetailRow label="Address" value={view.address} />
+            </DetailList>
+          </SheetBody>
 
-            <FormSection title="Contact Information">
-              <Field label="Phone">
-                <Input
-                  type="tel"
-                  inputMode="tel"
-                  value={form.phone}
-                  onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                  className="min-h-12 rounded-2xl text-sm"
-                />
-              </Field>
-
-              <Field label="Email">
-                <Input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  className="min-h-12 rounded-2xl text-sm"
-                />
-              </Field>
-
-              <Field label="Address">
-                <Textarea
-                  value={form.address}
-                  onChange={(e) => setForm({ ...form, address: e.target.value })}
-                  className="min-h-24 rounded-2xl text-sm"
-                />
-              </Field>
-            </FormSection>
-
-            <label className="flex min-h-12 items-center gap-3 rounded-2xl border border-[#E5EBE7] bg-white px-3.5 text-sm font-bold text-slate-700">
-              <input
-                type="checkbox"
-                checked={form.isActive}
-                onChange={(e) => setForm({ ...form, isActive: e.target.checked })}
-                className="h-5 w-5 rounded-md border-[#E5EBE7] text-[#285A48] focus:ring-[#285A48]"
-              />
-              Active supplier
-            </label>
-          </div>
-        </Modal>
+          <SheetFooter>
+            {view.isActive ? (
+              <TextButton tone="danger" onClick={() => setDeactivate(view)} disabled={busy}>
+                Deactivate
+              </TextButton>
+            ) : (
+              <TextButton tone="accent" onClick={() => void reactivate(view)} disabled={busy}>
+                {busy ? 'Activating…' : 'Reactivate'}
+              </TextButton>
+            )}
+            <PrimaryButton onClick={() => openForm(view)}>Edit details</PrimaryButton>
+          </SheetFooter>
+        </Sheet>
       )}
 
-      {view && (
-        <Modal title="Supplier details" onClose={closeModals}>
-          <div className="divide-y divide-slate-100 text-sm">
-            <DetailRow label="Code" value={view.supplierCode ?? '—'} />
-            <DetailRow label="Company name" value={view.companyName} />
-            <DetailRow label="Contact person" value={view.contactPerson ?? '—'} />
-            <DetailRow label="Phone" value={view.phone ?? '—'} />
-            <DetailRow label="Email" value={view.email ?? '—'} />
-            <DetailRow label="Address" value={view.address ?? '—'} />
-          </div>
-          <Button onClick={() => openEdit(view)} className="mt-4 min-h-12 w-full text-sm">
-            Edit Supplier
-          </Button>
-        </Modal>
+      {/* FORM */}
+      {open && (
+        <Sheet label={editing ? 'Edit supplier' : 'Add supplier'} onClose={requestCloseForm}>
+          <form
+            noValidate
+            className="flex min-h-0 flex-1 flex-col"
+            onSubmit={(e) => {
+              e.preventDefault()
+              void save()
+            }}
+          >
+            <SheetHeader title={editing ? 'Edit supplier' : 'Add supplier'} onClose={requestCloseForm} closeDisabled={busy} />
+
+            <SheetBody>
+              <TextField
+                label="Company name"
+                value={form.companyName}
+                onChange={(companyName) => setForm({ ...form, companyName })}
+                onBlur={() => setTouched((t) => ({ ...t, companyName: true }))}
+                error={fieldError('companyName')}
+                placeholder="e.g. Metro Beverages Inc."
+                autoFocus={!editing}
+                autoComplete="organization"
+                autoCapitalize="words"
+              />
+              <TextField
+                label="Contact person"
+                optional
+                value={form.contactPerson ?? ''}
+                onChange={(contactPerson) => setForm({ ...form, contactPerson })}
+                placeholder="Who do you talk to?"
+                autoComplete="name"
+                autoCapitalize="words"
+              />
+              <TextField
+                label="Phone"
+                optional
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                value={form.phone ?? ''}
+                onChange={(phone) => setForm({ ...form, phone })}
+                onBlur={() => setTouched((t) => ({ ...t, phone: true }))}
+                error={fieldError('phone')}
+                placeholder="e.g. 0912 345 6789"
+              />
+              <TextField
+                label="Email"
+                optional
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                autoCapitalize="none"
+                value={form.email ?? ''}
+                onChange={(email) => setForm({ ...form, email })}
+                onBlur={() => setTouched((t) => ({ ...t, email: true }))}
+                error={fieldError('email')}
+                placeholder="e.g. orders@company.com"
+              />
+              <TextAreaField
+                label="Address"
+                optional
+                value={form.address ?? ''}
+                onChange={(address) => setForm({ ...form, address })}
+                placeholder="Warehouse or office address"
+                autoComplete="street-address"
+              />
+              {editing && (
+                <SwitchRow
+                  label="Active"
+                  description="Inactive suppliers can’t be linked to products"
+                  checked={form.isActive}
+                  onChange={(isActive) => setForm({ ...form, isActive })}
+                />
+              )}
+            </SheetBody>
+
+            <SheetFooter>
+              <PrimaryButton type="submit" disabled={busy || (editing !== null && !isDirty)}>
+                {busy ? 'Saving…' : editing ? (isDirty ? 'Save changes' : 'No changes') : 'Add supplier'}
+              </PrimaryButton>
+            </SheetFooter>
+          </form>
+        </Sheet>
+      )}
+
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard changes?"
+          message="The information you entered will not be saved."
+          confirmLabel="Discard"
+          danger
+          onCancel={() => setConfirmDiscard(false)}
+          onConfirm={closeForm}
+        />
       )}
 
       {deactivate && (
         <ConfirmDialog
-          title="Deactivate supplier"
-          message={`Deactivate ${deactivate.companyName}? It will no longer be available for purchasing orders.`}
+          title={`Deactivate ${deactivate.companyName}?`}
+          message="They won’t be available when adding products. Their details are kept, and you can reactivate them anytime."
           confirmLabel="Deactivate"
           danger
           busy={busy}
@@ -349,74 +389,6 @@ export function MobileSuppliers() {
         />
       )}
     </div>
-  )
-}
-
-function MetricTile({
-  label,
-  value,
-  tone,
-  active,
-  onClick,
-}: {
-  label: string
-  value: number
-  tone?: 'emerald' | 'rose'
-  active: boolean
-  onClick: () => void
-}) {
-  const dot = tone === 'emerald' ? 'bg-emerald-500' : tone === 'rose' ? 'bg-rose-500' : null
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex min-h-17 flex-col items-center justify-center rounded-2xl border py-2 text-center transition-all active:scale-95 touch-manipulation ${
-        active ? 'border-[#285A48] bg-white shadow-xs ring-1 ring-[#285A48]' : 'border-[#E5EBE7] bg-white'
-      }`}
-    >
-      <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-        {dot && <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />}
-        {label}
-      </span>
-      <span className="mt-1 text-lg font-black tabular-nums text-[#091413]">{value}</span>
-    </button>
-  )
-}
-
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex justify-between gap-3 py-2.5">
-      <span className="text-slate-400 font-medium">{label}</span>
-      <span className="text-[#091413] text-right font-bold">{value}</span>
-    </div>
-  )
-}
-
-function PlusIcon({ size = 15 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="12" y1="5" x2="12" y2="19" />
-      <line x1="5" y1="12" x2="19" y2="12" />
-    </svg>
-  )
-}
-
-function SearchIcon({ size = 14, className }: { size?: number; className?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <circle cx="11" cy="11" r="8" />
-      <line x1="21" y1="21" x2="16.65" y2="16.65" />
-    </svg>
-  )
-}
-
-function TrashIcon({ size = 15 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 6h18" />
-      <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
-      <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
-    </svg>
   )
 }
 
