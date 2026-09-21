@@ -109,6 +109,7 @@ export type Sale = {
   customerId: number | null
   customerName: string | null
   cashierName: string
+  shiftId: number | null
   subtotal: number
   discount: number
   tax: number
@@ -182,6 +183,24 @@ export type StoreSetting = {
   taxRate: number
   receiptFooter: string
   showLogoOnReceipt: boolean
+}
+
+export type ShiftStatus = 'Open' | 'Closed'
+
+export type Shift = {
+  id: number
+  employeeId: number
+  employeeName: string
+  startingCash: number
+  status: ShiftStatus
+  startedAt: string
+  endedAt: string | null
+  cashSales: number | null
+  nonCashSales: number | null
+  totalSales: number | null
+  expectedCash: number | null
+  actualCash: number | null
+  difference: number | null
 }
 
 export type PaymentMethod = 0 | 1 | 2 | 3

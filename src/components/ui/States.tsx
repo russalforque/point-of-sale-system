@@ -1,4 +1,4 @@
-import sellixMark from '../../assets/sellix-mark.png'
+import sellixMark from '../../assets/sellix-logo.png'
 
 /**
  * Full-screen startup loader (session check). Mirrors the static loader in index.html -

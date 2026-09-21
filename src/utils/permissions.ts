@@ -18,6 +18,7 @@ export type Permission =
   | 'sales.refund'
   | 'printer.configure'
   | 'drawer.open'
+  | 'shifts.manage'
 
 const ALL_PERMISSIONS: Permission[] = [
   'products.view',
@@ -37,6 +38,7 @@ const ALL_PERMISSIONS: Permission[] = [
   'sales.refund',
   'printer.configure',
   'drawer.open',
+  'shifts.manage',
 ]
 
 // Manager's brief only calls out "manage products" / "manage inventory" as
@@ -59,6 +61,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'sales.process',
     'sales.refund',
     'drawer.open',
+    'shifts.manage',
   ],
   cashier: ['products.view', 'customers.view', 'customers.create', 'sales.process', 'drawer.open'],
 }

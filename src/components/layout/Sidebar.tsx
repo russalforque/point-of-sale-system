@@ -5,6 +5,8 @@ import {
   faBoxesStacked,
   faCartShopping,
   faChartLine,
+  faClipboardList,
+  faClock,
   faGear,
   faHouse,
   faPrint,
@@ -19,7 +21,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { FocusEvent, KeyboardEvent, PointerEvent } from 'react'
 import { NavLink } from 'react-router-dom'
 
-import sellixMark from '../../assets/sellix-mark.png'
+import sellixMark from '../../assets/sellix-logo.png'
 import { useAuth } from '../../context/AuthContext'
 import { ROLE_LABELS, type Permission, type Role } from '../../utils/permissions'
 import { ConfirmDialog } from '../ui/Modal'
@@ -33,6 +35,7 @@ const groups: NavGroup[] = [
     items: [
       { to: '/dashboard', label: 'Dashboard', icon: faHouse },
       { to: '/sales', label: 'Sales', icon: faCartShopping, permission: 'sales.process' },
+      { to: '/shift', label: 'My Shift', icon: faClock, permission: 'sales.process' },
       { to: '/reports', label: 'Reports', icon: faChartLine, permission: 'reports.view' },
     ],
   },
@@ -50,6 +53,7 @@ const groups: NavGroup[] = [
     items: [
       { to: '/customers', label: 'Customers', icon: faUsers, permission: 'customers.view' },
       { to: '/users', label: 'Users', icon: faUserShield, permission: 'users.manage' },
+      { to: '/shift-history', label: 'Shift History', icon: faClipboardList, permission: 'shifts.manage' },
     ],
   },
   {
@@ -157,7 +161,6 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
             <img src={sellixMark} alt={expanded ? '' : 'Sellix'} className="h-8 w-8 shrink-0 rounded-lg" />
             <div className={`min-w-0 ${fade}`} aria-hidden={!expanded}>
               <p className="truncate text-base font-bold leading-tight tracking-tight">Sellix</p>
-              <p className="truncate text-xs text-slate-500">Point of sale</p>
             </div>
           </div>
 

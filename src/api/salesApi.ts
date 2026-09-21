@@ -20,6 +20,7 @@ type SaleRow = {
   customer_id: number | null
   customerName: string | null
   cashier_id: string
+  shift_id: number | null
   subtotal: number
   discount: number
   tax: number
@@ -88,6 +89,7 @@ async function buildSale(saleRow: SaleRow): Promise<Sale> {
     customerId: saleRow.customer_id,
     customerName: saleRow.customerName,
     cashierName: saleRow.cashier_id,
+    shiftId: saleRow.shift_id,
     subtotal: saleRow.subtotal,
     discount: saleRow.discount,
     tax: saleRow.tax,
@@ -108,6 +110,7 @@ const SALE_SELECT = `
     s.customer_id AS customer_id,
     c.full_name AS customerName,
     s.cashier_id AS cashier_id,
+    s.shift_id AS shift_id,
     s.subtotal AS subtotal,
     s.discount AS discount,
     s.tax AS tax,
@@ -181,8 +184,21 @@ export const salesApi = {
 
     const db = await initDatabase()
     const settings = await settingsApi.get()
-    const cashierName = getStoredUser()?.fullName ?? 'Cashier'
+    const currentUser = getStoredUser()
+    const cashierName = currentUser?.fullName ?? 'Cashier'
     const now = new Date().toISOString()
+
+    // Only the caller's own open shift can ever be picked up here, so a sale can
+    // never be attributed to another employee's shift. No active shift is fine -
+    // the sale still completes, just without a shift link.
+    let shiftId: number | null = null
+    if (currentUser) {
+      const shiftResult = await db.query(
+        `SELECT id FROM shifts WHERE employee_id = ? AND status = 0 LIMIT 1`,
+        [Number(currentUser.id)],
+      )
+      shiftId = (shiftResult.values?.[0]?.id as number | undefined) ?? null
+    }
 
     const productRows = await Promise.all(
       payload.items.map(async (item) => {
@@ -222,9 +238,9 @@ export const salesApi = {
     // and would otherwise collide with a manual BEGIN/COMMIT).
     const statements: { statement: string; values: unknown[] }[] = [
       {
-        statement: `INSERT INTO sales (invoice_number, customer_id, cashier_id, subtotal, discount, tax, total, status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-        values: [invoiceNumber, payload.customerId ?? null, cashierName, subtotal, discount, tax, total, now],
+        statement: `INSERT INTO sales (invoice_number, customer_id, cashier_id, shift_id, subtotal, discount, tax, total, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+        values: [invoiceNumber, payload.customerId ?? null, cashierName, shiftId, subtotal, discount, tax, total, now],
       },
     ]
 

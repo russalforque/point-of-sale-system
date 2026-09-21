@@ -6,6 +6,8 @@ import {
   faBoxesStacked,
   faCartShopping,
   faChartLine,
+  faClipboardList,
+  faClock,
   faEllipsis,
   faGear,
   faHouse,
@@ -59,6 +61,7 @@ const SECONDARY_GROUPS: { title: string; items: SecondaryItem[] }[] = [
     title: 'System',
     items: [
       { to: '/users', label: 'Users', description: 'Staff accounts and roles', icon: faUserShield, permission: 'users.manage' },
+      { to: '/shift-history', label: 'Shift History', description: 'Every employee shift and its cash summary', icon: faClipboardList, permission: 'shifts.manage' },
       { to: '/printer-settings', label: 'Printer', description: 'Receipt printer and cash drawer', icon: faPrint, permission: 'printer.configure' },
       { to: '/settings', label: 'Settings', description: 'Store, tax and receipts', icon: faGear, permission: 'settings.view' },
     ],
@@ -81,6 +84,7 @@ export function MobileBottomNav({ alertCount = 0 }: MobileBottomNavProps) {
   const allPrimaryItems: PrimaryItem[] = [
     { to: '/dashboard', label: 'Home', icon: faHouse },
     { to: '/sales', label: 'Orders', icon: faCartShopping, permission: 'sales.process' },
+    { to: '/shift', label: 'Shift', icon: faClock, permission: 'sales.process' },
     {
       to: '/inventory',
       label: 'Inventory',

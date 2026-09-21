@@ -47,3 +47,9 @@ export function formatDate(value: string | null | undefined): string {
     dateStyle: 'medium',
   })
 }
+
+export function formatTime(value: string | null | undefined): string {
+  return formatDateInTimeZone(value, {
+    timeStyle: 'short',
+  })
+}

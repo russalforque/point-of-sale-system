@@ -17,6 +17,8 @@ import { InventoryPage } from './pages/Inventory'
 import { ReportsPage } from './pages/Reports'
 import { SettingsPage } from './pages/Settings'
 import { UsersPage } from './pages/Users/UsersPage'
+import { ShiftPage } from './pages/Shift/ShiftPage'
+import { ShiftHistoryPage } from './pages/Shift/ShiftHistoryPage'
 import { AccessDeniedPage } from './pages/AccessDenied'
 import { PrinterSettingsPage } from './pages/PrinterSettings'
 
@@ -40,6 +42,11 @@ export default function App() {
                     <Route element={<RequirePermission permission="sales.process" />}>
                       <Route path="/sales" element={<SalesPage />} />
                       <Route path="/payment" element={<PaymentPage />} />
+                      <Route path="/shift" element={<ShiftPage />} />
+                    </Route>
+
+                    <Route element={<RequirePermission permission="shifts.manage" />}>
+                      <Route path="/shift-history" element={<ShiftHistoryPage />} />
                     </Route>
 
                     <Route element={<RequirePermission permission="customers.view" />}>

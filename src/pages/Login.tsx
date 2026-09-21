@@ -1,7 +1,7 @@
 import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import sellixMark from '../assets/sellix-mark.png'
+import sellixMark from '../assets/sellix-logo.png'
 import { ShieldCheck } from '../components/ui/Icons'
 import { EMAIL_PATTERN, PrimaryButton, TextField } from '../components/ui/MobileKit'
 import { useAuth } from '../context/AuthContext'
@@ -143,7 +143,7 @@ export function LoginPage() {
             />
 
             <h1 className="mt-6 text-[28px] font-bold leading-tight tracking-tight lg:mt-0">Welcome back</h1>
-            <p className="mt-1.5 text-[15px] text-slate-500">Sign in to your Sellix store.</p>
+            <p className="mt-1.5 text-[15px] text-slate-500">Sign in to continue.</p>
 
             <form ref={formRef} onSubmit={onSubmit} noValidate className="mt-8 space-y-4">
               {formError && (

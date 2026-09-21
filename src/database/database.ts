@@ -3,6 +3,19 @@ import { initDatabase } from './sqlite'
 export async function initializeDatabase(): Promise<void> {
   const db = await initDatabase()
 
+  // On a device whose database already existed before shift linking was added,
+  // `CREATE TABLE IF NOT EXISTS sales` below is a no-op and never adds this column.
+  // The schema script is one transaction, so the later `CREATE INDEX idx_sales_shift`
+  // referencing a missing column would otherwise fail and roll back everything in it -
+  // including the brand new `shifts` table. Add the column explicitly first; this is a
+  // no-op (caught and ignored) once it already exists, and also a no-op on a fresh
+  // install where `sales` doesn't exist yet (the CREATE TABLE below handles that case).
+  try {
+    await db.execute(`ALTER TABLE sales ADD COLUMN shift_id INTEGER;`)
+  } catch {
+    // Already has the column, or the table doesn't exist yet - both fine.
+  }
+
   await db.execute(`
     PRAGMA foreign_keys = ON;
 
@@ -64,6 +77,7 @@ export async function initializeDatabase(): Promise<void> {
       invoice_number TEXT NOT NULL,
       customer_id INTEGER,
       cashier_id TEXT NOT NULL,
+      shift_id INTEGER,
       subtotal REAL NOT NULL,
       discount REAL NOT NULL,
       tax REAL NOT NULL,
@@ -72,7 +86,10 @@ export async function initializeDatabase(): Promise<void> {
       created_at TEXT NOT NULL,
 
       FOREIGN KEY (customer_id)
-        REFERENCES customers(id)
+        REFERENCES customers(id),
+
+      FOREIGN KEY (shift_id)
+        REFERENCES shifts(id)
     );
 
     CREATE TABLE IF NOT EXISTS sale_items (
@@ -141,6 +158,24 @@ export async function initializeDatabase(): Promise<void> {
       is_active INTEGER NOT NULL DEFAULT 1
     );
 
+    CREATE TABLE IF NOT EXISTS shifts (
+      id INTEGER PRIMARY KEY,
+      employee_id INTEGER NOT NULL,
+      employee_name TEXT NOT NULL,
+      starting_cash REAL NOT NULL,
+      status INTEGER NOT NULL DEFAULT 0,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      cash_sales REAL,
+      non_cash_sales REAL,
+      expected_cash REAL,
+      actual_cash REAL,
+      difference REAL,
+
+      FOREIGN KEY (employee_id)
+        REFERENCES users(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_products_category
       ON products(category_id);
 
@@ -167,6 +202,19 @@ export async function initializeDatabase(): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_inventory_created_at
       ON inventory_transactions(created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_sales_shift
+      ON sales(shift_id);
+
+    CREATE INDEX IF NOT EXISTS idx_shifts_employee
+      ON shifts(employee_id);
+
+    CREATE INDEX IF NOT EXISTS idx_shifts_status
+      ON shifts(status);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_shifts_one_active_per_employee
+      ON shifts(employee_id)
+      WHERE status = 0;
   `)
 
   console.log('=== SQLITE DATABASE SCHEMA CREATED ===')
