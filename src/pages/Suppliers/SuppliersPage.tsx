@@ -36,6 +36,7 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import type { Supplier } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
 import { MobileSuppliers } from '../mobile/MobileSuppliers'
+import { SupplierActivity } from '../../components/suppliers/SupplierActivity'
 
 type StatusFilter = '' | 'active' | 'inactive'
 type FormErrors = Partial<Record<'companyName' | 'email' | 'phone', string>>
@@ -48,6 +49,7 @@ const emptyForm: SupplierPayload = {
   phone: '',
   email: '',
   address: '',
+  notes: '',
   isActive: true,
 }
 
@@ -58,6 +60,7 @@ function toForm(supplier: Supplier): SupplierPayload {
     phone: supplier.phone ?? '',
     email: supplier.email ?? '',
     address: supplier.address ?? '',
+    notes: supplier.notes ?? '',
     isActive: supplier.isActive,
   }
 }
@@ -144,6 +147,7 @@ function DesktopSuppliersPage() {
         phone: form.phone?.trim(),
         email: form.email?.trim(),
         address: form.address?.trim(),
+        notes: form.notes?.trim(),
       }
       const saved = editing ? await supplierApi.update(editing.id, payload) : await supplierApi.create(payload)
       notify(editing ? 'Changes saved.' : `${saved.companyName} added.`)
@@ -319,7 +323,9 @@ function DesktopSuppliersPage() {
               <DetailRow label="Phone" value={view.phone} />
               <DetailRow label="Email" value={view.email} />
               <DetailRow label="Address" value={view.address} />
+              <DetailRow label="Notes" value={view.notes} />
             </DetailList>
+            <SupplierActivity supplierId={view.id} />
           </div>
         </Modal>
       )}
@@ -401,6 +407,13 @@ function DesktopSuppliersPage() {
               value={form.address ?? ''}
               onChange={(address) => setForm({ ...form, address })}
               placeholder="Warehouse or office address"
+            />
+            <TextAreaField
+              label="Notes"
+              optional
+              value={form.notes ?? ''}
+              onChange={(notes) => setForm({ ...form, notes })}
+              placeholder="Delivery days, payment terms, minimum order…"
             />
             {editing && (
               <SwitchRow

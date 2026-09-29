@@ -9,6 +9,9 @@ const sqlite = new SQLiteConnection(CapacitorSQLite)
 
 let db: SQLiteDBConnection | null = null
 
+// The file on disk is `${DB_NAME}SQLite.db` - SellixBackupPlugin.java relies on that name.
+const DB_NAME = 'sellix_pos'
+
 export async function initDatabase(): Promise<SQLiteDBConnection> {
   if (db) {
     return db
@@ -25,7 +28,7 @@ export async function initDatabase(): Promise<SQLiteDBConnection> {
     throw new Error('SQLite is only available on the native Android app (no local database in web preview).')
   }
 
-  const dbName = 'sellix_pos'
+  const dbName = DB_NAME
 
   try {
     const consistency = await sqlite.checkConnectionsConsistency()
@@ -67,6 +70,19 @@ export async function closeDatabase(): Promise<void> {
   } catch (error) {
     console.error('Failed to close SQLite database:', error)
     throw error
+  }
+}
+
+/**
+ * Closes and unregisters the native connection so the database file can be replaced
+ * (backup restore). The next initDatabase() call opens a fresh connection.
+ */
+export async function releaseDatabase(): Promise<void> {
+  db = null
+
+  const isConnected = await sqlite.isConnection(DB_NAME, false)
+  if (isConnected.result) {
+    await sqlite.closeConnection(DB_NAME, false)
   }
 }
 

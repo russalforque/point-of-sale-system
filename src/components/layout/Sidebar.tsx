@@ -5,14 +5,18 @@ import {
   faBoxesStacked,
   faCartShopping,
   faChartLine,
+  faClipboardCheck,
   faClipboardList,
   faClock,
   faGear,
   faHouse,
   faPrint,
   faRightFromBracket,
+  faRotateLeft,
+  faScroll,
   faTags,
   faTruck,
+  faTruckRampBox,
   faUserShield,
   faUsers,
 } from '@fortawesome/free-solid-svg-icons'
@@ -36,6 +40,7 @@ const groups: NavGroup[] = [
       { to: '/dashboard', label: 'Dashboard', icon: faHouse },
       { to: '/sales', label: 'Sales', icon: faCartShopping, permission: 'sales.process' },
       { to: '/shift', label: 'My Shift', icon: faClock, permission: 'sales.process' },
+      { to: '/returns', label: 'Returns & Voids', icon: faRotateLeft, permission: 'sales.process' },
       { to: '/reports', label: 'Reports', icon: faChartLine, permission: 'reports.view' },
     ],
   },
@@ -43,6 +48,8 @@ const groups: NavGroup[] = [
     title: 'Stock',
     items: [
       { to: '/inventory', label: 'Inventory', icon: faBoxesStacked, permission: 'inventory.manage' },
+      { to: '/stock-count', label: 'Stock Count', icon: faClipboardCheck, permission: 'inventory.count' },
+      { to: '/receive-stock', label: 'Receive Stock', icon: faTruckRampBox, permission: 'inventory.receive' },
       { to: '/products', label: 'Products', icon: faBox, permission: 'products.view' },
       { to: '/categories', label: 'Categories', icon: faTags, permission: 'categories.manage' },
       { to: '/suppliers', label: 'Suppliers', icon: faTruck, permission: 'suppliers.manage' },
@@ -59,6 +66,7 @@ const groups: NavGroup[] = [
   {
     title: 'System',
     items: [
+      { to: '/audit-log', label: 'Audit Log', icon: faScroll, permission: 'audit.view' },
       { to: '/printer-settings', label: 'Printer', icon: faPrint, permission: 'printer.configure' },
       { to: '/settings', label: 'Settings', icon: faGear, permission: 'settings.view' },
     ],

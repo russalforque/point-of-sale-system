@@ -13,6 +13,7 @@ import { useSettings } from '../../context/SettingsContext'
 import { useToast } from '../../context/ToastContext'
 import { useDismissOnBack } from '../../hooks/useDismissOnBack'
 import { useReceiptPrinter } from '../../hooks/useReceiptPrinter'
+import { OrderTypeSelector } from './OrderTypeSelector'
 import { ReceiptPreview } from './ReceiptPreview'
 import { printerErrorMessage } from '../../services/printer'
 import type { PaymentMethod, Sale } from '../../types'
@@ -23,11 +24,18 @@ import {
   buildPaymentBreakdown,
   calculateChange,
   calculateTotals,
-  getPaymentReceived,
   PAYMENT_OPTIONS,
   type CartLine,
   type CartTotals,
 } from '../../utils/pos'
+import {
+  maxTenderAmount,
+  methodLabel as tenderMethodLabel,
+  remainingDue as tenderRemainingDue,
+  tenderedTotal,
+  type Tender,
+} from '../../services/payments'
+import { roundMoney } from '../../utils/amount'
 import { Modal } from '../ui/Modal'
 
 const CASH_PAYMENT_METHOD: PaymentMethod = 0
@@ -78,7 +86,7 @@ function MethodIcon({ value, size = 18 }: { value: PaymentMethod; size?: number 
 export function PaymentModal({ onClose }: { onClose: () => void }) {
   const { notify } = useToast()
   const { settings } = useSettings()
-  const { state: checkout, clearCheckout } = useCheckout()
+  const { state: checkout, setState: setCheckout, clearCheckout } = useCheckout()
   const {
     printReceipt: sendReceiptToPrinter,
     isPrinting,
@@ -96,6 +104,9 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
   // (e.g. "6720" -> 67.20), so cents are always reachable without a decimal key.
   const [cashDigits, setCashDigits] = useState('')
   const [paymentReference, setPaymentReference] = useState('')
+  // Split payment: tenders already taken. The keypad/reference then describe the next one.
+  const [splitMode, setSplitMode] = useState(false)
+  const [tenders, setTenders] = useState<Tender[]>([])
 
   // Back closes the modal instead of leaving the register — and is ignored mid-payment.
   const { close } = useDismissOnBack('paymentModalOpen', onClose, busy)
@@ -114,7 +125,6 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
     () => buildPaymentBreakdown(method, isCash ? cashValue : 0),
     [method, isCash, cashValue],
   )
-  const amountReceived = isCash ? cashValue : getPaymentReceived(paymentBreakdown)
   const change = isCash ? Math.max(cashValue - totals.total, 0) : calculateChange(totals.total, paymentBreakdown)
   const remainingDue = Math.max(totals.total - cashValue, 0)
   const isCashSufficient = cashValue >= totals.total
@@ -124,10 +134,34 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
   const itemCount = checkout.cart.reduce((sum, line) => sum + line.quantity, 0)
   const quickAmounts = useMemo(() => quickCashAmounts(totals.total), [totals.total])
 
-  const isFormValid = isCash ? isCashSufficient : trimmedReference.length > 0
+  // --- split payment ---
+  const splitPaid = tenderedTotal(tenders)
+  const splitRemaining = tenderRemainingDue(totals.total, tenders)
+  const splitChange = Math.max(roundMoney(splitPaid - totals.total), 0)
+  // An empty keypad means "whatever is left".
+  const entryAmount = cashDigits ? cashValue : splitRemaining
+  const entryMax = maxTenderAmount(totals.total, tenders, method)
+  const entryProblem =
+    splitRemaining <= 0
+      ? null
+      : entryAmount <= 0
+      ? 'Enter an amount'
+      : entryMax !== null && entryAmount > entryMax + 0.001
+      ? `${methodLabel} can’t be more than ${money(entryMax)}`
+      : !isCash && !trimmedReference
+      ? `Enter the ${methodLabel} reference`
+      : null
+
+  const isFormValid = splitMode
+    ? tenders.length > 0 && splitRemaining === 0
+    : isCash
+    ? isCashSufficient
+    : trimmedReference.length > 0
 
   const blockedReason = isFormValid
     ? null
+    : splitMode
+    ? `${money(splitRemaining)} left to pay`
     : isCash
     ? cashValue === 0
       ? 'Enter the cash received'
@@ -168,6 +202,31 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
     setErrorMessage(null)
   }
 
+  function toggleSplit() {
+    setSplitMode((on) => !on)
+    setTenders([])
+    setCashDigits('')
+    setPaymentReference('')
+    setErrorMessage(null)
+  }
+
+  function addTender() {
+    if (splitRemaining <= 0) return
+    if (entryProblem) {
+      setErrorMessage(entryProblem)
+      return
+    }
+    setTenders((prev) => [...prev, { method, amount: entryAmount, reference: isCash ? null : trimmedReference }])
+    setCashDigits('')
+    setPaymentReference('')
+    setErrorMessage(null)
+  }
+
+  function removeTender(index: number) {
+    setTenders((prev) => prev.filter((_, i) => i !== index))
+    setErrorMessage(null)
+  }
+
   /* ------------------------------------------------------------------
      SETTLEMENT (unchanged business logic)
   ------------------------------------------------------------------ */
@@ -175,15 +234,24 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
   async function completeSale() {
     if (busy) return
 
-    if (isCash && !isCashSufficient) {
+    if (splitMode) {
+      if (!isFormValid) {
+        setErrorMessage(`${money(splitRemaining)} is still left to pay.`)
+        return
+      }
+    } else if (isCash && !isCashSufficient) {
       setErrorMessage(`Amount received is short by ${money(remainingDue)}.`)
       return
-    }
-
-    if (!isCash && !trimmedReference) {
+    } else if (!isCash && !trimmedReference) {
       setErrorMessage('Enter a payment reference or approval code.')
       return
     }
+
+    // A single non-cash tender is always for the full amount due; cash may be over-tendered (change).
+    const payments: Tender[] = splitMode
+      ? tenders
+      : [{ method, amount: isCash ? cashValue : totals.total, reference: isCash ? null : trimmedReference }]
+    const paidWithCash = payments.some((tender) => tender.method === CASH_PAYMENT_METHOD)
 
     setErrorMessage(null)
     setBusy(true)
@@ -192,9 +260,8 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
       const sale = await salesApi.create({
         customerId: checkout.customerId,
         discount: totals.discount,
-        paymentMethod: method,
-        amountReceived: isCash ? cashValue : amountReceived,
-        reference: isCash ? undefined : trimmedReference || undefined,
+        orderType: checkout.orderType,
+        payments,
         items: checkout.cart.map((line) => ({
           productId: line.product.id,
           quantity: line.quantity,
@@ -204,7 +271,7 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
       setReceipt(sale)
       clearCheckout()
       void sendReceiptToPrinter(sale, settings).then(
-        () => maybeAutoOpenDrawer(method),
+        () => maybeAutoOpenDrawer(paidWithCash),
         // The sale is already committed to SQLite - a print failure never undoes it.
         (err) => notify(`Payment completed, but receipt printing failed. ${printerErrorMessage(err)}`, 'error'),
       )
@@ -215,9 +282,9 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
     }
   }
 
-  /** Cash sales only, and only when printer settings have auto-open enabled. */
-  function maybeAutoOpenDrawer(paymentMethod: PaymentMethod) {
-    if (paymentMethod !== CASH_PAYMENT_METHOD) return
+  /** Sales with any cash tender, and only when printer settings have auto-open enabled. */
+  function maybeAutoOpenDrawer(paidWithCash: boolean) {
+    if (!paidWithCash) return
     if (!getPrinterConfig().autoOpenDrawerOnCash) return
     void openDrawer().catch((err) => notify(printerErrorMessage(err), 'error'))
   }
@@ -233,18 +300,23 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
   function handleReferenceKeyDown(e: ReactKeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Enter') {
       e.preventDefault()
-      if (isFormValid) void completeSale()
+      if (splitMode && splitRemaining > 0) addTender()
+      else if (isFormValid) void completeSale()
     }
   }
 
   // Hardware keyboard support for cash entry (tablets / desktop registers).
   const completeSaleRef = useRef(completeSale)
+  const addTenderRef = useRef(addTender)
   useEffect(() => {
     completeSaleRef.current = completeSale
+    addTenderRef.current = addTender
   })
+  const keypadActive = isCash || splitMode
+  const splitPending = splitMode && splitRemaining > 0
 
   useEffect(() => {
-    if (receipt || !isCash) return
+    if (receipt || !keypadActive) return
 
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
@@ -261,58 +333,54 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
         handleCashClear()
       } else if (event.key === 'Enter') {
         event.preventDefault()
-        void completeSaleRef.current()
+        if (splitPending) addTenderRef.current()
+        else void completeSaleRef.current()
       }
     }
 
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [receipt, isCash])
+  }, [receipt, keypadActive, splitPending])
 
   /* ------------------------------------------------------------------
      RENDER
   ------------------------------------------------------------------ */
 
+  // The primary button carries its own "why it's disabled" label, so no extra hint row
+  // takes height away from the keypad on small phones.
   const paymentFooter = (
-    <div className="w-full">
-      <p
-        aria-live="polite"
-        className={`mb-2 min-h-5 text-center text-sm sm:text-right ${
-          blockedReason && !busy ? 'text-slate-500' : 'text-transparent'
-        }`}
+    <div className="flex w-full items-center gap-2">
+      {/* Phones already have the header close button and Android back; wider screens keep an explicit Cancel. */}
+      <button
+        type="button"
+        onClick={close}
+        disabled={busy}
+        className="hidden h-14 shrink-0 rounded-2xl px-5 text-[15px] font-medium text-slate-600 transition active:bg-slate-100 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] sm:block"
       >
-        {blockedReason ?? ' '}
-      </p>
-      <div className="flex w-full items-center gap-2">
-        <button
-          type="button"
-          onClick={close}
-          disabled={busy}
-          className="h-14 shrink-0 rounded-2xl px-5 text-[15px] font-medium text-slate-600 transition active:bg-slate-100 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          onClick={() => void completeSale()}
-          disabled={busy || !isFormValid}
-          className="flex h-14 min-w-0 flex-1 items-center justify-between gap-3 rounded-2xl bg-[#1F5E3B] px-5 text-[15px] font-semibold text-white transition active:scale-[0.99] disabled:bg-slate-200 disabled:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] focus-visible:ring-offset-2"
-        >
-          {busy ? (
-            <span className="flex w-full items-center justify-center gap-2">
-              <SpinnerIcon size={16} />
-              Completing sale…
-            </span>
-          ) : (
-            <>
-              <span>Complete sale</span>
-              <span className="truncate tabular-nums">
-                {isCash && isCashSufficient && change > 0 ? `Change ${money(change)}` : money(totals.total)}
-              </span>
-            </>
-          )}
-        </button>
-      </div>
+        Cancel
+      </button>
+      <button
+        type="button"
+        onClick={() => void completeSale()}
+        disabled={busy || !isFormValid}
+        className="flex h-14 min-w-0 flex-1 items-center justify-between gap-3 rounded-2xl bg-[#1F5E3B] px-5 text-[15px] font-semibold text-white transition active:scale-[0.99] disabled:bg-slate-100 disabled:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] focus-visible:ring-offset-2"
+      >
+        {busy ? (
+          <span className="flex w-full items-center justify-center gap-2">
+            <SpinnerIcon size={16} />
+            Completing sale…
+          </span>
+        ) : blockedReason ? (
+          <span aria-live="polite" className="w-full truncate text-center font-medium">
+            {blockedReason}
+          </span>
+        ) : (
+          <>
+            <span>Complete sale</span>
+            <span className="truncate tabular-nums">{money(totals.total)}</span>
+          </>
+        )}
+      </button>
     </div>
   )
 
@@ -361,40 +429,79 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
           printFailed={Boolean(lastPrintError)}
         />
       ) : (
-        <div className="grid gap-5 lg:grid-cols-2 lg:gap-6">
-          {/* ORDER — amount due first */}
-          <section aria-label="Order summary" className="min-w-0">
-            <div className="rounded-3xl bg-[#F2F8F4] px-5 py-5 text-center lg:text-left">
+        <div className="grid gap-3 lg:grid-cols-2 lg:gap-x-6 lg:gap-y-4">
+          {/* TENDER DISPLAY — due, received and change read together, like a register screen */}
+          <section aria-label="Amount due" className="min-w-0 rounded-3xl bg-[#F2F8F4] px-5 py-4 lg:col-span-2">
+            <div className="flex items-center justify-between gap-3">
               <p className="text-sm font-medium text-[#1F5E3B]">Amount due</p>
-              <p className="mt-1 truncate text-[40px] font-bold leading-none tracking-[-0.03em] tabular-nums text-[#091413]">
-                {money(totals.total)}
-              </p>
               <button
                 type="button"
                 onClick={() => setShowItems((open) => !open)}
                 aria-expanded={showItems}
                 aria-controls="payment-order-items"
-                className="mt-3 inline-flex h-9 items-center gap-1 rounded-full px-3 text-sm text-[#1F5E3B] active:bg-white/70 lg:hidden"
+                className="-my-2.5 -mr-3 inline-flex h-11 shrink-0 items-center gap-1 rounded-full px-3 text-sm text-[#1F5E3B] active:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] lg:hidden"
               >
-                {showItems ? 'Hide items' : `View ${itemCount} ${itemCount === 1 ? 'item' : 'items'}`}
+                {showItems ? 'Hide items' : `${itemCount} ${itemCount === 1 ? 'item' : 'items'}`}
                 {totals.discount > 0 && ` · ${money(totals.discount)} off`}
                 <ChevronIcon open={showItems} />
               </button>
             </div>
+            <p className="mt-1 truncate text-[36px] font-bold leading-none tracking-[-0.03em] tabular-nums text-[#091413] sm:text-[40px]">
+              {money(totals.total)}
+            </p>
 
+            {splitMode ? (
+              <SplitSummary money={money} paid={splitPaid} remaining={splitRemaining} change={splitChange} />
+            ) : isCash && (
+              <TenderRow
+                money={money}
+                cashValue={cashValue}
+                isCashSufficient={isCashSufficient}
+                change={change}
+                remainingDue={remainingDue}
+                onClear={handleCashClear}
+              />
+            )}
+          </section>
+
+          {/* ORDER — items are one tap away on phones, always visible on wide screens */}
+          <section aria-label="Order" className="flex min-w-0 flex-col gap-3">
             <OrderItems
               id="payment-order-items"
-              className={`${showItems ? 'block' : 'hidden'} lg:block`}
+              className={`${showItems ? 'block' : 'hidden'} lg:order-2 lg:block`}
               cart={checkout.cart}
               totals={totals}
               taxRatePercent={Math.round(settings.taxRate * 10000) / 100}
               money={money}
             />
+
+            <OrderTypeSelector
+              className="lg:order-1"
+              value={checkout.orderType}
+              disabled={busy}
+              onChange={(orderType) => setCheckout({ ...checkout, orderType })}
+            />
           </section>
 
           {/* PAYMENT */}
           <section aria-label="Payment" className="min-w-0">
-            <MethodSelector value={method} onChange={selectMethod} />
+            {splitMode && <TenderList tenders={tenders} money={money} disabled={busy} onRemove={removeTender} />}
+
+            {(!splitMode || splitRemaining > 0) && <MethodSelector value={method} onChange={selectMethod} />}
+
+            {totals.total > 0 && (
+              <div className="mt-1 flex justify-end">
+                <button
+                  type="button"
+                  onClick={toggleSplit}
+                  disabled={busy}
+                  aria-pressed={splitMode}
+                  className="-mr-2 h-11 rounded-full px-3 text-sm font-medium text-[#1F5E3B] active:bg-[#F2F8F4] disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+                >
+                  {splitMode ? 'Use a single payment' : 'Split payment'}
+                </button>
+              </div>
+            )}
 
             {errorMessage && (
               <div role="alert" className="mt-3 flex items-start gap-2.5 rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">
@@ -405,22 +512,41 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
               </div>
             )}
 
-            {isCash ? (
+            {splitMode ? (
+              splitRemaining > 0 && (
+                <SplitEntry
+                  money={money}
+                  method={method}
+                  methodLabel={methodLabel}
+                  amount={entryAmount}
+                  typed={Boolean(cashDigits)}
+                  remaining={splitRemaining}
+                  reference={paymentReference}
+                  problem={entryProblem}
+                  onReference={(value) => {
+                    setPaymentReference(value)
+                    setErrorMessage(null)
+                  }}
+                  onReferenceKeyDown={handleReferenceKeyDown}
+                  onDigit={handleCashDigit}
+                  onDoubleZero={handleCashDoubleZero}
+                  onBackspace={handleCashBackspace}
+                  onQuickSelect={handleCashQuickSelect}
+                  onAdd={addTender}
+                />
+              )
+            ) : isCash ? (
               <CashEntry
                 money={money}
                 cashValue={cashValue}
-                isCashSufficient={isCashSufficient}
-                change={change}
-                remainingDue={remainingDue}
                 quickAmounts={quickAmounts}
                 onDigit={handleCashDigit}
                 onDoubleZero={handleCashDoubleZero}
                 onBackspace={handleCashBackspace}
-                onClear={handleCashClear}
                 onQuickSelect={handleCashQuickSelect}
               />
             ) : (
-              <div className="mt-5">
+              <div className="mt-4">
                 <p className="text-sm text-slate-500">{methodInstruction(method)}</p>
                 <label htmlFor="payment-modal-reference-input" className="mt-4 block text-sm font-medium text-[#091413]">
                   Reference number
@@ -491,7 +617,7 @@ function MethodSelector({ value, onChange }: { value: PaymentMethod; onChange: (
             aria-checked={selected}
             tabIndex={selected ? 0 : -1}
             onClick={() => onChange(Number(option.value) as PaymentMethod)}
-            className={`flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl text-xs transition touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] ${
+            className={`flex min-h-13 flex-col items-center justify-center gap-0.5 rounded-xl text-xs transition touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] ${
               selected ? 'bg-white font-semibold text-[#1F5E3B] shadow-sm' : 'font-medium text-slate-600 active:bg-white/60'
             }`}
           >
@@ -504,72 +630,276 @@ function MethodSelector({ value, onChange }: { value: PaymentMethod; onChange: (
   )
 }
 
-function CashEntry({
+/**
+ * Cash received + change, shown under the amount due so all three numbers the cashier
+ * compares live in one place. Always rendered (with placeholders) so the layout never
+ * jumps while the first digits are typed.
+ */
+function TenderRow({
   money,
   cashValue,
   isCashSufficient,
   change,
   remainingDue,
-  quickAmounts,
-  onDigit,
-  onDoubleZero,
-  onBackspace,
   onClear,
-  onQuickSelect,
 }: {
   money: (value: number) => string
   cashValue: number
   isCashSufficient: boolean
   change: number
   remainingDue: number
+  onClear: () => void
+}) {
+  const hasEntry = cashValue > 0
+  const isShort = hasEntry && !isCashSufficient
+
+  return (
+    <div className="mt-4 flex items-end justify-between gap-3 border-t border-[#1F5E3B]/10 pt-3">
+      <div className="min-w-0">
+        <div className="flex h-5 items-center gap-1">
+          <p className="text-sm text-slate-500">Cash received</p>
+          {hasEntry && (
+            <button
+              type="button"
+              onClick={onClear}
+              aria-label="Clear cash received"
+              className="-my-3 h-11 rounded-full px-2.5 text-xs font-medium text-slate-500 active:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+        <p
+          aria-live="polite"
+          className={`mt-1 truncate text-2xl font-semibold tabular-nums ${hasEntry ? 'text-[#091413]' : 'text-slate-400'}`}
+        >
+          {money(cashValue)}
+        </p>
+      </div>
+
+      <div className="shrink-0 text-right" aria-live="polite">
+        <p className={`h-5 text-sm ${isShort ? 'font-medium text-amber-700' : 'text-[#1F5E3B]'}`}>
+          {isShort ? 'Short by' : 'Change'}
+        </p>
+        <p
+          className={`mt-1 text-2xl font-bold tabular-nums ${
+            !hasEntry ? 'text-slate-400' : isShort ? 'text-amber-700' : 'text-[#1F5E3B]'
+          }`}
+        >
+          {hasEntry ? money(isShort ? remainingDue : change) : '—'}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+/** Paid so far vs. still due (or change once cash covered the rest), for split payments. */
+function SplitSummary({
+  money,
+  paid,
+  remaining,
+  change,
+}: {
+  money: (value: number) => string
+  paid: number
+  remaining: number
+  change: number
+}) {
+  const done = remaining <= 0
+  return (
+    <div className="mt-4 flex items-end justify-between gap-3 border-t border-[#1F5E3B]/10 pt-3" aria-live="polite">
+      <div className="min-w-0">
+        <p className="text-sm text-slate-500">Paid</p>
+        <p className={`mt-1 truncate text-2xl font-semibold tabular-nums ${paid > 0 ? 'text-[#091413]' : 'text-slate-400'}`}>
+          {money(paid)}
+        </p>
+      </div>
+      <div className="shrink-0 text-right">
+        <p className={`text-sm ${done ? 'text-[#1F5E3B]' : 'font-medium text-amber-700'}`}>{done ? 'Change' : 'Remaining'}</p>
+        <p className={`mt-1 text-2xl font-bold tabular-nums ${done ? 'text-[#1F5E3B]' : 'text-amber-700'}`}>
+          {money(done ? change : remaining)}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function TenderList({
+  tenders,
+  money,
+  disabled,
+  onRemove,
+}: {
+  tenders: Tender[]
+  money: (value: number) => string
+  disabled: boolean
+  onRemove: (index: number) => void
+}) {
+  if (tenders.length === 0) {
+    return (
+      <p className="mb-3 rounded-2xl bg-[#F6F8F7] px-4 py-3 text-sm text-slate-500">
+        Add each payment until the amount due is covered.
+      </p>
+    )
+  }
+  return (
+    <ul className="mb-3 rounded-2xl ring-1 ring-slate-100" aria-label="Payments added">
+      {tenders.map((tender, index) => (
+        <li key={index} className="flex items-center gap-3 border-b border-slate-100 py-1 pl-4 pr-1 last:border-b-0">
+          <span className="text-[#1F5E3B]">
+            <MethodIcon value={tender.method} size={16} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-medium">{tenderMethodLabel(tender.method)}</span>
+            {tender.reference && <span className="block truncate text-xs text-slate-500">Ref {tender.reference}</span>}
+          </span>
+          <span className="text-sm font-semibold tabular-nums">{money(tender.amount)}</span>
+          <button
+            type="button"
+            onClick={() => onRemove(index)}
+            disabled={disabled}
+            aria-label={`Remove ${tenderMethodLabel(tender.method)} payment of ${money(tender.amount)}`}
+            className="flex h-11 w-11 items-center justify-center rounded-full text-slate-400 active:bg-slate-100 disabled:opacity-40"
+          >
+            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** Next tender in a split: amount on the keypad (blank = everything left), plus a reference for non-cash. */
+function SplitEntry({
+  money,
+  method,
+  methodLabel,
+  amount,
+  typed,
+  remaining,
+  reference,
+  problem,
+  onReference,
+  onReferenceKeyDown,
+  onDigit,
+  onDoubleZero,
+  onBackspace,
+  onQuickSelect,
+  onAdd,
+}: {
+  money: (value: number) => string
+  method: PaymentMethod
+  methodLabel: string
+  amount: number
+  typed: boolean
+  remaining: number
+  reference: string
+  problem: string | null
+  onReference: (value: string) => void
+  onReferenceKeyDown: (event: ReactKeyboardEvent<HTMLInputElement>) => void
+  onDigit: (digit: string) => void
+  onDoubleZero: () => void
+  onBackspace: () => void
+  onQuickSelect: (amount: number) => void
+  onAdd: () => void
+}) {
+  const isCash = method === CASH_PAYMENT_METHOD
+  // Cash can round up to a bill; other tenders can only take what's left.
+  const quick = isCash ? quickCashAmounts(remaining) : [remaining]
+
+  return (
+    <div className="mt-2">
+      <div className="flex items-baseline justify-between gap-3 rounded-2xl bg-[#F6F8F7] px-4 py-3">
+        <span className="text-sm text-slate-500">{methodLabel} amount</span>
+        <span className={`truncate text-2xl font-semibold tabular-nums ${typed ? 'text-[#091413]' : 'text-slate-400'}`}>
+          {money(amount)}
+        </span>
+      </div>
+
+      {!isCash && (
+        <input
+          key={method}
+          type="text"
+          autoComplete="off"
+          autoCapitalize="characters"
+          enterKeyHint="done"
+          aria-label={`${methodLabel} reference number`}
+          value={reference}
+          onChange={(event) => onReference(event.target.value)}
+          onKeyDown={onReferenceKeyDown}
+          placeholder={method === 1 ? 'Approval code' : 'Reference no.'}
+          className="mt-2 h-12 w-full rounded-2xl border-0 bg-[#F3F5F4] px-4 text-base tracking-wide text-[#091413] placeholder:tracking-normal placeholder:text-slate-400 outline-none transition focus:bg-white focus:ring-2 focus:ring-[#1F5E3B]"
+        />
+      )}
+
+      <div className="mt-2 grid grid-cols-4 gap-2">
+        {quick.map((value, index) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => onQuickSelect(value)}
+            className="h-11 truncate rounded-xl bg-[#E6F1EA] px-1 text-sm font-medium tabular-nums text-[#1F5E3B] transition active:scale-95 touch-manipulation"
+          >
+            {index === 0 ? 'Rest' : money(value)}
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-2 grid grid-cols-3 gap-2">
+        {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => (
+          <KeypadKey key={digit} label={digit} onClick={() => onDigit(digit)}>
+            {digit}
+          </KeypadKey>
+        ))}
+        <KeypadKey label="Double zero" onClick={onDoubleZero}>
+          00
+        </KeypadKey>
+        <KeypadKey label="0" onClick={() => onDigit('0')}>
+          0
+        </KeypadKey>
+        <KeypadKey label="Delete last digit" onClick={onBackspace}>
+          <BackspaceIcon size={20} />
+        </KeypadKey>
+      </div>
+
+      <button
+        type="button"
+        onClick={onAdd}
+        disabled={Boolean(problem)}
+        className="mt-3 h-12 w-full rounded-2xl bg-[#E6F1EA] text-[15px] font-semibold text-[#1F5E3B] transition active:scale-[0.99] disabled:bg-slate-100 disabled:font-medium disabled:text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+      >
+        {problem ?? `Add ${methodLabel} ${money(amount)}`}
+      </button>
+    </div>
+  )
+}
+
+function CashEntry({
+  money,
+  cashValue,
+  quickAmounts,
+  onDigit,
+  onDoubleZero,
+  onBackspace,
+  onQuickSelect,
+}: {
+  money: (value: number) => string
+  cashValue: number
   quickAmounts: number[]
   onDigit: (digit: string) => void
   onDoubleZero: () => void
   onBackspace: () => void
-  onClear: () => void
   onQuickSelect: (amount: number) => void
 }) {
   const hasEntry = cashValue > 0
 
   return (
-    <div className="mt-4">
-      {/* Received + live change / short */}
-      <div className="flex items-end justify-between gap-3 rounded-2xl bg-[#F6F8F7] px-4 py-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <p className="text-sm text-slate-500">Cash received</p>
-            {hasEntry && (
-              <button
-                type="button"
-                onClick={onClear}
-                className="h-7 rounded-full px-2 text-xs font-medium text-slate-500 active:bg-slate-200"
-              >
-                Clear
-              </button>
-            )}
-          </div>
-          <p
-            aria-live="polite"
-            className={`mt-0.5 truncate text-3xl font-semibold tabular-nums ${hasEntry ? 'text-[#091413]' : 'text-slate-300'}`}
-          >
-            {money(cashValue)}
-          </p>
-        </div>
-
-        {hasEntry && (
-          <div className="shrink-0 text-right" aria-live="polite">
-            <p className={`text-sm ${isCashSufficient ? 'text-[#1F5E3B]' : 'text-amber-700'}`}>
-              {isCashSufficient ? 'Change' : 'Short'}
-            </p>
-            <p className={`text-xl font-semibold tabular-nums ${isCashSufficient ? 'text-[#1F5E3B]' : 'text-amber-700'}`}>
-              {money(isCashSufficient ? change : remainingDue)}
-            </p>
-          </div>
-        )}
-      </div>
-
+    <div className="mt-3">
       {/* Quick amounts — all of them cover the total */}
-      <div className="mt-3 grid grid-cols-4 gap-2">
+      <div className="grid grid-cols-4 gap-2">
         {quickAmounts.map((amount, index) => {
           const selected = hasEntry && Math.abs(cashValue - amount) < 0.005
           return (
@@ -619,7 +949,7 @@ function KeypadKey({ label, onClick, children }: { label: string; onClick: () =>
       type="button"
       onClick={onClick}
       aria-label={label}
-      className="flex h-14 items-center justify-center rounded-2xl bg-[#F6F8F7] text-2xl font-medium text-[#091413] transition-colors active:bg-[#E6F1EA] touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] sm:h-16"
+      className="flex h-[clamp(2.875rem,7vh,4rem)] items-center justify-center rounded-2xl bg-[#F6F8F7] text-2xl font-medium text-[#091413] transition-colors active:bg-[#E6F1EA] touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
     >
       {children}
     </button>
@@ -643,7 +973,7 @@ function OrderItems({
   money: (value: number) => string
 }) {
   return (
-    <div id={id} className={`mt-3 rounded-2xl ring-1 ring-slate-100 ${className}`}>
+    <div id={id} className={`rounded-2xl ring-1 ring-slate-100 ${className}`}>
       <ul className="max-h-48 overflow-y-auto overscroll-contain px-4 lg:max-h-72">
         {cart.map((line) => (
           <li
@@ -700,7 +1030,9 @@ function SuccessView({
       <span className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-[#E6F1EA] text-[#1F5E3B]">
         <CheckIcon size={30} />
       </span>
-      <p className="mt-4 text-sm text-slate-500">Paid with {receipt.paymentMethod}</p>
+      <p className="mt-4 text-sm text-slate-500">
+        {receipt.orderType && `${receipt.orderType} · `}Paid with {receipt.paymentMethod}
+      </p>
 
       {/* The one number the cashier needs right now */}
       <div className="mt-5 rounded-3xl bg-[#F2F8F4] px-5 py-6">

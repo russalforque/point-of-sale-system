@@ -5,6 +5,7 @@ import { Capacitor } from '@capacitor/core'
 
 import { authApi } from '../../api/authApi'
 import { settingsApi, type SettingsPayload } from '../../api/settingsApi'
+import { DataManagement } from '../../components/settings/DataManagement'
 import { ChevronRight } from '../../components/ui/Icons'
 import {
   ABOVE_BOTTOM_NAV,
@@ -415,6 +416,10 @@ export function MobileSettings() {
               </fieldset>
             </form>
           )}
+        </Group>
+
+        <Group title="Data management" description="Back up your store data to a file, or restore it from one.">
+          <DataManagement />
         </Group>
 
         <button

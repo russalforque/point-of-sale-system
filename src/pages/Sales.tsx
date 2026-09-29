@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Barcode,
   ChevronLeft,
@@ -17,8 +18,11 @@ import { customerApi } from '../api/customerApi'
 import { productApi } from '../api/productApi'
 import { salesApi } from '../api/salesApi'
 
+import { AmountInput } from '../components/ui/AmountInput'
 import { Modal } from '../components/ui/Modal'
 import { Pagination } from '../components/ui/Pagination'
+import { HeldOrdersDialog, HoldOrderDialog, useHeldOrders } from '../components/pos/HeldOrders'
+import { OrderTypeSelector } from '../components/pos/OrderTypeSelector'
 import { PaymentModal } from '../components/pos/PaymentModal'
 import { EmptyState, ErrorState, Spinner } from '../components/ui/States'
 
@@ -35,7 +39,7 @@ import { printerErrorMessage } from '../services/printer'
 import type { Customer, Product, Sale } from '../types'
 import { getErrorMessage } from '../utils/errors'
 import { formatDateTime, formatMoney } from '../utils/format'
-import { addToCart, calculateTotals, canSell, setLineQty } from '../utils/pos'
+import { addToCart, calculateTotals, canSell, DEFAULT_ORDER_TYPE, setLineQty } from '../utils/pos'
 
 // 📱 Mobile Sales Import
 import MobileSales from './mobile/MobileSales'
@@ -90,7 +94,11 @@ const isTypingTarget = (target: EventTarget | null) =>
 function DesktopSales() {
   const { notify } = useToast()
   const { settings } = useSettings()
+  const { can } = useAuth()
   const { state: checkout, setState: setCheckout } = useCheckout()
+  const held = useHeldOrders()
+  const [showHold, setShowHold] = useState(false)
+  const [showHeld, setShowHeld] = useState(false)
 
   const [search, setSearch] = useState('')
   const [categoryId, setCategoryId] = useState('')
@@ -177,7 +185,7 @@ function DesktopSales() {
       setConfirmClear(true)
       return
     }
-    setCheckout({ ...checkout, cart: [], discount: 0 })
+    setCheckout({ ...checkout, cart: [], discount: 0, orderType: DEFAULT_ORDER_TYPE })
     setConfirmClear(false)
     notify('Order cleared.')
   }
@@ -228,7 +236,7 @@ function DesktopSales() {
 
   // "/" jumps to search from anywhere on the register.
   useEffect(() => {
-    if (isPaymentOpen || showHistory) return
+    if (isPaymentOpen || showHistory || showHold || showHeld) return
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === '/' && !isTypingTarget(event.target)) {
         event.preventDefault()
@@ -237,7 +245,7 @@ function DesktopSales() {
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [isPaymentOpen, showHistory])
+  }, [isPaymentOpen, showHistory, showHold, showHeld])
 
   // Auto-cancel the pending "clear order" confirmation.
   useEffect(() => {
@@ -272,14 +280,28 @@ function DesktopSales() {
           <h1 className="text-xl font-bold tracking-tight">New order</h1>
           <p className="text-sm text-slate-500">Tap a product or scan a barcode to add it.</p>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowHistory(true)}
-          className="inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-white px-4 text-sm font-medium ring-1 ring-slate-200 transition hover:bg-slate-50 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
-        >
-          <History size={15} className="text-[#1F5E3B]" />
-          Order history
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {held.heldCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowHeld(true)}
+              className="inline-flex h-11 items-center gap-2 rounded-full bg-[#E6F1EA] px-4 text-sm font-semibold text-[#1F5E3B] transition hover:bg-[#D3E6DB] active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+            >
+              Held orders
+              <span className="flex h-6 min-w-6 items-center justify-center rounded-full bg-[#1F5E3B] px-1.5 text-xs tabular-nums text-white">
+                {held.heldCount}
+              </span>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowHistory(true)}
+            className="inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-white px-4 text-sm font-medium ring-1 ring-slate-200 transition hover:bg-slate-50 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+          >
+            <History size={15} className="text-[#1F5E3B]" />
+            Order history
+          </button>
+        </div>
       </header>
 
       <div className="grid min-h-0 flex-1 gap-4 px-4 pb-4 md:grid-cols-[minmax(0,1fr)_20rem] lg:grid-cols-[minmax(0,1fr)_22rem] lg:px-6 lg:pb-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
@@ -396,17 +418,34 @@ function DesktopSales() {
                 </p>
               </div>
               {cart.length > 0 && (
-                <button
-                  type="button"
-                  onClick={clearCart}
-                  className={`h-10 rounded-full px-3 text-sm font-medium transition ${
-                    confirmClear ? 'bg-rose-600 text-white' : 'text-rose-600 hover:bg-rose-50'
-                  }`}
-                >
-                  {confirmClear ? 'Click to confirm' : 'Clear'}
-                </button>
+                <div className="flex items-center gap-1">
+                  {can('sales.hold') && (
+                    <button
+                      type="button"
+                      onClick={() => setShowHold(true)}
+                      className="h-10 rounded-full px-3 text-sm font-medium text-[#1F5E3B] transition hover:bg-[#F2F8F4]"
+                    >
+                      Hold
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={clearCart}
+                    className={`h-10 rounded-full px-3 text-sm font-medium transition ${
+                      confirmClear ? 'bg-rose-600 text-white' : 'text-rose-600 hover:bg-rose-50'
+                    }`}
+                  >
+                    {confirmClear ? 'Click to confirm' : 'Clear'}
+                  </button>
+                </div>
               )}
             </div>
+
+            <OrderTypeSelector
+              className="mt-3"
+              value={checkout.orderType}
+              onChange={(orderType) => setCheckout({ ...checkout, orderType })}
+            />
 
             {/* Customer */}
             <div className="mt-3 rounded-2xl bg-[#F6F8F7]">
@@ -533,17 +572,13 @@ function DesktopSales() {
                 </dt>
                 <dd className="flex items-center gap-1.5">
                   <span className="text-slate-400">{settings.currencySymbol}</span>
-                  <input
+                  <AmountInput
                     id="register-discount"
-                    type="number"
-                    inputMode="decimal"
-                    min={0}
-                    step="0.01"
                     value={discount || ''}
                     placeholder="0.00"
                     disabled={cart.length === 0}
-                    onChange={(e) =>
-                      setCheckout({ ...checkout, discount: Math.max(0, Number(e.target.value) || 0) })
+                    onChange={(value) =>
+                      setCheckout({ ...checkout, discount: Math.max(0, Number(value) || 0) })
                     }
                     className="h-9 w-24 rounded-lg border-0 bg-[#F3F5F4] px-2.5 text-right text-sm tabular-nums text-[#091413] outline-none focus:bg-white focus:ring-2 focus:ring-[#1F5E3B] disabled:opacity-50"
                   />
@@ -576,6 +611,23 @@ function DesktopSales() {
       {isPaymentOpen && <PaymentModal onClose={() => setIsPaymentOpen(false)} />}
 
       {showHistory && <OrderHistoryModal onClose={() => setShowHistory(false)} />}
+
+      {showHold && (
+        <HoldOrderDialog
+          controller={held}
+          customerName={selectedCustomer?.fullName ?? null}
+          onClose={() => setShowHold(false)}
+        />
+      )}
+
+      {showHeld && (
+        <HeldOrdersDialog
+          controller={held}
+          currentCustomerName={selectedCustomer?.fullName ?? null}
+          onClose={() => setShowHeld(false)}
+          onResumed={(customer) => setPickedCustomer(customer)}
+        />
+      )}
     </div>
   )
 }
@@ -589,6 +641,7 @@ function OrderHistoryModal({ onClose }: { onClose: () => void }) {
   const { settings } = useSettings()
   const { user } = useAuth()
   const { printReceipt: reprintReceipt, isPrinting, lastPrintError } = useReceiptPrinter()
+  const navigate = useNavigate()
 
   const [historySearch, setHistorySearch] = useState('')
   const [historyPage, setHistoryPage] = useState(1)
@@ -651,8 +704,16 @@ function OrderHistoryModal({ onClose }: { onClose: () => void }) {
 
           <p className="mt-2 text-sm text-slate-500">
             {selectedOrder.customerName || 'Walk-in customer'} · {formatDateTime(selectedOrder.createdAt)} ·{' '}
+            {selectedOrder.orderType && `${selectedOrder.orderType} · `}
             {selectedOrder.paymentMethod}
           </p>
+          {(selectedOrder.status === 'Voided' || selectedOrder.refundedAmount > 0) && (
+            <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              {selectedOrder.status === 'Voided'
+                ? `Voided: ${selectedOrder.voidReason ?? ''}`
+                : `${money(selectedOrder.refundedAmount)} refunded`}
+            </p>
+          )}
 
           <ul className="mt-4 rounded-2xl px-4 ring-1 ring-slate-100">
             {selectedOrder.items.map((item) => (
@@ -694,6 +755,15 @@ function OrderHistoryModal({ onClose }: { onClose: () => void }) {
             <PrinterIcon size={15} />
             {isPrinting ? 'Printing…' : lastPrintError ? 'Retry print' : 'Reprint receipt'}
           </button>
+          {selectedOrder.status === 'Completed' && selectedOrder.refundStatus !== 'Full' && (
+            <button
+              type="button"
+              onClick={() => navigate(`/returns?invoice=${encodeURIComponent(selectedOrder.invoiceNumber)}`)}
+              className="mt-2 flex h-12 w-full items-center justify-center rounded-2xl bg-[#F3F5F4] text-[15px] font-medium transition hover:bg-[#E9EEEB]"
+            >
+              Return, refund or void
+            </button>
+          )}
         </div>
       ) : (
         /* ---------------- LIST ---------------- */
@@ -751,7 +821,9 @@ function OrderHistoryModal({ onClose }: { onClose: () => void }) {
                       </span>
                       <span className="min-w-0 truncate text-sm text-slate-600">
                         {order.customerName || 'Walk-in customer'}
-                        <span className="text-slate-400"> · {order.paymentMethod}</span>
+                        <span className="text-slate-400">
+                          {order.orderType && ` · ${order.orderType}`} · {order.paymentMethod}
+                        </span>
                       </span>
                       <span className="text-sm font-medium tabular-nums">{money(order.total)}</span>
                       <span className="flex w-5 justify-end text-slate-300">

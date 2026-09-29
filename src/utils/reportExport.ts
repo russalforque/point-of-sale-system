@@ -16,6 +16,7 @@ export type ReportTransactionRow = {
   invoice: string
   customer: string
   cashier: string
+  orderType: string
   payment: string
   status: string
   items: number
@@ -47,6 +48,7 @@ export function toTransactionRow(sale: Sale, paymentLabel: string): ReportTransa
     invoice: sale.invoiceNumber || '',
     customer: sale.customerName || 'Walk-in customer',
     cashier: sale.cashierName || '',
+    orderType: sale.orderType || '',
     payment: paymentLabel,
     status: sale.status || '',
     items: sale.items?.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0) ?? 0,
@@ -112,7 +114,7 @@ export function buildReportCsv(data: ReportExportData): string {
 
   rows.push([text('Transactions')])
   rows.push(
-    ['Date', 'Invoice Number', 'Customer', 'Cashier', 'Payment Method', 'Status', 'Items Count', 'Subtotal', 'Discount', 'Tax', 'Total'].map(text),
+    ['Date', 'Invoice Number', 'Customer', 'Cashier', 'Order Type', 'Payment Method', 'Status', 'Items Count', 'Subtotal', 'Discount', 'Tax', 'Total'].map(text),
   )
   data.transactions.forEach((row) =>
     rows.push([
@@ -120,6 +122,7 @@ export function buildReportCsv(data: ReportExportData): string {
       text(row.invoice),
       text(row.customer),
       text(row.cashier),
+      text(row.orderType),
       text(row.payment),
       text(row.status),
       row.items,

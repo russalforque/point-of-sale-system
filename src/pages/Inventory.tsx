@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 
 import { inventoryApi } from '../api/inventoryApi'
 import {
@@ -18,6 +19,7 @@ import { PrimaryButton, TextButton } from '../components/ui/MobileKit'
 import { Modal } from '../components/ui/Modal'
 import { Pagination } from '../components/ui/Pagination'
 import { EmptyState, ErrorState, Spinner } from '../components/ui/States'
+import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
 import { useAsync } from '../hooks/useAsync'
 import { useDebounced } from '../hooks/useDebounced'
@@ -68,6 +70,7 @@ export function InventoryPage() {
 }
 
 function DesktopInventory() {
+  const { can } = useAuth()
   const [search, setSearch] = useState('')
   const [stock, setStock] = useState<StockFilter>('')
   const [page, setPage] = useState(1)
@@ -108,10 +111,22 @@ function DesktopInventory() {
           : 'Stock levels and adjustments'
       }
       actions={
-        <SecondaryButton onClick={() => setShowHistory(true)}>
-          <History size={14} className="text-[#1F5E3B]" />
-          Stock history
-        </SecondaryButton>
+        <>
+          {can('inventory.count') && (
+            <Link to="/stock-count" className="inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-medium ring-1 ring-slate-200 transition hover:bg-slate-50">
+              Stock count
+            </Link>
+          )}
+          {can('inventory.receive') && (
+            <Link to="/receive-stock" className="inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-medium ring-1 ring-slate-200 transition hover:bg-slate-50">
+              Receive stock
+            </Link>
+          )}
+          <SecondaryButton onClick={() => setShowHistory(true)}>
+            <History size={14} className="text-[#1F5E3B]" />
+            Stock history
+          </SecondaryButton>
+        </>
       }
     >
       <Toolbar>

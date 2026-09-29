@@ -117,6 +117,11 @@ export function buildReceipt(
     b.align('center').bold(true).line('*** VOIDED SALE ***').bold(false)
   }
 
+  // Printed on its own line so staff bagging a Take-Out order can't miss it.
+  if (sale.orderType) {
+    b.align('center').bold(true).line(sanitizeForPrinter(sale.orderType.toUpperCase())).bold(false)
+  }
+
   b.align('left')
   b.row('Invoice', sale.invoiceNumber)
   b.row('Date', formatDateTime(sale.createdAt))
@@ -135,8 +140,13 @@ export function buildReceipt(
   b.divider('=')
 
   b.row('Payment', sale.paymentMethod || '-')
+  // Split payments list every tender (cash shown net of change, so the lines add up to the total).
+  if (sale.payments && sale.payments.length > 1) {
+    for (const payment of sale.payments) b.row(`  ${payment.label}`, money(payment.amount))
+  }
   if (sale.amountReceived != null) b.row('Amount received', money(sale.amountReceived))
   if (sale.change != null) b.row('Change', money(sale.change))
+  if (sale.refundedAmount > 0) b.row('Refunded', `-${money(sale.refundedAmount)}`)
 
   b.feed(1)
   b.align('center')

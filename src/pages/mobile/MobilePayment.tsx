@@ -22,6 +22,7 @@ import {
   buildPaymentBreakdown,
   calculateTotals,
   getPaymentReceived,
+  orderTypeLabel,
   PAYMENT_OPTIONS,
 } from '../../utils/pos'
 
@@ -146,6 +147,7 @@ export function MobilePayment() {
       const sale = await salesApi.create({
         customerId: checkout.customerId,
         discount: totals.discount,
+        orderType: checkout.orderType,
         paymentMethod: method,
         amountReceived: isCash ? cashValue : getPaymentReceived(buildPaymentBreakdown(method, 0)),
         reference: isCash ? undefined : paymentReference.trim() || undefined,
@@ -259,7 +261,8 @@ export function MobilePayment() {
 
             <h1 className="mt-5 text-2xl font-bold tracking-tight">Sale complete</h1>
             <p className="mt-1 text-sm text-slate-500">
-              {receipt.invoiceNumber} · {receipt.paymentMethod}
+              {receipt.invoiceNumber}
+              {receipt.orderType && ` · ${receipt.orderType}`} · {receipt.paymentMethod}
             </p>
 
             {/* The one number the cashier needs right now */}
@@ -413,7 +416,7 @@ export function MobilePayment() {
               aria-expanded={showItems}
               className="mt-2 inline-flex h-9 items-center gap-1 rounded-full px-3 text-sm text-[#1F5E3B] active:bg-[#F2F8F4]"
             >
-              {itemCount} {itemCount === 1 ? 'item' : 'items'}
+              {orderTypeLabel(checkout.orderType)} · {itemCount} {itemCount === 1 ? 'item' : 'items'}
               {totals.discount > 0 && ` · ${money(totals.discount)} off`}
               <ChevronDownIcon
                 size={14}

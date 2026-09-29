@@ -17,7 +17,7 @@ import {
   RowButton,
   SearchField,
   Segmented,
-  SelectField,
+  PickerField,
   Sheet,
   SheetBody,
   SheetFooter,
@@ -675,27 +675,20 @@ export function MobileProducts() {
                 autoComplete="off"
               />
 
-              <SelectField
+              <PickerField
                 label="Category"
-                value={form.categoryId || ''}
+                value={form.categoryId ? String(form.categoryId) : ''}
                 onChange={(value) => setForm({ ...form, categoryId: Number(value) })}
                 error={fieldError('categoryId')}
-              >
-                <option value="">Choose a category</option>
-                {(categories.data ?? []).map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </SelectField>
+                placeholder="Choose a category"
+                emptyText="No categories yet. Add one in Categories."
+                options={(categories.data ?? []).map((c) => ({ value: String(c.id), label: c.name }))}
+              />
 
               <div className="grid grid-cols-2 gap-3">
                 <TextField
                   label="Selling price"
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  step="0.01"
+                  amount
                   prefix={settings.currencySymbol}
                   value={form.sellingPrice || ''}
                   onChange={setNumber('sellingPrice')}
@@ -705,10 +698,7 @@ export function MobileProducts() {
                 <TextField
                   label="Cost"
                   optional
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  step="0.01"
+                  amount
                   prefix={settings.currencySymbol}
                   value={form.costPrice || ''}
                   onChange={setNumber('costPrice')}
@@ -766,21 +756,18 @@ export function MobileProducts() {
                 <p className="-mt-2 text-xs text-slate-500">To change stock, use Inventory so the change is recorded.</p>
               )}
 
-              <SelectField
+              <PickerField
                 label="Supplier"
                 optional
-                value={form.supplierId ?? ''}
+                value={form.supplierId ? String(form.supplierId) : ''}
                 onChange={(value) => setForm({ ...form, supplierId: value ? Number(value) : null })}
-              >
-                <option value="">No supplier</option>
-                {(suppliers.data ?? [])
+                placeholder="No supplier"
+                noneLabel="No supplier"
+                emptyText="No suppliers yet. Add one in Suppliers."
+                options={(suppliers.data ?? [])
                   .filter((s) => s.isActive || s.id === form.supplierId)
-                  .map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.companyName}
-                    </option>
-                  ))}
-              </SelectField>
+                  .map((s) => ({ value: String(s.id), label: s.companyName, hint: s.isActive ? undefined : 'Inactive' }))}
+              />
 
               <TextAreaField
                 label="Description"

@@ -4,6 +4,7 @@ import { Capacitor } from '@capacitor/core'
 
 import { authApi } from '../api/authApi'
 import { settingsApi, type SettingsPayload } from '../api/settingsApi'
+import { DataManagement } from '../components/settings/DataManagement'
 import { DesktopPage, SectionCard } from '../components/ui/DesktopKit'
 import { ChevronRight } from '../components/ui/Icons'
 import { Avatar, EMAIL_PATTERN, PrimaryButton, SwitchRow, TextAreaField, TextButton, TextField } from '../components/ui/MobileKit'
@@ -276,6 +277,10 @@ function DesktopSettingsPage() {
                 {passwordBusy ? 'Updating…' : 'Update password'}
               </button>
             </fieldset>
+          </SectionCard>
+
+          <SectionCard title="Data management" description="Back up your store data to a file, or restore it from one.">
+            <DataManagement />
           </SectionCard>
         </div>
 

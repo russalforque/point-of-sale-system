@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Sellix.PrintAgent")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e549b233e3a54666ca0eb5a36800d68beeada754")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+178de9ed4f0e56b0d7c3316cbc15ef6a207ab20b")]
 [assembly: System.Reflection.AssemblyProductAttribute("Sellix.PrintAgent")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Sellix.PrintAgent")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

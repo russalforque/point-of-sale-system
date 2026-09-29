@@ -82,6 +82,12 @@ function inRange(sale: Sale, start: Date, end: Date) {
 
 const isCompleted = (sale: Sale) => sale.status !== 'Voided'
 
+/** Tender lines by label (several for split payments). */
+const saleTenders = (sale: Sale): { label: string; amount: number }[] =>
+  sale.payments?.length
+    ? sale.payments.map((payment) => ({ label: payment.label, amount: Number(payment.amount) || 0 }))
+    : [{ label: sale.paymentMethod || 'Other', amount: Number(sale.total) || 0 }]
+
 const sumTotal = (sales: Sale[]) => sales.reduce((sum, sale) => sum + (Number(sale.total) || 0), 0)
 
 const itemCount = (sale: Sale) =>
@@ -231,6 +237,7 @@ export function MobileReports() {
       tax: completed.reduce((sum, sale) => sum + (Number(sale.tax) || 0), 0),
       delta: bounds && previousRevenue > 0 ? (revenue - previousRevenue) / previousRevenue : null,
       voided: periodSales.length - completed.length,
+      refunded: completed.reduce((sum, sale) => sum + (sale.refundedAmount || 0), 0),
     }
   }, [completed, periodSales, sales, bounds])
 
@@ -299,11 +306,12 @@ export function MobileReports() {
   const paymentBreakdown = useMemo(() => {
     const totals = new Map<string, { amount: number; count: number }>()
     completed.forEach((sale) => {
-      const label = sale.paymentMethod || 'Other'
-      const entry = totals.get(label) ?? { amount: 0, count: 0 }
-      entry.amount += Number(sale.total) || 0
-      entry.count += 1
-      totals.set(label, entry)
+      for (const tender of saleTenders(sale)) {
+        const entry = totals.get(tender.label) ?? { amount: 0, count: 0 }
+        entry.amount += tender.amount
+        entry.count += 1
+        totals.set(tender.label, entry)
+      }
     })
 
     const order = PAYMENT_OPTIONS.map((option) => option.label)
@@ -330,7 +338,7 @@ export function MobileReports() {
   const transactions = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
     return periodSales.filter((sale) => {
-      if (methodFilter && sale.paymentMethod !== methodFilter) return false
+      if (methodFilter && !saleTenders(sale).some((tender) => tender.label === methodFilter)) return false
       if (!query) return true
       return (
         sale.invoiceNumber?.toLowerCase().includes(query) ||
@@ -367,6 +375,8 @@ export function MobileReports() {
             { label: 'Discounts', value: summary.discount, kind: 'money' },
             { label: 'Tax collected', value: summary.tax, kind: 'money' },
             { label: 'Voided sales', value: summary.voided, kind: 'count' },
+            { label: 'Refunded amount', value: summary.refunded, kind: 'money' },
+            { label: 'Net revenue', value: summary.revenue - summary.refunded, kind: 'money' },
           ],
           paymentMethods: paymentBreakdown.map(({ label, count, amount }) => ({ label, count, amount })),
           topProducts: topProducts.map(({ name, quantity, revenue }) => ({ name, quantity, revenue })),
@@ -628,13 +638,16 @@ export function MobileReports() {
             )}
 
             {/* ADJUSTMENTS */}
-            {(summary.discount > 0 || summary.tax > 0 || summary.voided > 0) && (
+            {(summary.discount > 0 || summary.tax > 0 || summary.voided > 0 || summary.refunded > 0) && (
               <Section title="Adjustments">
                 <dl className="divide-y divide-slate-100">
                   <DetailRow label="Discounts given" value={money(summary.discount)} />
                   <DetailRow label="Tax collected" value={money(summary.tax)} />
                   {summary.voided > 0 && (
                     <DetailRow label="Voided sales" value={`${summary.voided} (not counted)`} />
+                  )}
+                  {summary.refunded > 0 && (
+                    <DetailRow label="Refunds" value={`−${money(summary.refunded)} · net ${money(summary.revenue - summary.refunded)}`} />
                   )}
                 </dl>
               </Section>
@@ -734,6 +747,7 @@ export function MobileReports() {
                               </p>
                               <p className="mt-0.5 truncate text-xs text-slate-400">
                                 {sale.invoiceNumber} · {formatSaleTime(sale.createdAt, showDates)} ·{' '}
+                                {sale.orderType && `${sale.orderType} · `}
                                 {sale.paymentMethod}
                               </p>
                             </div>
@@ -872,6 +886,7 @@ export function MobileReports() {
               </dl>
 
               <dl className="mb-4 space-y-1.5 rounded-2xl bg-[#F6F8F7] px-4 py-3 text-sm">
+                {selectedSale.orderType && <SummaryRow label="Order type" value={selectedSale.orderType} />}
                 <SummaryRow label="Paid with" value={selectedSale.paymentMethod} />
                 {selectedSale.amountReceived != null && (
                   <SummaryRow label="Received" value={money(selectedSale.amountReceived)} />

@@ -1,14 +1,24 @@
-import type { PagedResult, PaymentMethod, Sale, SaleItem } from '../types'
+import type { PagedResult, PaymentMethod, Sale, SaleItem, SalePayment } from '../types'
 import { initDatabase, querySQL } from '../database/sqlite'
+import type { SqlStatement } from '../database/tx'
 import { settingsApi } from './settingsApi'
+import { auditStatement } from '../services/audit'
+import { stockChangeStatements } from '../services/inventoryMovements'
+import { CASH_METHOD, methodLabel, settlePayments, SPLIT_METHOD, tendersLabel, type Tender } from '../services/payments'
 import { getStoredUser } from '../utils/session'
-import { PAYMENT_OPTIONS } from '../utils/pos'
+import { isOrderType, orderTypeLabel, type OrderType } from '../utils/pos'
+import { roundMoney } from '../utils/amount'
+import { formatMoney } from '../utils/format'
 import { ApiError } from '../utils/errors'
 
 export type CreateSalePayload = {
   customerId?: number | null
   discount: number
-  paymentMethod: PaymentMethod
+  orderType: OrderType
+  /** Tenders as entered (cash may exceed what is due). One entry for a normal sale, several for a split. */
+  payments?: Tender[]
+  /** Single-tender form, still accepted for the legacy /payment screen. Ignored when `payments` is set. */
+  paymentMethod?: PaymentMethod
   amountReceived?: number | null
   reference?: string
   items: { productId: number; quantity: number }[]
@@ -27,14 +37,16 @@ type SaleRow = {
   total: number
   status: number
   created_at: string
-}
-
-type PaymentRow = {
-  method: number
-  amount: number
+  order_type: number | null
+  voided_at: string | null
+  voided_by: string | null
+  void_reason: string | null
+  void_approved_by: string | null
+  pay_method: number | null
   amount_received: number | null
   change_amount: number | null
-  reference: string | null
+  pay_reference: string | null
+  refunded_amount: number | null
 }
 
 type SaleItemRow = {
@@ -44,11 +56,10 @@ type SaleItemRow = {
   quantity: number
   unit_price: number
   line_total: number
+  refunded_quantity: number | null
 }
 
-function paymentLabel(method: number): string {
-  return PAYMENT_OPTIONS.find((opt) => opt.value === method)?.label ?? 'Other'
-}
+type TenderRow = { method: number; amount: number; reference: string | null }
 
 function statusLabel(status: number): string {
   if (status === 2) return 'Voided'
@@ -57,19 +68,19 @@ function statusLabel(status: number): string {
 }
 
 async function buildSale(saleRow: SaleRow): Promise<Sale> {
-  const [itemsResult, paymentResult] = await Promise.all([
+  const [itemsResult, tendersResult] = await Promise.all([
     querySQL(
       `SELECT si.product_id AS product_id, p.name AS productName, p.sku AS sku,
-              si.quantity AS quantity, si.unit_price AS unit_price, si.line_total AS line_total
+              si.quantity AS quantity, si.unit_price AS unit_price, si.line_total AS line_total,
+              (SELECT COALESCE(SUM(ri.quantity), 0)
+                 FROM refund_items ri JOIN refunds r ON r.id = ri.refund_id
+                WHERE r.sale_id = si.sale_id AND ri.product_id = si.product_id) AS refunded_quantity
        FROM sale_items si
        LEFT JOIN products p ON p.id = si.product_id
        WHERE si.sale_id = ?`,
       [saleRow.id],
     ),
-    querySQL(
-      `SELECT method, amount, amount_received, change_amount, reference FROM payments WHERE sale_id = ? LIMIT 1`,
-      [saleRow.id],
-    ),
+    querySQL(`SELECT method, amount, reference FROM sale_payments WHERE sale_id = ? ORDER BY id`, [saleRow.id]),
   ])
 
   const items: SaleItem[] = ((itemsResult.values ?? []) as SaleItemRow[]).map((row) => ({
@@ -79,9 +90,24 @@ async function buildSale(saleRow: SaleRow): Promise<Sale> {
     quantity: row.quantity,
     unitPrice: row.unit_price,
     lineTotal: row.line_total,
+    refundedQuantity: row.refunded_quantity ?? 0,
   }))
 
-  const payment = paymentResult.values?.[0] as PaymentRow | undefined
+  let tenders = (tendersResult.values ?? []) as TenderRow[]
+  if (tenders.length === 0 && saleRow.pay_method !== null && saleRow.pay_method !== SPLIT_METHOD) {
+    tenders = [{ method: saleRow.pay_method, amount: saleRow.total, reference: saleRow.pay_reference }]
+  }
+  const payments: SalePayment[] = tenders.map((tender) => ({
+    method: tender.method,
+    label: methodLabel(tender.method),
+    amount: tender.amount,
+    reference: tender.reference,
+  }))
+
+  const soldQuantity = items.reduce((sum, item) => sum + item.quantity, 0)
+  const refundedQuantity = items.reduce((sum, item) => sum + item.refundedQuantity, 0)
+  const refundStatus: Sale['refundStatus'] =
+    refundedQuantity === 0 ? 'None' : refundedQuantity >= soldQuantity ? 'Full' : 'Partial'
 
   return {
     id: saleRow.id,
@@ -96,10 +122,18 @@ async function buildSale(saleRow: SaleRow): Promise<Sale> {
     total: saleRow.total,
     status: statusLabel(saleRow.status),
     createdAt: saleRow.created_at,
-    paymentMethod: payment ? paymentLabel(payment.method) : 'Unknown',
-    amountReceived: payment?.amount_received ?? null,
-    change: payment?.change_amount ?? null,
+    orderType: orderTypeLabel(saleRow.order_type),
+    paymentMethod: payments.length ? tendersLabel(payments.map((p) => p.method)) : 'Unknown',
+    amountReceived: saleRow.amount_received ?? null,
+    change: saleRow.change_amount ?? null,
     items,
+    payments,
+    refundedAmount: roundMoney(saleRow.refunded_amount ?? 0),
+    refundStatus,
+    voidedAt: saleRow.voided_at,
+    voidedBy: saleRow.voided_by,
+    voidReason: saleRow.void_reason,
+    voidApprovedBy: saleRow.void_approved_by,
   }
 }
 
@@ -116,10 +150,28 @@ const SALE_SELECT = `
     s.tax AS tax,
     s.total AS total,
     s.status AS status,
-    s.created_at AS created_at
+    s.created_at AS created_at,
+    s.order_type AS order_type,
+    s.voided_at AS voided_at,
+    s.voided_by AS voided_by,
+    s.void_reason AS void_reason,
+    s.void_approved_by AS void_approved_by,
+    pay.method AS pay_method,
+    pay.amount_received AS amount_received,
+    pay.change_amount AS change_amount,
+    pay.reference AS pay_reference,
+    (SELECT COALESCE(SUM(r.amount), 0) FROM refunds r WHERE r.sale_id = s.id) AS refunded_amount
   FROM sales s
   LEFT JOIN customers c ON c.id = s.customer_id
+  LEFT JOIN payments pay ON pay.sale_id = s.id
 `
+
+/** The single-tender legacy payload, expressed as tenders. Non-cash never carried an amount before. */
+function legacyTenders(payload: CreateSalePayload, total: number): Tender[] {
+  const method = payload.paymentMethod ?? CASH_METHOD
+  const amount = method === CASH_METHOD ? payload.amountReceived ?? total : total
+  return [{ method, amount, reference: payload.reference }]
+}
 
 export const salesApi = {
   list: async (params: {
@@ -177,9 +229,26 @@ export const salesApi = {
     return buildSale(row)
   },
 
+  /** Exact receipt lookup. Accepts "INV-000123", "inv-123" or just "123". */
+  findByInvoice: async (input: string): Promise<Sale | null> => {
+    const raw = input.trim().toUpperCase()
+    if (!raw) return null
+    const digits = raw.replace(/^INV-?/, '')
+    const candidates = /^\d+$/.test(digits) ? [raw, `INV-${digits.padStart(6, '0')}`] : [raw]
+    const result = await querySQL(
+      `${SALE_SELECT} WHERE UPPER(s.invoice_number) IN (${candidates.map(() => '?').join(', ')}) LIMIT 1`,
+      candidates,
+    )
+    const row = result.values?.[0] as SaleRow | undefined
+    return row ? buildSale(row) : null
+  },
+
   create: async (payload: CreateSalePayload): Promise<Sale> => {
     if (payload.items.length === 0) {
       throw new ApiError('Cannot create a sale with no items.', 400)
+    }
+    if (!isOrderType(payload.orderType)) {
+      throw new ApiError('Select Dine-In or Take-Out before completing the sale.', 400)
     }
 
     const db = await initDatabase()
@@ -187,6 +256,7 @@ export const salesApi = {
     const currentUser = getStoredUser()
     const cashierName = currentUser?.fullName ?? 'Cashier'
     const now = new Date().toISOString()
+    const money = (value: number) => formatMoney(value, settings.currencySymbol)
 
     // Only the caller's own open shift can ever be picked up here, so a sale can
     // never be attributed to another employee's shift. No active shift is fine -
@@ -202,6 +272,9 @@ export const salesApi = {
 
     const productRows = await Promise.all(
       payload.items.map(async (item) => {
+        if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+          throw new ApiError('Item quantities must be whole numbers above zero.', 400)
+        }
         const result = await db.query(
           `SELECT id, name, selling_price, stock_quantity, is_active FROM products WHERE id = ? LIMIT 1`,
           [item.productId],
@@ -218,67 +291,98 @@ export const salesApi = {
       }),
     )
 
-    const subtotal = productRows.reduce((sum, row) => sum + row.selling_price * row.quantity, 0)
-    const discount = Math.min(Math.max(payload.discount, 0), subtotal)
+    const subtotal = roundMoney(productRows.reduce((sum, row) => sum + row.selling_price * row.quantity, 0))
+    const discount = roundMoney(Math.min(Math.max(payload.discount, 0), subtotal))
     const taxable = subtotal - discount
-    const tax = Math.round(taxable * settings.taxRate * 100) / 100
-    const total = Math.round((taxable + tax) * 100) / 100
+    const tax = roundMoney(taxable * settings.taxRate)
+    const total = roundMoney(taxable + tax)
 
-    const amountReceived = payload.amountReceived ?? total
-    const change = Math.max(amountReceived - total, 0)
+    // Throws before anything is written if the tenders don't settle the total exactly.
+    const settled = settlePayments(total, payload.payments ?? legacyTenders(payload, total))
 
     const countResult = await db.query(`SELECT COUNT(*) AS count FROM sales`)
     const nextNumber = ((countResult.values?.[0]?.count as number | undefined) ?? 0) + 1
     const invoiceNumber = `INV-${String(nextNumber).padStart(6, '0')}`
+    const saleIdSql = `(SELECT id FROM sales WHERE invoice_number = ?)`
 
     // A saved sale's rowid is not known until the INSERT below actually runs, so every
     // dependent statement locates it via the (unique) invoice number instead of a JS-side id -
-    // that lets the whole write go through executeSet() as a single real SQLite transaction
-    // instead of interleaving run() calls (each of which opens its own implicit transaction
-    // and would otherwise collide with a manual BEGIN/COMMIT).
-    const statements: { statement: string; values: unknown[] }[] = [
+    // that lets the whole write go through executeSet() as a single real SQLite transaction.
+    const statements: SqlStatement[] = [
       {
-        statement: `INSERT INTO sales (invoice_number, customer_id, cashier_id, shift_id, subtotal, discount, tax, total, status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-        values: [invoiceNumber, payload.customerId ?? null, cashierName, shiftId, subtotal, discount, tax, total, now],
+        statement: `INSERT INTO sales (invoice_number, customer_id, cashier_id, shift_id, subtotal, discount, tax, total, status, created_at, order_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        values: [
+          invoiceNumber,
+          payload.customerId ?? null,
+          cashierName,
+          shiftId,
+          subtotal,
+          discount,
+          tax,
+          total,
+          now,
+          payload.orderType,
+        ],
       },
     ]
 
     for (const row of productRows) {
-      const lineTotal = Math.round(row.selling_price * row.quantity * 100) / 100
-      const newStock = row.stock_quantity - row.quantity
-
+      const lineTotal = roundMoney(row.selling_price * row.quantity)
       statements.push({
         statement: `INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, line_total)
-           VALUES ((SELECT id FROM sales WHERE invoice_number = ?), ?, ?, ?, ?)`,
+           VALUES (${saleIdSql}, ?, ?, ?, ?)`,
         values: [invoiceNumber, row.id, row.quantity, row.selling_price, lineTotal],
       })
+      statements.push(
+        ...stockChangeStatements({
+          productId: row.id,
+          delta: -row.quantity,
+          reason: `Sale ${invoiceNumber}`,
+          createdBy: cashierName,
+          at: now,
+        }),
+      )
+    }
+
+    // `payments` keeps one summary row per sale (received / change); `sale_payments` holds each tender.
+    const reference = settled.lines.find((line) => line.reference)?.reference ?? null
+    statements.push({
+      statement: `INSERT INTO payments (sale_id, method, amount, amount_received, change_amount, reference)
+         VALUES (${saleIdSql}, ?, ?, ?, ?, ?)`,
+      values: [invoiceNumber, settled.summaryMethod, total, settled.amountReceived, settled.change, reference],
+    })
+    for (const line of settled.lines) {
       statements.push({
-        statement: `UPDATE products SET stock_quantity = ?, updated_at = ? WHERE id = ?`,
-        values: [newStock, now, row.id],
-      })
-      statements.push({
-        statement: `INSERT INTO inventory_transactions (product_id, type, quantity_change, quantity_after, reason, created_by, created_at)
-           VALUES (?, 2, ?, ?, ?, ?, ?)`,
-        values: [row.id, -row.quantity, newStock, `Sale ${invoiceNumber}`, cashierName, now],
+        statement: `INSERT INTO sale_payments (sale_id, method, amount, reference) VALUES (${saleIdSql}, ?, ?, ?)`,
+        values: [invoiceNumber, line.method, line.amount, line.reference],
       })
     }
 
-    statements.push({
-      statement: `INSERT INTO payments (sale_id, method, amount, amount_received, change_amount, reference)
-         VALUES ((SELECT id FROM sales WHERE invoice_number = ?), ?, ?, ?, ?, ?)`,
-      values: [invoiceNumber, payload.paymentMethod, total, amountReceived, change, payload.reference ?? null],
-    })
+    const itemCount = productRows.reduce((sum, row) => sum + row.quantity, 0)
+    const entity = { type: 'sale', id: invoiceNumber }
+    statements.push(
+      auditStatement(
+        'sale',
+        `${invoiceNumber} · ${money(total)} · ${tendersLabel(settled.lines.map((line) => line.method))} · ${itemCount} ${itemCount === 1 ? 'item' : 'items'}`,
+        entity,
+        undefined,
+        now,
+      ),
+    )
+    if (discount > 0) {
+      statements.push(
+        auditStatement('discount', `${money(discount)} discount on ${invoiceNumber} (subtotal ${money(subtotal)})`, entity, undefined, now),
+      )
+    }
 
     try {
-      await db.executeSet(statements, true)
+      await db.executeSet(statements as { statement: string; values: any[] }[], true)
     } catch (error) {
       throw error instanceof ApiError ? error : new ApiError('Failed to complete sale.', 500)
     }
 
-    const saleRow = await db.query(`SELECT id FROM sales WHERE invoice_number = ? LIMIT 1`, [
-      invoiceNumber,
-    ])
+    const saleRow = await db.query(`SELECT id FROM sales WHERE invoice_number = ? LIMIT 1`, [invoiceNumber])
     const saleId = saleRow.values?.[0]?.id as number | undefined
     if (!saleId) throw new ApiError('Failed to complete sale.', 500)
 

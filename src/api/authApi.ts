@@ -4,7 +4,24 @@ import { querySQL, executeSQL } from '../database/sqlite'
 import { sha256 } from '../utils/hash'
 import { getStoredUser } from '../utils/session'
 import { ApiError } from '../utils/errors'
-import type { Role } from '../utils/permissions'
+import { APPROVER_ROLES, hasPermission, type Permission, type Role } from '../utils/permissions'
+import { logAudit } from '../services/audit'
+
+export type Approver = { id: number; fullName: string; role: Role }
+
+/** 4-6 digit approval PIN. */
+export const PIN_PATTERN = /^\d{4,6}$/
+
+/** Salted per user, so equal PINs on two accounts never produce the same hash. */
+export function hashPin(userId: number, pin: string): Promise<string> {
+  return sha256(`sellix-pin:${userId}:${pin}`)
+}
+
+// Slows down guessing a short PIN at an unattended register.
+const MAX_PIN_ATTEMPTS = 5
+const PIN_LOCKOUT_MS = 30_000
+let failedPinAttempts = 0
+let pinLockedUntil = 0
 
 type UserRow = {
   id: number
@@ -77,6 +94,8 @@ export const authApi = {
       throw new ApiError('Invalid email or password.', 401)
     }
 
+    await logAudit('login', `${row.full_name} signed in`, { type: 'user', id: row.id }, { id: row.id, fullName: row.full_name })
+
     return {
       token: makeToken(row.id),
       expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString(),
@@ -85,7 +104,52 @@ export const authApi = {
   },
 
   logout: async (): Promise<void> => {
-    return Promise.resolve()
+    const user = getStoredUser()
+    if (user && Capacitor.isNativePlatform()) {
+      await logAudit('logout', `${user.fullName} signed out`, { type: 'user', id: user.id })
+    }
+  },
+
+  /**
+   * Manager/admin approval for a sensitive action: finds the active approver whose PIN matches
+   * and confirms their role actually allows `permission`.
+   */
+  verifyApproval: async (pin: string, permission: Permission): Promise<Approver> => {
+    if (!Capacitor.isNativePlatform()) {
+      throw new ApiError('PIN approval is only available in the Android app.', 400)
+    }
+    if (Date.now() < pinLockedUntil) {
+      throw new ApiError('Too many wrong PINs. Wait 30 seconds and try again.', 429)
+    }
+    if (!PIN_PATTERN.test(pin)) throw new ApiError('Enter a 4 to 6 digit PIN.', 400)
+
+    const placeholders = APPROVER_ROLES.map(() => '?').join(', ')
+    const result = await querySQL(
+      `SELECT id, full_name, role, pin_hash FROM users
+       WHERE is_active = 1 AND pin_hash IS NOT NULL AND role IN (${placeholders})`,
+      APPROVER_ROLES,
+    )
+    const rows = (result.values ?? []) as { id: number; full_name: string; role: Role; pin_hash: string }[]
+    if (rows.length === 0) {
+      throw new ApiError('No manager PIN is set up yet. An admin can set one in Users.', 400)
+    }
+
+    for (const row of rows) {
+      if ((await hashPin(row.id, pin)) !== row.pin_hash) continue
+      failedPinAttempts = 0
+      if (!hasPermission(row.role, permission)) {
+        throw new ApiError(`${row.full_name} isn’t allowed to approve this.`, 403)
+      }
+      return { id: row.id, fullName: row.full_name, role: row.role }
+    }
+
+    failedPinAttempts += 1
+    if (failedPinAttempts >= MAX_PIN_ATTEMPTS) {
+      failedPinAttempts = 0
+      pinLockedUntil = Date.now() + PIN_LOCKOUT_MS
+      throw new ApiError('Too many wrong PINs. Wait 30 seconds and try again.', 429)
+    }
+    throw new ApiError('Incorrect PIN.', 401)
   },
 
   me: async (): Promise<User> => {

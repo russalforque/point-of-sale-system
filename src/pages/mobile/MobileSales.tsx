@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Barcode,
   ChevronLeft,
@@ -18,8 +19,11 @@ import { customerApi } from '../../api/customerApi'
 import { productApi } from '../../api/productApi'
 import { salesApi } from '../../api/salesApi'
 
+import { AmountInput } from '../../components/ui/AmountInput'
 import { Pagination } from '../../components/ui/Pagination'
 import { EmptyState, ErrorState, Spinner } from '../../components/ui/States'
+import { HeldOrdersDialog, HoldOrderDialog, useHeldOrders } from '../../components/pos/HeldOrders'
+import { OrderTypeSelector } from '../../components/pos/OrderTypeSelector'
 import { PaymentModal } from '../../components/pos/PaymentModal'
 
 import { useAuth } from '../../context/AuthContext'
@@ -38,6 +42,8 @@ import {
   addToCart,
   calculateTotals,
   canSell,
+  DEFAULT_ORDER_TYPE,
+  orderTypeLabel,
   setLineQty,
 } from '../../utils/pos'
 
@@ -53,8 +59,12 @@ const ABOVE_BOTTOM_NAV =
 export function MobileSales() {
   const { notify } = useToast()
   const { settings } = useSettings()
-  const { user } = useAuth()
+  const { user, can } = useAuth()
   const { state: checkout, setState: setCheckout } = useCheckout()
+  const held = useHeldOrders()
+  const navigate = useNavigate()
+  const [showHold, setShowHold] = useState(false)
+  const [showHeld, setShowHeld] = useState(false)
   const { printReceipt: reprintReceipt, isPrinting, lastPrintError } = useReceiptPrinter()
 
   // UI state
@@ -160,7 +170,7 @@ export function MobileSales() {
       return
     }
 
-    setCheckout({ ...checkout, cart: [], discount: 0 })
+    setCheckout({ ...checkout, cart: [], discount: 0, orderType: DEFAULT_ORDER_TYPE })
     setConfirmClear(false)
     setIsCartOpen(false)
     notify('Cart cleared.')
@@ -254,17 +264,32 @@ export function MobileSales() {
             <p className="mt-0.5 text-sm text-slate-500">Tap a product to add it.</p>
           </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              setHistoryPage(1)
-              setShowHistory(true)
-            }}
-            className="inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-[#F3F5F4] px-4 text-sm font-medium transition hover:bg-[#E9EEEB] active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
-          >
-            <History size={15} className="text-[#1F5E3B]" />
-            History
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            {held.heldCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowHeld(true)}
+                aria-label={`Held orders, ${held.heldCount}`}
+                className="inline-flex h-11 items-center gap-1.5 rounded-full bg-[#E6F1EA] px-3.5 text-sm font-semibold text-[#1F5E3B] transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+              >
+                Held
+                <span className="flex h-6 min-w-6 items-center justify-center rounded-full bg-[#1F5E3B] px-1.5 text-xs tabular-nums text-white">
+                  {held.heldCount}
+                </span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setHistoryPage(1)
+                setShowHistory(true)
+              }}
+              className="inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-[#F3F5F4] px-4 text-sm font-medium transition hover:bg-[#E9EEEB] active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+            >
+              <History size={15} className="text-[#1F5E3B]" />
+              History
+            </button>
+          </div>
         </div>
 
         {/* Search */}
@@ -386,7 +411,10 @@ export function MobileSales() {
             <span className="flex h-8 min-w-8 items-center justify-center rounded-full bg-white/15 px-2 text-sm font-semibold tabular-nums">
               {totalItemCount}
             </span>
-            <span className="flex-1 text-left text-[15px] font-medium">View order</span>
+            <span className="min-w-0 flex-1 truncate text-left text-[15px] font-medium">
+              View order
+              <span className="font-normal text-white/75"> · {orderTypeLabel(checkout.orderType)}</span>
+            </span>
             <span className="text-[15px] font-semibold tabular-nums">{money(totals.total)}</span>
             <ChevronRight size={14} className="text-white/70" />
           </button>
@@ -405,6 +433,18 @@ export function MobileSales() {
             </div>
 
             <div className="flex items-center gap-1">
+              {can('sales.hold') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsCartOpen(false)
+                    setShowHold(true)
+                  }}
+                  className="h-10 rounded-full px-3 text-sm font-medium text-[#1F5E3B] transition active:bg-[#F2F8F4]"
+                >
+                  Hold
+                </button>
+              )}
               <button
                 type="button"
                 onClick={clearCart}
@@ -421,6 +461,12 @@ export function MobileSales() {
           </div>
 
           <div className="flex-1 overflow-y-auto overscroll-contain px-5">
+            <OrderTypeSelector
+              className="mb-3"
+              value={checkout.orderType}
+              onChange={(orderType) => setCheckout({ ...checkout, orderType })}
+            />
+
             {/* Customer */}
             <div className="rounded-2xl bg-[#F6F8F7]">
               <button
@@ -520,15 +566,11 @@ export function MobileSales() {
               <span className="text-[15px]">Discount</span>
               <span className="flex items-center gap-1.5">
                 <span className="text-sm text-slate-400">{settings.currencySymbol}</span>
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  max={totals.subtotal}
+                <AmountInput
                   value={discount || ''}
                   placeholder="0.00"
-                  onChange={(e) =>
-                    setCheckout({ ...checkout, discount: Math.max(0, Number(e.target.value) || 0) })
+                  onChange={(value) =>
+                    setCheckout({ ...checkout, discount: Math.max(0, Number(value) || 0) })
                   }
                   className="h-10 w-24 rounded-xl border-0 bg-white px-3 text-right text-[15px] tabular-nums outline-none focus:ring-2 focus:ring-[#1F5E3B]"
                 />
@@ -565,6 +607,23 @@ export function MobileSales() {
 
       {/* PAYMENT */}
       {isPaymentOpen && <PaymentModal onClose={() => setIsPaymentOpen(false)} />}
+
+      {/* HOLD / HELD ORDERS */}
+      {showHold && (
+        <HoldOrderDialog
+          controller={held}
+          customerName={selectedCustomer?.fullName ?? null}
+          onClose={() => setShowHold(false)}
+        />
+      )}
+      {showHeld && (
+        <HeldOrdersDialog
+          controller={held}
+          currentCustomerName={selectedCustomer?.fullName ?? null}
+          onClose={() => setShowHeld(false)}
+          onResumed={(customer) => setPickedCustomer(customer)}
+        />
+      )}
 
       {/* HISTORY — full-screen page */}
       {showHistory && (
@@ -650,7 +709,10 @@ export function MobileSales() {
 
                     <div className="shrink-0 text-right">
                       <p className="text-[15px] font-medium tabular-nums">{money(order.total)}</p>
-                      <p className="text-xs text-slate-400">{order.paymentMethod}</p>
+                      <p className="text-xs text-slate-400">
+                        {order.orderType && `${order.orderType} · `}
+                        {order.paymentMethod}
+                      </p>
                     </div>
 
                     {openingOrderId === order.id ? (
@@ -683,6 +745,7 @@ export function MobileSales() {
                   <p className="text-sm text-slate-500">
                     {selectedOrder.customerName || 'Walk-in customer'} ·{' '}
                     {formatDateTime(selectedOrder.createdAt)}
+                    {selectedOrder.orderType && ` · ${selectedOrder.orderType}`}
                   </p>
                 </div>
                 <CloseButton onClick={() => setSelectedOrder(null)} label="Close order details" />
@@ -708,6 +771,13 @@ export function MobileSales() {
                   <span className="text-[15px]">Total</span>
                   <span className="text-xl font-semibold tabular-nums">{money(selectedOrder.total)}</span>
                 </div>
+                {(selectedOrder.status === 'Voided' || selectedOrder.refundedAmount > 0) && (
+                  <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    {selectedOrder.status === 'Voided'
+                      ? `Voided: ${selectedOrder.voidReason ?? ''}`
+                      : `${money(selectedOrder.refundedAmount)} refunded`}
+                  </p>
+                )}
 
                 <button
                   type="button"
@@ -718,6 +788,15 @@ export function MobileSales() {
                   <PrinterIcon size={16} />
                   {isPrinting ? 'Printing…' : lastPrintError ? 'Retry print' : 'Reprint receipt'}
                 </button>
+                {selectedOrder.status === 'Completed' && selectedOrder.refundStatus !== 'Full' && (
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/returns?invoice=${encodeURIComponent(selectedOrder.invoiceNumber)}`)}
+                    className="mt-2 flex h-12 w-full items-center justify-center rounded-2xl text-[15px] font-medium text-[#1F5E3B] transition active:bg-[#F2F8F4]"
+                  >
+                    Return, refund or void
+                  </button>
+                )}
               </div>
             </Sheet>
           )}

@@ -1,5 +1,7 @@
 import type { Supplier } from '../types'
 import { querySQL, executeSQL } from '../database/sqlite'
+import { runTransaction } from '../database/tx'
+import { auditStatement } from '../services/audit'
 import { ApiError } from '../utils/errors'
 
 export type SupplierPayload = {
@@ -8,6 +10,16 @@ export type SupplierPayload = {
   phone?: string
   email?: string
   address?: string
+  notes?: string
+  isActive: boolean
+}
+
+export type SuppliedProduct = {
+  id: number
+  name: string
+  sku: string
+  costPrice: number
+  stockQuantity: number
   isActive: boolean
 }
 
@@ -19,6 +31,7 @@ type SupplierRow = {
   phone: string | null
   email: string | null
   address: string | null
+  notes: string | null
   is_active: number
 }
 
@@ -31,6 +44,7 @@ function toSupplier(row: SupplierRow): Supplier {
     phone: row.phone,
     email: row.email,
     address: row.address,
+    notes: row.notes ?? null,
     isActive: Boolean(row.is_active),
   }
 }
@@ -68,45 +82,68 @@ export const supplierApi = {
     return toSupplier(row)
   },
 
+  /** Products whose default supplier is this one (set on the product form or when receiving stock). */
+  products: async (id: number): Promise<SuppliedProduct[]> => {
+    const result = await querySQL(
+      `SELECT id, name, sku, cost_price AS costPrice, stock_quantity AS stockQuantity, is_active AS isActive
+       FROM products WHERE supplier_id = ? ORDER BY is_active DESC, name ASC`,
+      [id],
+    )
+    return ((result.values ?? []) as (Omit<SuppliedProduct, 'isActive'> & { isActive: number })[]).map((row) => ({
+      ...row,
+      isActive: Boolean(row.isActive),
+    }))
+  },
+
   create: async (payload: SupplierPayload): Promise<Supplier> => {
     const result = await executeSQL(
-      `INSERT INTO suppliers (supplier_code, company_name, contact_person, phone, email, address, is_active)
-       VALUES ('', ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO suppliers (supplier_code, company_name, contact_person, phone, email, address, notes, is_active)
+       VALUES ('', ?, ?, ?, ?, ?, ?, ?)`,
       [
         payload.companyName,
         payload.contactPerson || null,
         payload.phone || null,
         payload.email || null,
         payload.address || null,
+        payload.notes?.trim() || null,
         payload.isActive ? 1 : 0,
       ],
     )
     const id = result.changes?.lastId
     if (!id) throw new ApiError('Failed to create supplier.', 500)
-    await executeSQL(`UPDATE suppliers SET supplier_code = ? WHERE id = ?`, [
-      `SUP-${String(id).padStart(4, '0')}`,
-      id,
+    const code = `SUP-${String(id).padStart(4, '0')}`
+    await runTransaction([
+      { statement: `UPDATE suppliers SET supplier_code = ? WHERE id = ?`, values: [code, id] },
+      auditStatement('supplier', `Added supplier ${payload.companyName} (${code})`, { type: 'supplier', id }),
     ])
     return supplierApi.get(id)
   },
 
   update: async (id: number, payload: SupplierPayload): Promise<Supplier> => {
-    await executeSQL(
-      `UPDATE suppliers SET company_name = ?, contact_person = ?, phone = ?, email = ?, address = ?, is_active = ? WHERE id = ?`,
-      [
-        payload.companyName,
-        payload.contactPerson || null,
-        payload.phone || null,
-        payload.email || null,
-        payload.address || null,
-        payload.isActive ? 1 : 0,
-        id,
-      ],
-    )
+    await runTransaction([
+      {
+        statement: `UPDATE suppliers SET company_name = ?, contact_person = ?, phone = ?, email = ?, address = ?, notes = ?, is_active = ? WHERE id = ?`,
+        values: [
+          payload.companyName,
+          payload.contactPerson || null,
+          payload.phone || null,
+          payload.email || null,
+          payload.address || null,
+          payload.notes?.trim() || null,
+          payload.isActive ? 1 : 0,
+          id,
+        ],
+      },
+      auditStatement('supplier', `Updated supplier ${payload.companyName}`, { type: 'supplier', id }),
+    ])
     return supplierApi.get(id)
   },
 
   deactivate: async (id: number): Promise<void> => {
-    await executeSQL(`UPDATE suppliers SET is_active = 0 WHERE id = ?`, [id])
+    const supplier = await supplierApi.get(id)
+    await runTransaction([
+      { statement: `UPDATE suppliers SET is_active = 0 WHERE id = ?`, values: [id] },
+      auditStatement('supplier', `Deactivated supplier ${supplier.companyName}`, { type: 'supplier', id }),
+    ])
   },
 }

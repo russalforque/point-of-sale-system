@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 
 import { salesApi } from '../api/salesApi'
+import { AmountInput } from '../components/ui/AmountInput'
 import { DataCard, DesktopPage, DesktopSearch, FilterPills, SecondaryButton, SectionCard, Th } from '../components/ui/DesktopKit'
 import { ChevronRight } from '../components/ui/Icons'
 import { PrimaryButton, TextButton } from '../components/ui/MobileKit'
@@ -83,6 +84,12 @@ function resolvePaymentMethod(methodValue: unknown): { value: string; label: str
     (option) => String(option.value).toLowerCase() === normalized || option.label.toLowerCase() === normalized,
   )
   return found ? { value: String(found.value), label: found.label } : { value: normalized, label: raw }
+}
+
+/** Tender lines of a sale (several for split payments); falls back to the summary method. */
+function saleTenders(sale: Sale): { key: string; amount: number }[] {
+  if (sale.payments?.length) return sale.payments.map((payment) => ({ key: String(payment.method), amount: Number(payment.amount) || 0 }))
+  return [{ key: resolvePaymentMethod(sale.paymentMethod).value, amount: Number(sale.total) || 0 }]
 }
 
 function rangeWindow(filter: DateRangeFilter, customStart: string, customEnd: string): { start: Date | null; end: Date | null } {
@@ -218,7 +225,7 @@ function DesktopReportsPage() {
         if (start && time < start.getTime()) return false
         if (end && time >= end.getTime()) return false
       }
-      if (methodFilter !== 'all' && resolvePaymentMethod(sale.paymentMethod).value !== methodFilter) return false
+      if (methodFilter !== 'all' && !saleTenders(sale).some((tender) => tender.key === methodFilter)) return false
       if (query) {
         const invoiceMatch = sale.invoiceNumber?.toLowerCase().includes(query) ?? false
         const customerMatch = (sale.customerName ?? 'walk-in customer').toLowerCase().includes(query)
@@ -236,6 +243,8 @@ function DesktopReportsPage() {
     let discount = 0
     let tax = 0
     let itemsSold = 0
+    let refunded = 0
+    let refundedCount = 0
     const methodTotals: Record<string, number> = {}
     const methodCounts: Record<string, number> = {}
 
@@ -245,9 +254,15 @@ function DesktopReportsPage() {
       discount += Number(sale.discount) || 0
       tax += Number(sale.tax) || 0
       itemsSold += itemCount(sale)
-      const method = resolvePaymentMethod(sale.paymentMethod).value
-      methodTotals[method] = (methodTotals[method] ?? 0) + total
-      methodCounts[method] = (methodCounts[method] ?? 0) + 1
+      if (sale.refundedAmount > 0) {
+        refunded += sale.refundedAmount
+        refundedCount += 1
+      }
+      // Split payments count toward each tender they used.
+      for (const tender of saleTenders(sale)) {
+        methodTotals[tender.key] = (methodTotals[tender.key] ?? 0) + tender.amount
+        methodCounts[tender.key] = (methodCounts[tender.key] ?? 0) + 1
+      }
     }
 
     return {
@@ -262,6 +277,9 @@ function DesktopReportsPage() {
       methodCounts,
       voidedTotal: voidedSales.reduce((sum, sale) => sum + (Number(sale.total) || 0), 0),
       voidedCount: voidedSales.length,
+      refunded,
+      refundedCount,
+      netTotal: salesTotal - refunded,
     }
   }, [completedSales, voidedSales])
 
@@ -400,6 +418,8 @@ function DesktopReportsPage() {
             { label: 'Tax collected', value: metrics.tax, kind: 'money' },
             { label: 'Voided sales', value: metrics.voidedCount, kind: 'count' },
             { label: 'Voided amount', value: metrics.voidedTotal, kind: 'money' },
+            { label: 'Refunded amount', value: metrics.refunded, kind: 'money' },
+            { label: 'Net revenue', value: metrics.netTotal, kind: 'money' },
           ],
           paymentMethods,
           topProducts: topProducts.map(({ name, quantity, revenue }) => ({ name, quantity, revenue })),
@@ -435,7 +455,7 @@ function DesktopReportsPage() {
   const cashKey = String(PAYMENT_OPTIONS.find((o) => o.label === 'Cash')?.value ?? '0')
   const cashSales = metrics.methodTotals[cashKey] ?? 0
   const voidedCash = voidedSales.reduce(
-    (sum, sale) => (resolvePaymentMethod(sale.paymentMethod).value === cashKey ? sum + (Number(sale.total) || 0) : sum),
+    (sum, sale) => sum + saleTenders(sale).reduce((cash, tender) => (tender.key === cashKey ? cash + tender.amount : cash), 0),
     0,
   )
 
@@ -579,6 +599,13 @@ function DesktopReportsPage() {
 
           <p className="text-sm text-slate-500">
             Discounts {money(metrics.discount)} · Tax collected {money(metrics.tax)}
+            {metrics.refunded > 0 && (
+              <span className="text-amber-700">
+                {' '}
+                · Refunds {money(metrics.refunded)} on {metrics.refundedCount} {metrics.refundedCount === 1 ? 'sale' : 'sales'} (net{' '}
+                {money(metrics.netTotal)})
+              </span>
+            )}
             {metrics.voidedCount > 0 && (
               <span className="text-rose-600">
                 {' '}
@@ -752,7 +779,10 @@ function DesktopReportsPage() {
                             <td className="whitespace-nowrap px-3 py-3 text-slate-500">{formatDateTime(sale.createdAt)}</td>
                             <td className="max-w-48 truncate px-3 py-3">{sale.customerName || 'Walk-in customer'}</td>
                             <td className="hidden max-w-40 truncate px-3 py-3 text-slate-500 xl:table-cell">{sale.cashierName || '—'}</td>
-                            <td className="px-3 py-3">{resolvePaymentMethod(sale.paymentMethod).label}</td>
+                            <td className="px-3 py-3">
+                              {resolvePaymentMethod(sale.paymentMethod).label}
+                              {sale.orderType && <span className="block text-xs text-slate-400">{sale.orderType}</span>}
+                            </td>
                             <td className="px-3 py-3 text-right tabular-nums">{itemCount(sale)}</td>
                             <td className={`px-3 py-3 text-right font-medium tabular-nums ${voided ? 'line-through' : ''}`}>{money(Number(sale.total) || 0)}</td>
                             <td className="py-3 pl-3 pr-6 text-right print:hidden">
@@ -834,6 +864,7 @@ function DesktopReportsPage() {
               <SummaryRow label="Total" value={money(Number(selectedSale.total) || 0)} strong />
             </dl>
             <dl className="space-y-1.5 rounded-2xl bg-[#F6F8F7] px-4 py-3 text-sm">
+              {selectedSale.orderType && <SummaryRow label="Order type" value={selectedSale.orderType} />}
               <SummaryRow label="Paid with" value={resolvePaymentMethod(selectedSale.paymentMethod).label} />
               {selectedSale.amountReceived != null && <SummaryRow label="Received" value={money(Number(selectedSale.amountReceived))} />}
               {selectedSale.change != null && Number(selectedSale.change) > 0 && <SummaryRow label="Change" value={money(Number(selectedSale.change))} />}
@@ -961,14 +992,10 @@ function CashInput({
       </dt>
       <dd className="relative">
         <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">{symbol}</span>
-        <input
+        <AmountInput
           id={id}
-          type="number"
-          inputMode="decimal"
-          min={0}
-          step="0.01"
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={onChange}
           placeholder="0.00"
           className="h-10 w-36 rounded-xl border-0 bg-[#F3F5F4] pl-8 pr-3 text-right tabular-nums outline-none focus:bg-white focus:ring-2 focus:ring-[#1F5E3B]"
         />

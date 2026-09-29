@@ -6,6 +6,7 @@ import App from './App'
 import { initDatabase } from './database/sqlite'
 import { initializeDatabase } from './database/database'
 import { seedDatabase } from './database/seed'
+import { recordPendingRestoreAudit } from './services/backup'
 
 async function startApp() {
   const root = document.getElementById('root')
@@ -28,6 +29,7 @@ async function startApp() {
 
       await initializeDatabase()
       await seedDatabase()
+      await recordPendingRestoreAudit()
 
       console.log('=== SQLITE READY ===')
     } catch (error) {

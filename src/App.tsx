@@ -21,6 +21,10 @@ import { ShiftPage } from './pages/Shift/ShiftPage'
 import { ShiftHistoryPage } from './pages/Shift/ShiftHistoryPage'
 import { AccessDeniedPage } from './pages/AccessDenied'
 import { PrinterSettingsPage } from './pages/PrinterSettings'
+import { ReturnsPage } from './pages/Returns/ReturnsPage'
+import { StockCountPage } from './pages/Inventory/StockCountPage'
+import { ReceiveStockPage } from './pages/Inventory/ReceiveStockPage'
+import { AuditLogPage } from './pages/AuditLog/AuditLogPage'
 
 export default function App() {
   return (
@@ -43,6 +47,8 @@ export default function App() {
                       <Route path="/sales" element={<SalesPage />} />
                       <Route path="/payment" element={<PaymentPage />} />
                       <Route path="/shift" element={<ShiftPage />} />
+                      {/* Cashiers can open returns; refunds and voids then need a manager PIN. */}
+                      <Route path="/returns" element={<ReturnsPage />} />
                     </Route>
 
                     <Route element={<RequirePermission permission="shifts.manage" />}>
@@ -58,6 +64,18 @@ export default function App() {
 
                     <Route element={<RequirePermission permission="inventory.manage" />}>
                       <Route path="/inventory" element={<InventoryPage />} />
+                    </Route>
+
+                    <Route element={<RequirePermission permission="inventory.count" />}>
+                      <Route path="/stock-count" element={<StockCountPage />} />
+                    </Route>
+
+                    <Route element={<RequirePermission permission="inventory.receive" />}>
+                      <Route path="/receive-stock" element={<ReceiveStockPage />} />
+                    </Route>
+
+                    <Route element={<RequirePermission permission="audit.view" />}>
+                      <Route path="/audit-log" element={<AuditLogPage />} />
                     </Route>
 
                     <Route element={<RequirePermission permission="products.view" />}>

@@ -24,10 +24,16 @@ export function ReceiptPreview({ sale, settings }: { sale: Sale; settings: Store
           {receipt.preview.map((line, index) => (
             <div
               key={index}
-              className={`whitespace-pre ${line.bold ? 'font-bold' : ''} ${line.tall ? 'py-0.5 text-[13px] leading-tight' : ''}`}
+              className={`whitespace-pre ${line.bold ? 'font-bold' : ''} ${line.tall ? 'py-1' : ''}`}
               style={{ textAlign: line.align }}
             >
-              {line.text || ' '}
+              {line.tall ? (
+                // Printer "tall" mode doubles height only, so keep the same character width
+                // (columns stay aligned with every other line) and stretch vertically.
+                <span className="inline-block origin-center scale-y-[1.6]">{line.text || ' '}</span>
+              ) : (
+                line.text || ' '
+              )}
             </div>
           ))}
         </div>

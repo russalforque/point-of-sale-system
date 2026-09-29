@@ -6,6 +6,7 @@ import {
   faBoxOpen,
   faBoxesStacked,
   faChartBar,
+  faCheck,
   faChevronDown,
   faChevronLeft,
   faChevronRight,
@@ -50,6 +51,7 @@ export const Package = (props: IconProps) => <Icon icon={faBox} {...props} />
 export const PackagePlus = (props: IconProps) => <Icon icon={faBoxOpen} {...props} />
 export const Warehouse = (props: IconProps) => <Icon icon={faWarehouse} {...props} />
 export const BarChart3 = (props: IconProps) => <Icon icon={faChartBar} {...props} />
+export const Check = (props: IconProps) => <Icon icon={faCheck} {...props} />
 export const ChevronDown = (props: IconProps) => <Icon icon={faChevronDown} {...props} />
 export const ChevronLeft = (props: IconProps) => <Icon icon={faChevronLeft} {...props} />
 export const ChevronRight = (props: IconProps) => <Icon icon={faChevronRight} {...props} />

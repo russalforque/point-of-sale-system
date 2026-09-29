@@ -1,10 +1,11 @@
 import { createContext, useContext, useState, ReactNode } from 'react'
-import type { CartLine, PaymentMethod } from '../utils/pos'
+import { DEFAULT_ORDER_TYPE, type CartLine, type OrderType, type PaymentMethod } from '../utils/pos'
 
 interface CheckoutState {
   customerId: number | null
   cart: CartLine[]
   discount: number
+  orderType: OrderType
   method: PaymentMethod
   cash: string
   paymentReference: string
@@ -20,6 +21,7 @@ const defaultState: CheckoutState = {
   customerId: null,
   cart: [],
   discount: 0,
+  orderType: DEFAULT_ORDER_TYPE,
   method: 0,
   cash: '',
   paymentReference: '',

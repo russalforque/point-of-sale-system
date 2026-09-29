@@ -27,7 +27,7 @@ import {
   DetailList,
   DetailRow,
   PrimaryButton,
-  SelectField,
+  PickerField,
   SwitchRow,
   TextAreaField,
   TextButton,
@@ -797,9 +797,9 @@ function DesktopProductsPage() {
                     }
                   }}
                 />
-                <SelectField
+                <PickerField
                   label="Category"
-                  value={form.categoryId || ''}
+                  value={form.categoryId ? String(form.categoryId) : ''}
                   onChange={(value) => setForm({ ...form, categoryId: Number(value) })}
                   error={fieldError('categoryId')}
                   hint={
@@ -807,42 +807,31 @@ function DesktopProductsPage() {
                       ? 'No active categories yet. Add one in Categories first.'
                       : undefined
                   }
-                >
-                  <option value="">Choose a category</option>
-                  {/* Only active categories can be picked; keep the current one visible when editing. */}
-                  {(categories.data ?? [])
+                  placeholder="Choose a category"
+                  emptyText="No categories yet. Add one in Categories."
+                  // Only active categories can be picked; keep the current one visible when editing.
+                  options={(categories.data ?? [])
                     .filter((c) => c.isActive || c.id === form.categoryId)
-                    .map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                        {c.isActive ? '' : ' (inactive)'}
-                      </option>
-                    ))}
-                </SelectField>
-                <SelectField
+                    .map((c) => ({ value: String(c.id), label: c.name, hint: c.isActive ? undefined : 'Inactive' }))}
+                />
+                <PickerField
                   label="Supplier"
                   optional
-                  value={form.supplierId ?? ''}
+                  value={form.supplierId ? String(form.supplierId) : ''}
                   onChange={(value) => setForm({ ...form, supplierId: value ? Number(value) : null })}
-                >
-                  <option value="">No supplier</option>
-                  {(suppliers.data ?? [])
+                  placeholder="No supplier"
+                  noneLabel="No supplier"
+                  emptyText="No suppliers yet. Add one in Suppliers."
+                  options={(suppliers.data ?? [])
                     .filter((s) => s.isActive || s.id === form.supplierId)
-                    .map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.companyName}
-                      </option>
-                    ))}
-                </SelectField>
+                    .map((s) => ({ value: String(s.id), label: s.companyName, hint: s.isActive ? undefined : 'Inactive' }))}
+                />
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <TextField
                   label="Selling price"
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  step="0.01"
+                  amount
                   prefix={settings.currencySymbol}
                   value={form.sellingPrice || ''}
                   onChange={setNumber('sellingPrice')}
@@ -852,10 +841,7 @@ function DesktopProductsPage() {
                 <TextField
                   label="Cost"
                   optional
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  step="0.01"
+                  amount
                   prefix={settings.currencySymbol}
                   value={form.costPrice || ''}
                   onChange={setNumber('costPrice')}

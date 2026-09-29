@@ -1,5 +1,7 @@
 import type { StoreSetting } from '../types'
 import { querySQL, executeSQL } from '../database/sqlite'
+import { runTransaction } from '../database/tx'
+import { auditStatement } from '../services/audit'
 
 export type SettingsPayload = Omit<StoreSetting, 'id'>
 
@@ -48,30 +50,55 @@ export const settingsApi = {
   },
 
   update: async (payload: SettingsPayload): Promise<StoreSetting> => {
-    await executeSQL(
-      `UPDATE store_settings SET
-        store_name = ?,
-        phone = ?,
-        email = ?,
-        address = ?,
-        currency = ?,
-        currency_symbol = ?,
-        tax_rate = ?,
-        receipt_footer = ?,
-        show_logo_on_receipt = ?
-       WHERE id = 1`,
-      [
-        payload.storeName,
-        payload.phone ?? null,
-        payload.email ?? null,
-        payload.address ?? null,
-        payload.currency,
-        payload.currencySymbol,
-        payload.taxRate,
-        payload.receiptFooter,
-        payload.showLogoOnReceipt ? 1 : 0,
-      ],
+    const before = await settingsApi.get()
+    const labels: Record<keyof SettingsPayload, string> = {
+      storeName: 'store name',
+      phone: 'phone',
+      email: 'email',
+      address: 'address',
+      currency: 'currency',
+      currencySymbol: 'currency symbol',
+      taxRate: 'tax rate',
+      receiptFooter: 'receipt footer',
+      showLogoOnReceipt: 'receipt logo',
+    }
+    const changed = (Object.keys(labels) as (keyof SettingsPayload)[]).filter(
+      (key) => (before[key] ?? null) !== (payload[key] ?? null),
     )
+    const describe = (key: keyof SettingsPayload) =>
+      key === 'taxRate'
+        ? `tax rate ${Math.round(before.taxRate * 10000) / 100}% → ${Math.round(payload.taxRate * 10000) / 100}%`
+        : labels[key]
+
+    await runTransaction([
+      {
+        statement: `UPDATE store_settings SET
+          store_name = ?,
+          phone = ?,
+          email = ?,
+          address = ?,
+          currency = ?,
+          currency_symbol = ?,
+          tax_rate = ?,
+          receipt_footer = ?,
+          show_logo_on_receipt = ?
+         WHERE id = 1`,
+        values: [
+          payload.storeName,
+          payload.phone ?? null,
+          payload.email ?? null,
+          payload.address ?? null,
+          payload.currency,
+          payload.currencySymbol,
+          payload.taxRate,
+          payload.receiptFooter,
+          payload.showLogoOnReceipt ? 1 : 0,
+        ],
+      },
+      ...(changed.length
+        ? [auditStatement('settings', `Store settings updated: ${changed.map(describe).join(', ')}`, { type: 'settings', id: 1 })]
+        : []),
+    ])
 
     return settingsApi.get()
   },

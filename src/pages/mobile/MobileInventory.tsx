@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 
 import { inventoryApi } from '../../api/inventoryApi'
 
@@ -15,6 +16,7 @@ import {
 import { Pagination } from '../../components/ui/Pagination'
 import { EmptyState, ErrorState, Spinner } from '../../components/ui/States'
 
+import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
 import { useDebounced } from '../../hooks/useDebounced'
@@ -63,6 +65,7 @@ function projectStock(current: number, type: AdjustType, quantity: number) {
 
 export function MobileInventory() {
   const { notify } = useToast()
+  const { can } = useAuth()
 
   const [search, setSearch] = useState('')
   const [stock, setStock] = useState<StockFilter>('')
@@ -240,6 +243,21 @@ export function MobileInventory() {
             History
           </button>
         </div>
+
+        {(can('inventory.count') || can('inventory.receive')) && (
+          <div className="mt-3 flex gap-2">
+            {can('inventory.count') && (
+              <Link to="/stock-count" className="inline-flex h-10 items-center rounded-full bg-[#E6F1EA] px-4 text-sm font-medium text-[#1F5E3B] active:scale-95">
+                Stock count
+              </Link>
+            )}
+            {can('inventory.receive') && (
+              <Link to="/receive-stock" className="inline-flex h-10 items-center rounded-full bg-[#E6F1EA] px-4 text-sm font-medium text-[#1F5E3B] active:scale-95">
+                Receive stock
+              </Link>
+            )}
+          </div>
+        )}
 
         {/* Search */}
         <div className="relative mt-4">

@@ -49,6 +49,7 @@ export type Supplier = {
   phone: string | null
   email: string | null
   address: string | null
+  notes: string | null
   isActive: boolean
 }
 
@@ -101,6 +102,8 @@ export type SaleItem = {
   quantity: number
   unitPrice: number
   lineTotal: number
+  /** Units already returned from this line. */
+  refundedQuantity: number
 }
 
 export type Sale = {
@@ -116,10 +119,27 @@ export type Sale = {
   total: number
   status: string
   createdAt: string
+  /** "Dine-In" / "Take-Out"; null for sales recorded before order types existed. */
+  orderType: string | null
   paymentMethod: string
   amountReceived: number | null
   change: number | null
   items: SaleItem[]
+  /** Tender lines (applied amounts). More than one = split payment. */
+  payments: SalePayment[]
+  refundedAmount: number
+  refundStatus: 'None' | 'Partial' | 'Full'
+  voidedAt: string | null
+  voidedBy: string | null
+  voidReason: string | null
+  voidApprovedBy: string | null
+}
+
+export type SalePayment = {
+  method: number
+  label: string
+  amount: number
+  reference: string | null
 }
 
 export type DashboardData = {
@@ -201,6 +221,127 @@ export type Shift = {
   expectedCash: number | null
   actualCash: number | null
   difference: number | null
+  cashRefunds: number | null
+  cashIn: number | null
+  cashOut: number | null
+  closedBy: string | null
+}
+
+export type ShiftSummary = {
+  startingCash: number
+  cashSales: number
+  nonCashSales: number
+  cashRefunds: number
+  cashIn: number
+  cashOut: number
+  expectedCash: number
+}
+
+export type CashMovement = {
+  id: number
+  shiftId: number
+  type: 'Cash in' | 'Cash out'
+  amount: number
+  reason: string
+  createdBy: string
+  createdAt: string
+}
+
+export type HeldOrderLine = { productId: number; name: string; quantity: number; unitPrice: number }
+
+export type HeldOrder = {
+  id: number
+  label: string | null
+  customerId: number | null
+  customerName: string | null
+  orderType: number
+  discount: number
+  lines: HeldOrderLine[]
+  itemCount: number
+  subtotal: number
+  total: number
+  cashierName: string
+  createdAt: string
+}
+
+export type RefundItem = {
+  productId: number
+  productName: string
+  quantity: number
+  unitPrice: number
+  amount: number
+}
+
+export type Refund = {
+  id: number
+  refundNumber: string
+  saleId: number
+  invoiceNumber: string
+  amount: number
+  method: number
+  methodLabel: string
+  reason: string
+  restocked: boolean
+  processedBy: string
+  approvedBy: string | null
+  createdAt: string
+  items: RefundItem[]
+}
+
+export type StockCountItem = {
+  productId: number
+  productName: string
+  sku: string
+  systemQuantity: number
+  countedQuantity: number
+  difference: number
+}
+
+export type StockCount = {
+  id: number
+  countNumber: string
+  notes: string | null
+  itemsCounted: number
+  itemsAdjusted: number
+  netChange: number
+  createdBy: string
+  createdAt: string
+  items: StockCountItem[]
+}
+
+export type StockReceiptItem = {
+  productId: number
+  productName: string
+  sku: string
+  quantity: number
+  unitCost: number
+  lineTotal: number
+}
+
+export type StockReceipt = {
+  id: number
+  receiptNumber: string
+  supplierId: number | null
+  supplierName: string | null
+  reference: string | null
+  receivedDate: string
+  notes: string | null
+  totalCost: number
+  createdBy: string
+  createdAt: string
+  items: StockReceiptItem[]
+}
+
+export type AuditLog = {
+  id: number
+  userId: string | null
+  userName: string
+  action: string
+  actionLabel: string
+  description: string
+  entityType: string | null
+  entityId: string | null
+  createdAt: string
 }
 
 export type PaymentMethod = 0 | 1 | 2 | 3

@@ -6,14 +6,18 @@ import {
   faBoxesStacked,
   faCartShopping,
   faChartLine,
+  faClipboardCheck,
   faClipboardList,
   faClock,
   faEllipsis,
   faGear,
   faHouse,
   faPrint,
+  faRotateLeft,
+  faScroll,
   faTags,
   faTruck,
+  faTruckRampBox,
   faUserShield,
   faUsers,
   faXmark,
@@ -49,6 +53,14 @@ type SecondaryItem = MoreNavItem & { permission: Permission }
  */
 const SECONDARY_GROUPS: { title: string; items: SecondaryItem[] }[] = [
   {
+    title: 'Operations',
+    items: [
+      { to: '/returns', label: 'Returns', description: 'Refunds, returns and voids by receipt number', icon: faRotateLeft, permission: 'sales.process' },
+      { to: '/stock-count', label: 'Stock Count', description: 'Count shelves and correct stock', icon: faClipboardCheck, permission: 'inventory.count' },
+      { to: '/receive-stock', label: 'Receive Stock', description: 'Record supplier deliveries', icon: faTruckRampBox, permission: 'inventory.receive' },
+    ],
+  },
+  {
     title: 'Management',
     items: [
       { to: '/products', label: 'Products', description: 'Catalog, prices and photos', icon: faBox, permission: 'products.view' },
@@ -61,6 +73,7 @@ const SECONDARY_GROUPS: { title: string; items: SecondaryItem[] }[] = [
     title: 'System',
     items: [
       { to: '/users', label: 'Users', description: 'Staff accounts and roles', icon: faUserShield, permission: 'users.manage' },
+      { to: '/audit-log', label: 'Audit Log', description: 'Who did what, and when', icon: faScroll, permission: 'audit.view' },
       { to: '/shift-history', label: 'Shift History', description: 'Every employee shift and its cash summary', icon: faClipboardList, permission: 'shifts.manage' },
       { to: '/printer-settings', label: 'Printer', description: 'Receipt printer and cash drawer', icon: faPrint, permission: 'printer.configure' },
       { to: '/settings', label: 'Settings', description: 'Store, tax and receipts', icon: faGear, permission: 'settings.view' },

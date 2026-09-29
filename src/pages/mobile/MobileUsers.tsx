@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { ApprovalPinField, pinError } from '../../components/auth/ApprovalPinField'
 
 import { userApi, type UserAccount, type UserPayload } from '../../api/userApi'
 import {
@@ -30,7 +31,7 @@ import { getErrorMessage } from '../../utils/errors'
 import { ROLE_LABELS, type Role } from '../../utils/permissions'
 
 type RoleFilter = Role | ''
-type FormErrors = Partial<Record<'fullName' | 'email' | 'password', string>>
+type FormErrors = Partial<Record<'fullName' | 'email' | 'password' | 'pin', string>>
 
 const MIN_PASSWORD = 8
 
@@ -40,7 +41,7 @@ const ROLES: { value: Role; description: string }[] = [
   { value: 'admin', description: 'Full access, including users and settings' },
 ]
 
-const emptyForm = (): UserPayload => ({ email: '', fullName: '', role: 'cashier', isActive: true, password: '' })
+const emptyForm = (): UserPayload => ({ email: '', fullName: '', role: 'cashier', isActive: true, password: '', pin: '', clearPin: false })
 
 export function MobileUsers() {
   const { notify } = useToast()
@@ -91,6 +92,8 @@ export function MobileUsers() {
   if (!editing && password.length < MIN_PASSWORD) errors.password = `Use at least ${MIN_PASSWORD} characters.`
   else if (editing && password.length > 0 && password.length < MIN_PASSWORD)
     errors.password = `Use at least ${MIN_PASSWORD} characters, or leave blank.`
+  const pinProblem = pinError(form.pin)
+  if (pinProblem) errors.pin = pinProblem
 
   const isValid = Object.keys(errors).length === 0
   const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm)
@@ -100,7 +103,7 @@ export function MobileUsers() {
 
   function openForm(account: UserAccount | null) {
     const next = account
-      ? { email: account.email, fullName: account.fullName, role: account.role, isActive: account.isActive, password: '' }
+      ? { email: account.email, fullName: account.fullName, role: account.role, isActive: account.isActive, password: '', pin: '', clearPin: false }
       : emptyForm()
     setEditing(account)
     setForm(next)
@@ -134,6 +137,7 @@ export function MobileUsers() {
         fullName: form.fullName.trim(),
         email: form.email.trim(),
         password: password || undefined,
+        pin: form.pin || undefined,
       }
       if (editing) await userApi.update(editing.id, payload)
       else await userApi.create(payload)
@@ -342,6 +346,15 @@ export function MobileUsers() {
                     {showPassword ? 'Hide' : 'Show'}
                   </button>
                 }
+              />
+
+              <ApprovalPinField
+                role={form.role}
+                pin={form.pin ?? ''}
+                hasPin={Boolean(editing?.hasPin)}
+                clearPin={Boolean(form.clearPin)}
+                onPin={(pin) => setForm({ ...form, pin })}
+                onClearPin={(clearPin) => setForm({ ...form, clearPin, pin: '' })}
               />
 
               {editing && editing.isActive && !editingSelf && (

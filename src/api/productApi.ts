@@ -1,6 +1,12 @@
 import type { PagedResult, Product } from '../types'
 import { querySQL, executeSQL } from '../database/sqlite'
+import { runTransaction, type SqlStatement } from '../database/tx'
+import { settingsApi } from './settingsApi'
+import { auditStatement } from '../services/audit'
+import { stockSetStatements } from '../services/inventoryMovements'
 import { ApiError } from '../utils/errors'
+import { formatMoney } from '../utils/format'
+import { getStoredUser } from '../utils/session'
 
 export type ProductPayload = {
   sku: string
@@ -194,39 +200,92 @@ export const productApi = {
     )
     const id = result.changes?.lastId
     if (!id) throw new ApiError('Failed to create product.', 500)
+    await runTransaction([
+      auditStatement(
+        'product',
+        `Added ${payload.name} (${payload.sku}) at ${formatMoney(payload.sellingPrice, (await settingsApi.get()).currencySymbol)}, opening stock ${payload.stockQuantity}`,
+        { type: 'product', id },
+      ),
+    ])
     return productApi.get(id)
   },
 
   update: async (id: number, payload: ProductPayload): Promise<Product> => {
-    await executeSQL(
-      `UPDATE products SET
-        sku = ?, name = ?, description = ?, category_id = ?, supplier_id = ?,
-        cost_price = ?, selling_price = ?, stock_quantity = ?, reorder_level = ?,
-        is_active = ?, updated_at = ?, image_url = ?
-       WHERE id = ?`,
-      [
-        payload.sku,
-        payload.name,
-        payload.description || null,
-        payload.categoryId,
-        payload.supplierId || null,
-        payload.costPrice,
-        payload.sellingPrice,
-        payload.stockQuantity,
-        payload.reorderLevel,
-        payload.isActive ? 1 : 0,
-        new Date().toISOString(),
-        payload.imageUrl || null,
-        id,
-      ],
-    )
+    const before = await productApi.get(id)
+    const now = new Date().toISOString()
+    const { currencySymbol } = await settingsApi.get()
+    const money = (value: number) => formatMoney(value, currencySymbol)
+
+    const statements: SqlStatement[] = [
+      {
+        statement: `UPDATE products SET
+          sku = ?, name = ?, description = ?, category_id = ?, supplier_id = ?,
+          cost_price = ?, selling_price = ?, reorder_level = ?,
+          is_active = ?, updated_at = ?, image_url = ?
+         WHERE id = ?`,
+        values: [
+          payload.sku,
+          payload.name,
+          payload.description || null,
+          payload.categoryId,
+          payload.supplierId || null,
+          payload.costPrice,
+          payload.sellingPrice,
+          payload.reorderLevel,
+          payload.isActive ? 1 : 0,
+          now,
+          payload.imageUrl || null,
+          id,
+        ],
+      },
+    ]
+
+    // Editing the stock figure on the product form is a stock adjustment like any other:
+    // it gets a movement record instead of silently overwriting the quantity.
+    if (payload.stockQuantity !== before.stockQuantity) {
+      statements.push(
+        ...stockSetStatements({
+          productId: id,
+          quantity: payload.stockQuantity,
+          reason: 'Product edit',
+          createdBy: getStoredUser()?.fullName ?? null,
+          at: now,
+        }),
+        auditStatement(
+          'stock_adjustment',
+          `${payload.name}: ${before.stockQuantity} → ${payload.stockQuantity} (product edit)`,
+          { type: 'product', id },
+          undefined,
+          now,
+        ),
+      )
+    }
+
+    const priceChanges: string[] = []
+    if (payload.sellingPrice !== before.sellingPrice) {
+      priceChanges.push(`price ${money(before.sellingPrice)} → ${money(payload.sellingPrice)}`)
+    }
+    if (payload.costPrice !== before.costPrice) {
+      priceChanges.push(`cost ${money(before.costPrice)} → ${money(payload.costPrice)}`)
+    }
+    if (priceChanges.length > 0) {
+      statements.push(auditStatement('price_change', `${payload.name}: ${priceChanges.join(', ')}`, { type: 'product', id }, undefined, now))
+    }
+    if (before.isActive !== payload.isActive) {
+      statements.push(
+        auditStatement('product', `${payload.name} ${payload.isActive ? 'reactivated' : 'deactivated'}`, { type: 'product', id }, undefined, now),
+      )
+    }
+
+    await runTransaction(statements)
     return productApi.get(id)
   },
 
   deactivate: async (id: number): Promise<void> => {
-    await executeSQL(`UPDATE products SET is_active = 0, updated_at = ? WHERE id = ?`, [
-      new Date().toISOString(),
-      id,
+    const product = await productApi.get(id)
+    await runTransaction([
+      { statement: `UPDATE products SET is_active = 0, updated_at = ? WHERE id = ?`, values: [new Date().toISOString(), id] },
+      auditStatement('product', `${product.name} deactivated`, { type: 'product', id }),
     ])
   },
 }

@@ -1,5 +1,9 @@
 import type { InventoryHistory, InventoryItem, PagedResult } from '../types'
-import { initDatabase, querySQL } from '../database/sqlite'
+import { querySQL } from '../database/sqlite'
+import { runTransaction } from '../database/tx'
+import { auditStatement } from '../services/audit'
+import { MOVEMENT_TYPE, stockChangeStatements, stockSetStatements } from '../services/inventoryMovements'
+import { ApiError } from '../utils/errors'
 import { getStoredUser } from '../utils/session'
 
 type InventoryRow = {
@@ -160,43 +164,44 @@ export const inventoryApi = {
     quantity: number
     reason: string
   }): Promise<void> => {
-    const db = await initDatabase()
+    if (!Number.isInteger(payload.quantity) || payload.quantity < 0) {
+      throw new ApiError('Enter a whole-number quantity.', 400)
+    }
 
-    const result = await db.query(`SELECT stock_quantity FROM products WHERE id = ? LIMIT 1`, [
+    const result = await querySQL(`SELECT name, stock_quantity FROM products WHERE id = ? LIMIT 1`, [
       payload.productId,
     ])
-    const current = (result.values?.[0]?.stock_quantity as number | undefined) ?? 0
-
-    let newStock = current
-    let quantityChange = 0
-
-    if (payload.type === 1) {
-      newStock = current + payload.quantity
-      quantityChange = payload.quantity
-    } else if (payload.type === 2) {
-      newStock = Math.max(0, current - payload.quantity)
-      quantityChange = newStock - current
-    } else {
-      newStock = payload.quantity
-      quantityChange = newStock - current
-    }
+    const product = result.values?.[0] as { name: string; stock_quantity: number } | undefined
+    if (!product) throw new ApiError('Product not found.', 404)
+    const current = product.stock_quantity
 
     const now = new Date().toISOString()
     const createdBy = getStoredUser()?.fullName ?? null
+    const reason = payload.reason || ''
 
-    await db.executeSet(
-      [
-        {
-          statement: `UPDATE products SET stock_quantity = ?, updated_at = ? WHERE id = ?`,
-          values: [newStock, now, payload.productId],
-        },
-        {
-          statement: `INSERT INTO inventory_transactions (product_id, type, quantity_change, quantity_after, reason, created_by, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          values: [payload.productId, payload.type, quantityChange, newStock, payload.reason || '', createdBy, now],
-        },
-      ],
-      true,
-    )
+    let movement
+    let newStock: number
+    if (payload.type === MOVEMENT_TYPE.STOCK_IN) {
+      newStock = current + payload.quantity
+      movement = stockChangeStatements({ productId: payload.productId, delta: payload.quantity, type: MOVEMENT_TYPE.STOCK_IN, reason, createdBy, at: now })
+    } else if (payload.type === MOVEMENT_TYPE.STOCK_OUT) {
+      // Stock never goes below zero; remove at most what is on hand.
+      newStock = Math.max(0, current - payload.quantity)
+      movement = stockChangeStatements({ productId: payload.productId, delta: newStock - current, type: MOVEMENT_TYPE.STOCK_OUT, reason, createdBy, at: now })
+    } else {
+      newStock = payload.quantity
+      movement = stockSetStatements({ productId: payload.productId, quantity: newStock, reason, createdBy, at: now })
+    }
+
+    await runTransaction([
+      ...movement,
+      auditStatement(
+        'stock_adjustment',
+        `${product.name}: ${current} → ${newStock} (${typeLabel(payload.type)}${reason ? `, ${reason}` : ''})`,
+        { type: 'product', id: payload.productId },
+        undefined,
+        now,
+      ),
+    ])
   },
 }

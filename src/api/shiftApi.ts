@@ -1,5 +1,11 @@
-import type { PagedResult, Shift } from '../types'
-import { executeSQL, initDatabase, querySQL } from '../database/sqlite'
+import type { CashMovement, PagedResult, Shift, ShiftSummary } from '../types'
+import { initDatabase, querySQL } from '../database/sqlite'
+import { runTransaction } from '../database/tx'
+import { settingsApi } from './settingsApi'
+import { auditStatement } from '../services/audit'
+import { CASH_METHOD } from '../services/payments'
+import { roundMoney } from '../utils/amount'
+import { formatMoney } from '../utils/format'
 import { getStoredUser } from '../utils/session'
 import { ApiError } from '../utils/errors'
 
@@ -9,6 +15,12 @@ export type StartShiftPayload = {
 
 export type EndShiftPayload = {
   actualCash: number
+}
+
+export type CashMovementPayload = {
+  type: 'in' | 'out'
+  amount: number
+  reason: string
 }
 
 type ShiftRow = {
@@ -24,7 +36,14 @@ type ShiftRow = {
   expected_cash: number | null
   actual_cash: number | null
   difference: number | null
+  cash_refunds: number | null
+  cash_in: number | null
+  cash_out: number | null
+  closed_by: string | null
 }
+
+const CASH_IN = 1
+const CASH_OUT = 2
 
 function toShift(row: ShiftRow): Shift {
   const totalSales =
@@ -43,40 +62,73 @@ function toShift(row: ShiftRow): Shift {
     expectedCash: row.expected_cash,
     actualCash: row.actual_cash,
     difference: row.difference,
+    cashRefunds: row.cash_refunds ?? null,
+    cashIn: row.cash_in ?? null,
+    cashOut: row.cash_out ?? null,
+    closedBy: row.closed_by ?? null,
   }
 }
 
 const SHIFT_SELECT = `
   SELECT id, employee_id, employee_name, starting_cash, status, started_at, ended_at,
-         cash_sales, non_cash_sales, expected_cash, actual_cash, difference
+         cash_sales, non_cash_sales, expected_cash, actual_cash, difference,
+         cash_refunds, cash_in, cash_out, closed_by
   FROM shifts
 `
 
-/** Sums a shift's linked sales by tender (method 0 = cash, everything else = non-cash). */
-async function summarizeShiftSales(shiftId: number): Promise<{ cashSales: number; nonCashSales: number }> {
-  const result = await querySQL(
-    `SELECT p.method AS method, SUM(p.amount) AS total
-     FROM payments p
-     JOIN sales s ON s.id = p.sale_id
-     WHERE s.shift_id = ? AND s.status != 2
-     GROUP BY p.method`,
-    [shiftId],
-  )
+/**
+ * Drawer position for a shift. Voided sales drop out automatically; cash refunds, cash in
+ * and cash out paid from this shift's drawer are applied to the expected cash.
+ */
+async function summarizeShift(shift: { id: number; startingCash: number }): Promise<ShiftSummary> {
+  const [salesResult, refundsResult, movementsResult] = await Promise.all([
+    querySQL(
+      `SELECT sp.method AS method, SUM(sp.amount) AS total
+       FROM sale_payments sp
+       JOIN sales s ON s.id = sp.sale_id
+       WHERE s.shift_id = ? AND s.status != 2
+       GROUP BY sp.method`,
+      [shift.id],
+    ),
+    querySQL(`SELECT COALESCE(SUM(amount), 0) AS total FROM refunds WHERE shift_id = ? AND method = ?`, [
+      shift.id,
+      CASH_METHOD,
+    ]),
+    querySQL(`SELECT type, COALESCE(SUM(amount), 0) AS total FROM cash_movements WHERE shift_id = ? GROUP BY type`, [
+      shift.id,
+    ]),
+  ])
 
-  const rows = (result.values ?? []) as { method: number; total: number }[]
   let cashSales = 0
   let nonCashSales = 0
-  for (const row of rows) {
-    if (row.method === 0) cashSales += row.total
+  for (const row of (salesResult.values ?? []) as { method: number; total: number }[]) {
+    if (row.method === CASH_METHOD) cashSales += row.total
     else nonCashSales += row.total
   }
-  return { cashSales, nonCashSales }
+  const cashRefunds = (refundsResult.values?.[0]?.total as number | undefined) ?? 0
+  const movements = (movementsResult.values ?? []) as { type: number; total: number }[]
+  const cashIn = movements.find((row) => row.type === CASH_IN)?.total ?? 0
+  const cashOut = movements.find((row) => row.type === CASH_OUT)?.total ?? 0
+
+  return {
+    startingCash: shift.startingCash,
+    cashSales: roundMoney(cashSales),
+    nonCashSales: roundMoney(nonCashSales),
+    cashRefunds: roundMoney(cashRefunds),
+    cashIn: roundMoney(cashIn),
+    cashOut: roundMoney(cashOut),
+    expectedCash: roundMoney(shift.startingCash + cashSales - cashRefunds + cashIn - cashOut),
+  }
 }
 
 function requireEmployee(): { id: number; fullName: string } {
   const user = getStoredUser()
   if (!user) throw new ApiError('Not signed in.', 401)
   return { id: Number(user.id), fullName: user.fullName }
+}
+
+async function currencySymbol(): Promise<string> {
+  return (await settingsApi.get()).currencySymbol
 }
 
 export const shiftApi = {
@@ -108,13 +160,14 @@ export const shiftApi = {
 
     const db = await initDatabase()
     const now = new Date().toISOString()
+    const startingCash = roundMoney(payload.startingCash)
 
     let result
     try {
       result = await db.run(
         `INSERT INTO shifts (employee_id, employee_name, starting_cash, status, started_at)
          VALUES (?, ?, ?, 0, ?)`,
-        [id, fullName, payload.startingCash, now],
+        [id, fullName, startingCash, now],
       )
     } catch (err) {
       // The partial unique index (one open shift per employee) is the source of truth;
@@ -129,16 +182,84 @@ export const shiftApi = {
 
     const shiftId = result.changes?.lastId
     if (!shiftId) throw new ApiError('Failed to start shift.', 500)
+
+    await runTransaction([
+      auditStatement(
+        'shift_open',
+        `Opened shift with ${formatMoney(startingCash, await currencySymbol())} starting cash`,
+        { type: 'shift', id: shiftId },
+        undefined,
+        now,
+      ),
+    ])
     return shiftApi.get(shiftId)
   },
 
-  /** Closing summary for the signed-in employee's active shift, computed but not yet saved. */
-  previewClose: async (): Promise<{ shift: Shift; cashSales: number; nonCashSales: number; expectedCash: number }> => {
+  /** Live drawer summary for the signed-in employee's active shift. */
+  summary: async (): Promise<{ shift: Shift; summary: ShiftSummary }> => {
     const active = await shiftApi.getActive()
     if (!active) throw new ApiError('No active shift.', 400)
-    const { cashSales, nonCashSales } = await summarizeShiftSales(active.id)
-    const expectedCash = active.startingCash + cashSales
-    return { shift: active, cashSales, nonCashSales, expectedCash }
+    return { shift: active, summary: await summarizeShift(active) }
+  },
+
+  /** Closing summary for the signed-in employee's active shift, computed but not yet saved. */
+  previewClose: async (): Promise<{ shift: Shift } & ShiftSummary> => {
+    const { shift, summary } = await shiftApi.summary()
+    return { shift, ...summary }
+  },
+
+  movements: async (shiftId: number): Promise<CashMovement[]> => {
+    const result = await querySQL(
+      `SELECT id, shift_id, type, amount, reason, created_by, created_at FROM cash_movements WHERE shift_id = ? ORDER BY created_at DESC`,
+      [shiftId],
+    )
+    return ((result.values ?? []) as {
+      id: number
+      shift_id: number
+      type: number
+      amount: number
+      reason: string
+      created_by: string
+      created_at: string
+    }[]).map((row) => ({
+      id: row.id,
+      shiftId: row.shift_id,
+      type: row.type === CASH_IN ? 'Cash in' : 'Cash out',
+      amount: row.amount,
+      reason: row.reason,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+    }))
+  },
+
+  /** Cash added to (float top-up) or taken from (payouts, bank drops) the signed-in employee's drawer. */
+  addCashMovement: async (payload: CashMovementPayload): Promise<void> => {
+    const amount = roundMoney(payload.amount)
+    const reason = payload.reason.trim()
+    if (!Number.isFinite(amount) || amount <= 0) throw new ApiError('Enter an amount above zero.', 400)
+    if (reason.length < 3) throw new ApiError('Enter a reason.', 400)
+
+    const { fullName } = requireEmployee()
+    const { shift, summary } = await shiftApi.summary()
+    const symbol = await currencySymbol()
+    if (payload.type === 'out' && amount > summary.expectedCash) {
+      throw new ApiError(`The drawer should only have ${formatMoney(summary.expectedCash, symbol)}.`, 400)
+    }
+
+    const now = new Date().toISOString()
+    await runTransaction([
+      {
+        statement: `INSERT INTO cash_movements (shift_id, type, amount, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        values: [shift.id, payload.type === 'in' ? CASH_IN : CASH_OUT, amount, reason, fullName, now],
+      },
+      auditStatement(
+        'cash_movement',
+        `${payload.type === 'in' ? 'Cash in' : 'Cash out'} ${formatMoney(amount, symbol)} · ${reason}`,
+        { type: 'shift', id: shift.id },
+        undefined,
+        now,
+      ),
+    ])
   },
 
   end: async (payload: EndShiftPayload): Promise<Shift> => {
@@ -146,22 +267,48 @@ export const shiftApi = {
       throw new ApiError('Enter a valid actual cash amount.', 400)
     }
 
-    const { id } = requireEmployee()
+    const { id, fullName } = requireEmployee()
     const active = await shiftApi.getActive()
     if (!active) throw new ApiError('No active shift to end.', 400)
     if (active.employeeId !== id) throw new ApiError('This shift does not belong to you.', 403)
 
-    const { cashSales, nonCashSales } = await summarizeShiftSales(active.id)
-    const expectedCash = active.startingCash + cashSales
-    const difference = payload.actualCash - expectedCash
+    const summary = await summarizeShift(active)
+    const actualCash = roundMoney(payload.actualCash)
+    const difference = roundMoney(actualCash - summary.expectedCash)
     const now = new Date().toISOString()
+    const symbol = await currencySymbol()
+    const money = (value: number) => formatMoney(value, symbol)
+    const outcome =
+      Math.abs(difference) < 0.005 ? 'balanced' : difference > 0 ? `over by ${money(difference)}` : `short by ${money(-difference)}`
 
-    await executeSQL(
-      `UPDATE shifts
-       SET status = 1, ended_at = ?, cash_sales = ?, non_cash_sales = ?, expected_cash = ?, actual_cash = ?, difference = ?
-       WHERE id = ?`,
-      [now, cashSales, nonCashSales, expectedCash, payload.actualCash, difference, active.id],
-    )
+    await runTransaction([
+      {
+        statement: `UPDATE shifts
+         SET status = 1, ended_at = ?, cash_sales = ?, non_cash_sales = ?, expected_cash = ?, actual_cash = ?, difference = ?,
+             cash_refunds = ?, cash_in = ?, cash_out = ?, closed_by = ?
+         WHERE id = ? AND status = 0`,
+        values: [
+          now,
+          summary.cashSales,
+          summary.nonCashSales,
+          summary.expectedCash,
+          actualCash,
+          difference,
+          summary.cashRefunds,
+          summary.cashIn,
+          summary.cashOut,
+          fullName,
+          active.id,
+        ],
+      },
+      auditStatement(
+        'shift_close',
+        `Closed shift: expected ${money(summary.expectedCash)}, counted ${money(actualCash)} (${outcome})`,
+        { type: 'shift', id: active.id },
+        undefined,
+        now,
+      ),
+    ])
 
     return shiftApi.get(active.id)
   },

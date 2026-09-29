@@ -1,6 +1,6 @@
 import type { DashboardData } from '../types'
 import { querySQL } from '../database/sqlite'
-import { PAYMENT_OPTIONS } from '../utils/pos'
+import { methodLabel, tendersLabel } from '../services/payments'
 
 // created_at is stored as a UTC ISO string, but "today" must follow the device's own
 // calendar day - date(created_at, 'localtime') converts the stored value to local time
@@ -58,7 +58,8 @@ export const dashboardApi = {
 
     const recentResult = await querySQL(
       `SELECT s.id AS id, s.invoice_number AS invoiceNumber, c.full_name AS customerName,
-              s.total AS total, s.created_at AS createdAt, pay.method AS method
+              s.total AS total, s.created_at AS createdAt, pay.method AS method,
+              (SELECT GROUP_CONCAT(sp.method) FROM sale_payments sp WHERE sp.sale_id = s.id) AS methods
        FROM sales s
        LEFT JOIN customers c ON c.id = s.customer_id
        LEFT JOIN payments pay ON pay.sale_id = s.id
@@ -71,8 +72,10 @@ export const dashboardApi = {
       invoiceNumber: row.invoiceNumber,
       customerName: row.customerName ?? null,
       total: row.total,
-      paymentMethod:
-        PAYMENT_OPTIONS.find((opt) => opt.value === row.method)?.label ?? 'Other',
+      // Split payments read "Cash + GCash".
+      paymentMethod: row.methods
+        ? tendersLabel(String(row.methods).split(',').map(Number))
+        : methodLabel(row.method),
       createdAt: row.createdAt,
     }))
 

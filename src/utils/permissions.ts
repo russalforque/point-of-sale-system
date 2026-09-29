@@ -19,6 +19,13 @@ export type Permission =
   | 'printer.configure'
   | 'drawer.open'
   | 'shifts.manage'
+  | 'sales.hold'
+  | 'sales.void'
+  | 'cash.movement'
+  | 'inventory.count'
+  | 'inventory.receive'
+  | 'audit.view'
+  | 'backup.manage'
 
 const ALL_PERMISSIONS: Permission[] = [
   'products.view',
@@ -39,6 +46,13 @@ const ALL_PERMISSIONS: Permission[] = [
   'printer.configure',
   'drawer.open',
   'shifts.manage',
+  'sales.hold',
+  'sales.void',
+  'cash.movement',
+  'inventory.count',
+  'inventory.receive',
+  'audit.view',
+  'backup.manage',
 ]
 
 // Manager's brief only calls out "manage products" / "manage inventory" as
@@ -62,8 +76,24 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'sales.refund',
     'drawer.open',
     'shifts.manage',
+    'sales.hold',
+    'sales.void',
+    'cash.movement',
+    'inventory.count',
+    'inventory.receive',
+    'audit.view',
   ],
-  cashier: ['products.view', 'customers.view', 'customers.create', 'sales.process', 'drawer.open'],
+  // Refunds and voids stay manager-level; a cashier can still start one at the counter
+  // and have a manager or admin approve it with their PIN (see ApprovalDialog).
+  cashier: [
+    'products.view',
+    'customers.view',
+    'customers.create',
+    'sales.process',
+    'sales.hold',
+    'drawer.open',
+    'cash.movement',
+  ],
 }
 
 export const ROLE_LABELS: Record<Role, string> = {
@@ -80,3 +110,6 @@ export function hasPermission(role: Role | null | undefined, permission: Permiss
 export function hasAnyPermission(role: Role | null | undefined, permissions: Permission[]): boolean {
   return permissions.some((permission) => hasPermission(role, permission))
 }
+
+/** Roles whose members can approve a sensitive action for someone else with their PIN. */
+export const APPROVER_ROLES: Role[] = ['admin', 'manager']

@@ -98,3 +98,23 @@ export const PAYMENT_OPTIONS: { value: PaymentMethod; label: string }[] = [
   { value: 2, label: 'GCash' },
   { value: 3, label: 'Other' },
 ]
+
+/** Stored as `sales.order_type`. 0 = Dine-In, 1 = Take-Out. */
+export type OrderType = 0 | 1
+
+/** Every new order starts as Dine-In; Take-Out is an explicit cashier choice. */
+export const DEFAULT_ORDER_TYPE: OrderType = 0
+
+export const ORDER_TYPE_OPTIONS: { value: OrderType; label: string }[] = [
+  { value: 0, label: 'Dine-In' },
+  { value: 1, label: 'Take-Out' },
+]
+
+export function isOrderType(value: unknown): value is OrderType {
+  return ORDER_TYPE_OPTIONS.some((option) => option.value === value)
+}
+
+/** Sales recorded before order types existed have no order type (null). */
+export function orderTypeLabel(value: number | null | undefined): string | null {
+  return ORDER_TYPE_OPTIONS.find((option) => option.value === value)?.label ?? null
+}

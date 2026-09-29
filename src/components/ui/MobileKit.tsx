@@ -1,7 +1,10 @@
-import { useEffect, useId } from 'react'
+import { useEffect, useId, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react'
 
-import { ChevronRight, Plus, Search, X } from './Icons'
+import { useDismissOnBack } from '../../hooks/useDismissOnBack'
+import { AmountInput } from './AmountInput'
+import { Check, ChevronDown, ChevronRight, Plus, Search, X } from './Icons'
 import { EmptyState, ErrorState, Spinner } from './States'
 
 /**
@@ -425,6 +428,7 @@ export function TextField({
   error,
   prefix,
   trailing,
+  amount,
   ...inputProps
 }: Omit<InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'prefix'> & {
   label: string
@@ -435,8 +439,16 @@ export function TextField({
   error?: string
   prefix?: string
   trailing?: ReactNode
+  /** Money field: shows "1,000" while typing; `onChange` still receives the raw "1000". */
+  amount?: boolean
 }) {
   const id = useId()
+  const sharedProps = {
+    id,
+    'aria-invalid': Boolean(error),
+    'aria-describedby': error || hint ? `${id}-message` : undefined,
+  }
+  const className = `${fieldClass(error)} h-12 ${prefix ? 'pl-9' : 'pl-4'} ${trailing ? 'pr-14' : 'pr-4'}`
   return (
     <FieldShell id={id} label={label} optional={optional} hint={hint} error={error}>
       <div className="relative">
@@ -445,15 +457,11 @@ export function TextField({
             {prefix}
           </span>
         )}
-        <input
-          id={id}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          aria-invalid={Boolean(error)}
-          aria-describedby={error || hint ? `${id}-message` : undefined}
-          {...inputProps}
-          className={`${fieldClass(error)} h-12 ${prefix ? 'pl-9' : 'pl-4'} ${trailing ? 'pr-14' : 'pr-4'}`}
-        />
+        {amount ? (
+          <AmountInput {...sharedProps} value={value} onChange={onChange} {...inputProps} className={className} />
+        ) : (
+          <input {...sharedProps} value={value} onChange={(e) => onChange(e.target.value)} {...inputProps} className={className} />
+        )}
         {trailing && <div className="absolute right-1 top-1/2 mt-[3px] -translate-y-1/2">{trailing}</div>}
       </div>
     </FieldShell>
@@ -527,6 +535,184 @@ export function SelectField({
         {children}
       </select>
     </FieldShell>
+  )
+}
+
+export type PickerOption = { value: string; label: string; hint?: string }
+
+/**
+ * Touch-friendly replacement for a native <select>: the field opens a bottom sheet
+ * (a centered panel on wide screens) with large rows, a check on the current choice,
+ * and a search box once the list gets long. Android back closes the picker first.
+ */
+export function PickerField({
+  label,
+  value,
+  onChange,
+  options,
+  placeholder = 'Choose…',
+  noneLabel,
+  optional,
+  hint,
+  error,
+  emptyText = 'Nothing to choose from yet.',
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  options: PickerOption[]
+  placeholder?: string
+  /** Adds a first row that clears the choice (value ''), e.g. "No supplier". */
+  noneLabel?: string
+  optional?: boolean
+  hint?: string
+  error?: string
+  emptyText?: string
+}) {
+  const id = useId()
+  const [open, setOpen] = useState(false)
+  const selected = options.find((o) => o.value === value)
+  const display = selected?.label ?? (value === '' && noneLabel ? noneLabel : undefined)
+
+  return (
+    <FieldShell id={id} label={label} optional={optional} hint={hint} error={error}>
+      <button
+        id={id}
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-invalid={Boolean(error)}
+        aria-describedby={error || hint ? `${id}-message` : undefined}
+        className={`${fieldClass(error)} flex h-12 items-center gap-2 px-4 text-left active:bg-[#E9EEEB]`}
+      >
+        <span className={`min-w-0 flex-1 truncate ${display ? 'text-slate-900' : 'text-slate-400'}`}>
+          {display ?? placeholder}
+        </span>
+        <ChevronDown size={14} className="shrink-0 text-slate-400" />
+      </button>
+      {open && (
+        <PickerSheet
+          title={label}
+          value={value}
+          options={options}
+          noneLabel={noneLabel}
+          emptyText={emptyText}
+          onPick={onChange}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </FieldShell>
+  )
+}
+
+function PickerSheet({
+  title,
+  value,
+  options,
+  noneLabel,
+  emptyText,
+  onPick,
+  onClose,
+}: {
+  title: string
+  value: string
+  options: PickerOption[]
+  noneLabel?: string
+  emptyText: string
+  onPick: (value: string) => void
+  onClose: () => void
+}) {
+  const stateKey = `picker${useId()}`
+  const { close } = useDismissOnBack(stateKey, onClose)
+  // Capture Escape before the surrounding form/modal sees it, so only the picker closes.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.stopPropagation()
+      close()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  })
+  const [query, setQuery] = useState('')
+
+  const searchable = options.length > 7
+  const q = query.trim().toLowerCase()
+  const rows: PickerOption[] = [
+    ...(noneLabel && !q ? [{ value: '', label: noneLabel }] : []),
+    ...(q ? options.filter((o) => o.label.toLowerCase().includes(q)) : options),
+  ]
+
+  function pick(next: string) {
+    onPick(next)
+    close()
+  }
+
+  // Portal to <body> so a transformed/animated parent sheet or modal can't trap the fixed overlay.
+  return createPortal(
+    <div role="dialog" aria-modal="true" aria-label={title} className="fixed inset-0 z-[60] flex flex-col justify-end sm:items-center sm:justify-center sm:p-6">
+      <div className="absolute inset-0 bg-black/30" onClick={close} aria-hidden="true" />
+      <div className="relative flex max-h-[80dvh] w-full flex-col overflow-hidden rounded-t-3xl bg-white animate-in slide-in-from-bottom duration-200 sm:max-w-md sm:rounded-3xl sm:shadow-xl">
+        <div className="flex justify-center pb-2 pt-2.5 sm:hidden">
+          <span className="h-1 w-10 rounded-full bg-slate-200" />
+        </div>
+        <div className="hidden h-5 sm:block" aria-hidden="true" />
+        <SheetHeader title={title} onClose={close} />
+        {searchable && (
+          <div className="px-5 pb-3">
+            <div className="relative">
+              <Search size={14} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={`Search ${title.toLowerCase()}`}
+                aria-label={`Search ${title.toLowerCase()}`}
+                className="h-11 w-full rounded-2xl border-0 bg-[#F3F5F4] pl-10 pr-4 text-[15px] outline-none placeholder:text-slate-400 focus:bg-white focus:ring-2 focus:ring-[#1F5E3B]"
+              />
+            </div>
+          </div>
+        )}
+        <div
+          role="radiogroup"
+          aria-label={title}
+          className="flex-1 overflow-y-auto overscroll-contain px-3 pb-[max(1rem,env(safe-area-inset-bottom,0px))]"
+        >
+          {rows.length === 0 ? (
+            <p className="px-2 py-8 text-center text-sm text-slate-500">
+              {q ? `No matches for “${query.trim()}”.` : emptyText}
+            </p>
+          ) : (
+            rows.map((o) => {
+              const isSelected = o.value === value
+              return (
+                <button
+                  key={o.value || '__none'}
+                  type="button"
+                  role="radio"
+                  aria-checked={isSelected}
+                  onClick={() => pick(o.value)}
+                  className={`flex min-h-[52px] w-full items-center gap-3 rounded-2xl px-3 text-left text-[15px] ${
+                    isSelected
+                      ? 'bg-[#EEF5F1] font-medium text-[#1F5E3B]'
+                      : `${o.value === '' ? 'text-slate-500' : 'text-slate-800'} active:bg-[#F3F5F4]`
+                  }`}
+                >
+                  <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                  {o.hint && <span className="shrink-0 text-xs font-normal text-slate-400">{o.hint}</span>}
+                  <span className="flex w-5 shrink-0 justify-center">{isSelected && <Check size={14} />}</span>
+                </button>
+              )
+            })
+          )}
+          {options.length === 0 && noneLabel && rows.length > 0 && (
+            <p className="px-3 pb-2 pt-3 text-sm text-slate-500">{emptyText}</p>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
   )
 }
 

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { ApprovalPinField, pinError } from '../../components/auth/ApprovalPinField'
 
 import { userApi, type UserAccount, type UserPayload } from '../../api/userApi'
 import {
@@ -25,7 +26,7 @@ import { ROLE_LABELS, type Role } from '../../utils/permissions'
 import { MobileUsers } from '../mobile/MobileUsers'
 
 type RoleFilter = Role | ''
-type FormErrors = Partial<Record<'fullName' | 'email' | 'password', string>>
+type FormErrors = Partial<Record<'fullName' | 'email' | 'password' | 'pin', string>>
 
 const FORM_ID = 'user-form'
 const MIN_PASSWORD = 8
@@ -36,7 +37,7 @@ const ROLES: { value: Role; description: string }[] = [
   { value: 'admin', description: 'Full access, including users and settings' },
 ]
 
-const emptyForm = (): UserPayload => ({ email: '', fullName: '', role: 'cashier', isActive: true, password: '' })
+const emptyForm = (): UserPayload => ({ email: '', fullName: '', role: 'cashier', isActive: true, password: '', pin: '', clearPin: false })
 
 export function UsersPage() {
   const isMobile = useIsMobile()
@@ -93,6 +94,8 @@ function DesktopUsersPage() {
   if (!editing && password.length < MIN_PASSWORD) errors.password = `Use at least ${MIN_PASSWORD} characters.`
   else if (editing && password.length > 0 && password.length < MIN_PASSWORD)
     errors.password = `Use at least ${MIN_PASSWORD} characters, or leave blank.`
+  const pinProblem = pinError(form.pin)
+  if (pinProblem) errors.pin = pinProblem
 
   const isValid = Object.keys(errors).length === 0
   const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm)
@@ -102,7 +105,7 @@ function DesktopUsersPage() {
 
   function openForm(account: UserAccount | null) {
     const next = account
-      ? { email: account.email, fullName: account.fullName, role: account.role, isActive: account.isActive, password: '' }
+      ? { email: account.email, fullName: account.fullName, role: account.role, isActive: account.isActive, password: '', pin: '', clearPin: false }
       : emptyForm()
     setEditing(account)
     setForm(next)
@@ -128,7 +131,13 @@ function DesktopUsersPage() {
     if (!isValid || busy) return
     setBusy(true)
     try {
-      const payload: UserPayload = { ...form, fullName: form.fullName.trim(), email: form.email.trim(), password: password || undefined }
+      const payload: UserPayload = {
+        ...form,
+        fullName: form.fullName.trim(),
+        email: form.email.trim(),
+        password: password || undefined,
+        pin: form.pin || undefined,
+      }
       if (editing) await userApi.update(editing.id, payload)
       else await userApi.create(payload)
       notify(editing ? 'Changes saved.' : `Account created for ${payload.fullName}.`)
@@ -377,6 +386,15 @@ function DesktopUsersPage() {
                   {showPassword ? 'Hide' : 'Show'}
                 </button>
               }
+            />
+
+            <ApprovalPinField
+              role={form.role}
+              pin={form.pin ?? ''}
+              hasPin={Boolean(editing?.hasPin)}
+              clearPin={Boolean(form.clearPin)}
+              onPin={(pin) => setForm({ ...form, pin })}
+              onClearPin={(clearPin) => setForm({ ...form, clearPin, pin: '' })}
             />
           </form>
         </Modal>
