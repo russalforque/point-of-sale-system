@@ -1,0 +1,10 @@
+[
+  { "id": "01", "start": 0.9,  "window": 3.6, "text": "This is Sellix POS. The register your café runs on." },
+  { "id": "02", "start": 5.6,  "window": 4.4, "text": "Tap to ring up an order. Tax is worked out for you." },
+  { "id": "03", "start": 10.6, "window": 3.2, "text": "Cash, card or GCash. Change, done instantly." },
+  { "id": "04", "start": 14.6, "window": 3.8, "text": "Then the receipt prints straight to your thermal printer." },
+  { "id": "05", "start": 19.6, "window": 5.8, "text": "Track today's sales, catch low stock early, and turn every sale into reports." },
+  { "id": "06", "start": 26.4, "window": 4.6, "text": "On Android or desktop, it keeps selling even when the internet drops." },
+  { "id": "07", "start": 31.6, "window": 3.8, "text": "Shifts, returns, deliveries, customers and an audit log. Built in." },
+  { "id": "08", "start": 36.8, "window": 2.6, "text": "Sellix POS. Sell smarter, anywhere." }
+]
