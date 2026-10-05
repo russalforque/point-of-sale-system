@@ -18,6 +18,24 @@ capture of the real Sellix app, shown on panels floating in 3D space.
 | 31–36s | Operations | Real screens for Shifts, Returns & voids, Receive stock, Customers, Audit log, and Users. |
 | 36–40s | End card | "Sell smarter. Anywhere." |
 
+## Audio
+
+The film has an original score and UI sound effects. There is no narration.
+
+- `audio/music.py` synthesizes the whole track from code with numpy and scipy, so there are no samples
+  and no licensing to worry about. It runs at 96 BPM, so bars land on the scene cuts. A riser leads into
+  the drop at 5s, there's a breakdown before Insights, and the track resolves on the end card. Taps,
+  the payment dialog, the sale chime, the printer buzz and the offline/online cues are synced to `film.html`.
+- To add a voiceover later, record the eight lines in `audio/voiceover.json`. Save each one as
+  `audio/vo/01.wav` … `08.wav`, then run `python audio/mix.py`. Each line is placed at its start time,
+  and the music ducks under the voice.
+
+```bash
+python audio/music.py audio/music.wav
+ffmpeg -i video-only.mp4 -i audio/music.wav -map 0:v -map 1:a -c:v copy \
+  -af loudnorm=I=-14:TP=-1.5:LRA=7 -c:a aac -b:a 256k -shortest sellix-pos-spatial-film-1080p60.mp4
+```
+
 ## How the screens are captured
 
 `capture/` runs the real app from `src/` in Chromium. No app code is changed. A capture-only Vite
