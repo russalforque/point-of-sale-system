@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sellix POS — Spatial Film</title>
+<style>
+@font-face { font-family: "Inter"; src: url(assets/inter.woff2) format("woff2"); font-weight: 100 900; font-display: block; }
+@font-face { font-family: "JB Mono"; src: url(assets/jbmono.woff2) format("woff2"); font-weight: 100 900; font-display: block; }
+:root {
+  --g900: #04140d; --g800: #0a2a1d; --g700: #1f5a45; --g500: #16a34a; --g400: #22c55e; --g300: #4ade80; --g100: #dcfce7;
+  --ink: #111827; --muted: #6b7280; --line: #e5e7eb; --canvas: #f3f4f6;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--g900); }
+body { font-family: "Inter", sans-serif; color: var(--ink); -webkit-font-smoothing: antialiased; }
+#stage {
+  position: absolute; inset: 0; overflow: hidden;
+  perspective: 1500px; perspective-origin: 50% 50%;
+  background:
+    radial-gradient(1200px 700px at 50% 38%, rgba(34,197,94,.20), transparent 70%),
+    radial-gradient(900px 600px at 85% 90%, rgba(22,163,74,.12), transparent 70%),
+    radial-gradient(800px 500px at 10% 10%, rgba(31,90,69,.35), transparent 70%),
+    linear-gradient(180deg, #03100a 0%, #062014 55%, #03100a 100%);
+}
+.scene, .obj { position: absolute; left: 0; top: 0; transform-style: preserve-3d; transform-origin: 0 0; }
+.scene { left: 960px; top: 540px; }
+.flat { transform-style: flat; }
+.hide { display: none; }
+
+/* background */
+#floor {
+  width: 7000px; height: 7000px;
+  background-image:
+    linear-gradient(rgba(74,222,128,.22) 2px, transparent 2px),
+    linear-gradient(90deg, rgba(74,222,128,.22) 2px, transparent 2px);
+  background-size: 140px 140px;
+  -webkit-mask-image: radial-gradient(circle at 50% 50%, #000 0%, rgba(0,0,0,.6) 18%, transparent 42%);
+}
+.dot { position: absolute; left: 0; top: 0; border-radius: 50%; background: var(--g300); box-shadow: 0 0 12px 2px rgba(74,222,128,.7); }
+
+/* generic panel */
+.panel { background: #fff; border-radius: 22px; overflow: visible;
+  box-shadow: 0 40px 120px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.6) inset; }
+.edge { position: absolute; inset: 0; border-radius: 22px; background: linear-gradient(135deg, #2a7a5c, #0b3424); transform: translateZ(-14px); }
+.glass { background: rgba(10,42,29,.55); border: 1px solid rgba(74,222,128,.35); border-radius: 22px; color: #eafff2;
+  box-shadow: 0 30px 90px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.12); }
+
+/* captions */
+#caption { position: absolute; left: 110px; bottom: 96px; color: #fff; }
+#caption .k { font: 700 18px "JB Mono", monospace; letter-spacing: .32em; color: var(--g300); margin-bottom: 14px; display: flex; align-items: center; gap: 14px; }
+#caption .k::before { content: ""; width: 40px; height: 2px; background: var(--g300); display: inline-block; }
+#caption .h { font-weight: 700; font-size: 50px; letter-spacing: -.02em; max-width: 1200px; text-shadow: 0 6px 40px rgba(0,0,0,.6); }
+#vignette { position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.65) 100%); }
+#capshade { position: absolute; left: 0; right: 0; bottom: 0; height: 340px; pointer-events: none; background: linear-gradient(0deg, rgba(2,10,6,.85), rgba(2,10,6,.45) 45%, transparent); }
+#fade { position: absolute; inset: 0; background: #000; pointer-events: none; }
+#brandbug { position: absolute; right: 90px; top: 70px; display: flex; align-items: center; gap: 14px; color: rgba(255,255,255,.85); font-weight: 700; font-size: 22px; letter-spacing: .02em; }
+#brandbug img { width: 40px; height: 40px; border-radius: 10px; }
+
+/* intro */
+.title { font-weight: 800; font-size: 150px; letter-spacing: -.045em; color: #fff; white-space: nowrap; text-shadow: 0 20px 80px rgba(34,197,94,.35); }
+.title span { display: inline-block; }
+.title .pos { color: var(--g400); }
+.sub { font-weight: 500; font-size: 34px; color: rgba(230,255,240,.8); white-space: nowrap; letter-spacing: -.01em; }
+.markcard { width: 260px; height: 260px; border-radius: 60px; background: url(assets/sellix-mark.png) center/cover; box-shadow: 0 0 120px rgba(34,197,94,.45), 0 40px 100px rgba(0,0,0,.6); }
+
+/* register */
+.hdr { position: absolute; left: 0; top: 0; right: 0; height: 66px; border-bottom: 1px solid var(--line); display: flex; align-items: center; padding: 0 24px; gap: 16px; }
+.hdr img { width: 36px; height: 36px; border-radius: 9px; }
+.hdr b { font-size: 22px; }
+.pill { font-size: 14px; font-weight: 600; padding: 6px 12px; border-radius: 999px; background: var(--g100); color: #166534; }
+.muted { color: var(--muted); }
+.search { position: absolute; left: 24px; top: 86px; width: 360px; height: 42px; border: 1px solid var(--line); border-radius: 12px; display: flex; align-items: center; padding: 0 14px; color: #9ca3af; font-size: 16px; gap: 10px; }
+.chip { position: absolute; top: 86px; height: 42px; padding: 0 18px; border-radius: 12px; font-size: 15px; font-weight: 600; display: flex; align-items: center; background: var(--canvas); color: #374151; }
+.chip.on { background: var(--g700); color: #fff; }
+.tile { position: absolute; width: 196px; height: 196px; border-radius: 18px; border: 1px solid var(--line); background: #fff; padding: 16px; transform-origin: 50% 50%; }
+.tile .em { font-size: 64px; height: 92px; display: flex; align-items: center; justify-content: center; background: #f0fdf4; border-radius: 14px; }
+.tile .n { font-weight: 600; font-size: 17px; margin-top: 12px; }
+.tile .p { font-weight: 700; font-size: 18px; color: var(--g700); margin-top: 4px; }
+.tile .stk { position: absolute; right: 14px; top: 14px; font-size: 12px; font-weight: 600; color: var(--muted); background: #fff; border-radius: 8px; padding: 2px 7px; }
+.cart { position: absolute; left: 884px; top: 86px; width: 392px; height: 672px; border-radius: 18px; background: #f9fafb; border: 1px solid var(--line); }
+.cart h4 { position: absolute; left: 20px; top: 18px; font-size: 19px; }
+.cart .cnt { position: absolute; right: 20px; top: 18px; }
+.line { position: absolute; left: 14px; width: 364px; height: 56px; background: #fff; border: 1px solid var(--line); border-radius: 12px; display: flex; align-items: center; padding: 0 14px; gap: 12px; font-size: 16px; }
+.line .q { width: 30px; height: 30px; border-radius: 8px; background: var(--g100); color: #166534; font-weight: 700; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+.line .nm { flex: 1; font-weight: 600; }
+.line .amt { font-weight: 700; font-family: "JB Mono", monospace; }
+.tot { position: absolute; left: 20px; right: 20px; top: 470px; font-size: 16px; }
+.tot div { display: flex; justify-content: space-between; margin-bottom: 10px; color: #374151; }
+.tot .grand { font-size: 28px; font-weight: 800; color: var(--ink); margin-top: 6px; }
+.tot .grand span:last-child { font-family: "JB Mono", monospace; }
+.charge { position: absolute; left: 20px; right: 20px; top: 596px; height: 60px; border-radius: 14px; background: var(--g700); color: #fff; font-weight: 700; font-size: 21px; display: flex; align-items: center; justify-content: center; transform-origin: 50% 50%; }
+.fly { width: 84px; height: 84px; border-radius: 50%; background: #fff; display: flex; align-items: center; justify-content: center; font-size: 46px; box-shadow: 0 20px 50px rgba(0,0,0,.35), 0 0 0 4px var(--g400); }
+.ripple { position: absolute; border-radius: 50%; border: 4px solid var(--g400); }
+
+/* payment modal */
+.pay { width: 600px; height: 580px; padding: 32px; }
+.pay h3 { font-size: 26px; }
+.seg { display: flex; gap: 10px; margin-top: 22px; }
+.seg div { flex: 1; height: 54px; border-radius: 12px; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 17px; gap: 8px; }
+.seg .on { border: 2px solid var(--g500); background: #f0fdf4; color: #166534; }
+.due { margin-top: 24px; display: flex; justify-content: space-between; font-size: 18px; color: var(--muted); }
+.due b { color: var(--ink); font-family: "JB Mono", monospace; font-size: 22px; }
+.tender { margin-top: 14px; height: 86px; border-radius: 14px; background: var(--canvas); display: flex; align-items: center; justify-content: flex-end; padding: 0 24px; font: 700 44px "JB Mono", monospace; }
+.quick { display: flex; gap: 10px; margin-top: 14px; }
+.quick div { flex: 1; height: 46px; border-radius: 10px; background: #fff; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; font-weight: 600; font-family: "JB Mono", monospace; }
+.quick .on { background: var(--g700); color: #fff; border-color: var(--g700); }
+.change { margin-top: 18px; display: flex; justify-content: space-between; align-items: center; font-size: 20px; font-weight: 600; color: #166534; background: #f0fdf4; border-radius: 12px; padding: 14px 18px; }
+.change b { font: 800 30px "JB Mono", monospace; }
+.done { position: absolute; left: 32px; right: 32px; bottom: 30px; height: 62px; border-radius: 14px; background: var(--g500); color: #fff; font-weight: 700; font-size: 21px; display: flex; align-items: center; justify-content: center; gap: 10px; transform-origin: 50% 50%; }
+.okbadge { width: 200px; height: 200px; border-radius: 50%; background: var(--g500); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 16px rgba(34,197,94,.25), 0 30px 80px rgba(0,0,0,.5); }
+
+/* printer & receipt */
+.face { position: absolute; left: 50%; top: 50%; backface-visibility: hidden; }
+.rwrap { position: absolute; width: 300px; overflow: hidden; left: -150px; }
+.receipt { position: absolute; left: 0; top: 0; width: 300px; background: #fffef8; padding: 22px 18px 26px; font: 500 13.5px/1.55 "JB Mono", monospace; color: #1f2937; white-space: pre; box-shadow: 0 0 40px rgba(0,0,0,.25); }
+.receipt b { font-weight: 700; }
+.receipt .bc { height: 46px; margin-top: 10px; background: repeating-linear-gradient(90deg, #111 0 2px, transparent 2px 4px, #111 4px 7px, transparent 7px 9px, #111 9px 10px, transparent 10px 13px); }
+
+/* insights */
+.ip { width: 760px; height: 520px; padding: 28px; }
+.ip h3 { font-size: 24px; display: flex; justify-content: space-between; align-items: center; }
+.kpis { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 20px; }
+.kpi { border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+.kpi .l { font-size: 14px; color: var(--muted); font-weight: 500; }
+.kpi .v { font: 700 28px "JB Mono", monospace; margin-top: 4px; letter-spacing: -.02em; }
+.kpi .d { font-size: 13px; color: var(--g500); font-weight: 600; }
+.bars { position: absolute; left: 28px; right: 28px; bottom: 26px; height: 170px; display: flex; align-items: flex-end; gap: 10px; border-bottom: 1px solid var(--line); }
+.bars div { flex: 1; border-radius: 6px 6px 0 0; background: linear-gradient(180deg, var(--g400), var(--g700)); }
+.inv { margin-top: 18px; }
+.ir { display: flex; align-items: center; gap: 14px; height: 60px; border-bottom: 1px solid var(--line); font-size: 16px; }
+.ir .e { font-size: 28px; width: 36px; }
+.ir .nm { width: 210px; font-weight: 600; }
+.ir .bar { flex: 1; height: 10px; border-radius: 6px; background: var(--canvas); position: relative; overflow: hidden; }
+.ir .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px; background: var(--g500); }
+.ir .qty { width: 54px; text-align: right; font: 700 16px "JB Mono", monospace; }
+.ir .st { width: 104px; text-align: center; font-size: 13px; font-weight: 700; border-radius: 999px; padding: 5px 0; background: var(--g100); color: #166534; }
+.ir .st.low { background: #fee2e2; color: #b91c1c; }
+.ir .bar i.low { background: #ef4444; }
+.top5 { display: flex; gap: 10px; margin-top: 12px; }
+.top5 div { flex: 1; border-radius: 12px; background: var(--canvas); padding: 10px 12px; font-size: 13px; font-weight: 600; }
+.top5 b { display: block; font: 700 17px "JB Mono", monospace; color: var(--g700); margin-top: 2px; }
+
+/* network */
+.board { width: 1800px; height: 1000px; border-radius: 40px;
+  background: radial-gradient(circle at 50% 50%, rgba(34,197,94,.16), rgba(4,20,13,.0) 70%);
+  border: 1px solid rgba(74,222,128,.18); }
+.phone { width: 300px; height: 610px; border-radius: 46px; background: #0b0f0d; padding: 14px; box-shadow: 0 40px 100px rgba(0,0,0,.6), 0 0 0 2px #2b3a33 inset; }
+.phone .scr { width: 100%; height: 100%; border-radius: 34px; background: var(--canvas); overflow: hidden; position: relative; }
+.mhdr { height: 70px; background: var(--g700); color: #fff; padding: 30px 18px 0; font-weight: 700; font-size: 17px; display: flex; justify-content: space-between; }
+.mgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px; }
+.mgrid div { height: 92px; border-radius: 14px; background: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 34px; }
+.mgrid div span { font-size: 11px; font-weight: 600; color: #374151; margin-top: 2px; }
+.mbar { position: absolute; left: 12px; right: 12px; bottom: 14px; height: 54px; border-radius: 14px; background: var(--g500); color: #fff; font-weight: 700; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; font-size: 16px; }
+.monitor { width: 560px; height: 350px; border-radius: 18px; background: #0b0f0d; padding: 12px; box-shadow: 0 40px 100px rgba(0,0,0,.6); }
+.monitor .scr { width: 100%; height: 100%; border-radius: 10px; background: #fff; overflow: hidden; position: relative; }
+.stand { width: 150px; height: 70px; margin: 0 auto; background: linear-gradient(#1f2a25, #0b0f0d); clip-path: polygon(35% 0, 65% 0, 80% 100%, 20% 100%); }
+.mini-hdr { height: 34px; border-bottom: 1px solid var(--line); display: flex; align-items: center; padding: 0 12px; gap: 8px; font-size: 12px; font-weight: 700; }
+.mini-grid { position: absolute; left: 12px; top: 46px; width: 330px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.mini-grid div { height: 64px; border-radius: 8px; background: #f0fdf4; display: flex; align-items: center; justify-content: center; font-size: 28px; }
+.mini-cart { position: absolute; right: 12px; top: 46px; width: 170px; bottom: 12px; border-radius: 8px; background: #f9fafb; border: 1px solid var(--line); padding: 8px; }
+.mini-cart i { display: block; height: 18px; border-radius: 5px; background: #e5e7eb; margin-bottom: 7px; }
+.mini-cart b { position: absolute; left: 8px; right: 8px; bottom: 8px; height: 30px; border-radius: 6px; background: var(--g700); }
+.node { width: 230px; height: 230px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #eafff2; font-weight: 700; font-size: 22px; gap: 6px;
+  background: radial-gradient(circle at 35% 30%, #2a7a5c, #0a2a1d 75%); border: 2px solid rgba(74,222,128,.55); box-shadow: 0 0 80px rgba(34,197,94,.45); }
+.node small { font: 600 14px "JB Mono", monospace; color: var(--g300); }
+.badge { padding: 14px 22px; font-weight: 700; font-size: 20px; white-space: nowrap; display: flex; align-items: center; gap: 12px; border-radius: 16px; }
+.badge .ic { width: 34px; height: 34px; border-radius: 10px; background: var(--g500); display: flex; align-items: center; justify-content: center; }
+.status { padding: 10px 18px; border-radius: 999px; font: 700 17px "JB Mono", monospace; white-space: nowrap; }
+
+/* feature tiles */
+.ft { width: 440px; height: 250px; padding: 30px; }
+.ft .ic { width: 64px; height: 64px; border-radius: 16px; background: linear-gradient(135deg, var(--g400), var(--g700)); display: flex; align-items: center; justify-content: center; }
+.ft h4 { font-size: 27px; margin-top: 22px; color: #fff; letter-spacing: -.01em; }
+.ft p { font-size: 17px; margin-top: 8px; color: rgba(220,252,231,.75); line-height: 1.4; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="scene" id="bg"><div class="obj" id="floor"></div></div>
+  <div class="scene" id="s-intro"></div>
+  <div class="scene" id="s-reg"></div>
+  <div class="scene" id="s-ins"></div>
+  <div class="scene" id="s-net"></div>
+  <div class="scene" id="s-ft"></div>
+  <div class="scene" id="s-end"></div>
+  <div id="vignette"></div>
+  <div id="capshade"></div>
+  <div id="brandbug"><img src="assets/sellix-mark.png" alt="">Sellix POS</div>
+  <div id="caption"><div class="k"></div><div class="h"></div></div>
+  <div id="fade"></div>
+</div>
+
+<script>
+const DURATION = 40;
+const $ = (s, r = document) => r.querySelector(s);
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, p) => a + (b - a) * p;
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const eio = p => p < .5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+const eout = p => 1 - Math.pow(1 - p, 3);
+const expo = p => p === 1 ? 1 : 1 - Math.pow(2, -10 * p);
+const back = p => { const c = 1.70158, c3 = c + 1; return 1 + c3 * Math.pow(p - 1, 3) + c * Math.pow(p - 1, 2); };
+const peso = (v, d = 2) => "₱" + v.toLocaleString("en-PH", { minimumFractionDigits: d, maximumFractionDigits: d });
+let rnd = 7; const rand = () => (rnd = (rnd * 16807) % 2147483647) / 2147483647;
+
+let SA = 1; // current scene alpha
+function T(el, { x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, s = 1, c = true } = {}) {
+  el.style.transform = `translate3d(${x}px,${y}px,${z}px) rotateZ(${rz}deg) rotateY(${ry}deg) rotateX(${rx}deg) scale(${s})` + (c ? " translate(-50%,-50%)" : "");
+}
+function O(el, a) { const v = clamp(a) * SA; el.style.opacity = v; el.style.visibility = v <= 0.001 ? "hidden" : "visible"; }
+function cam(el, { x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0 }) {
+  el.style.transform = `rotateZ(${rz}deg) rotateX(${rx}deg) rotateY(${ry}deg) translate3d(${-x}px,${-y}px,${-z}px)`;
+}
+function mk(parent, html, cls = "obj") {
+  const d = document.createElement("div"); d.className = cls; d.innerHTML = html; parent.appendChild(d); return d;
+}
+function sceneAlpha(t, a, b, fi = .7, fo = .7) { return Math.min(seg(t, a, a + fi), 1 - seg(t, b - fo, b)); }
+function cuboid(parent, w, h, d, col) {
+  const c = mk(parent, "");
+  const faces = [
+    [w, h, `translateZ(${d / 2}px)`, col.front],
+    [w, h, `rotateY(180deg) translateZ(${d / 2}px)`, col.side],
+    [d, h, `rotateY(90deg) translateZ(${w / 2}px)`, col.side],
+    [d, h, `rotateY(-90deg) translateZ(${w / 2}px)`, col.side],
+    [w, d, `rotateX(90deg) translateZ(${h / 2}px)`, col.top],
+    [w, d, `rotateX(-90deg) translateZ(${h / 2}px)`, col.side],
+  ];
+  for (const [fw, fh, tf, bg] of faces) {
+    const f = document.createElement("div"); f.className = "face";
+    Object.assign(f.style, { width: fw + "px", height: fh + "px", marginLeft: -fw / 2 + "px", marginTop: -fh / 2 + "px", transform: tf, background: bg });
+    c.appendChild(f);
+  }
+  return c;
+}
+const ICON = {
+  check: '<svg width="W" height="W" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+  clock: '<svg width="W" height="W" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  undo: '<svg width="W" height="W" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 010 10h-3"/></svg>',
+  truck: '<svg width="W" height="W" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linejoin="round"><path d="M2 6h12v10H2zM14 9h4l3 3v4h-7z"/><circle cx="6" cy="18" r="2" fill="#16a34a"/><circle cx="17" cy="18" r="2" fill="#16a34a"/></svg>',
+  users: '<svg width="W" height="W" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0113 0"/><path d="M16 4.5a3.5 3.5 0 010 7M18 14a6 6 0 013.5 6"/></svg>',
+  list: '<svg width="W" height="W" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1" fill="#fff"/><circle cx="3.5" cy="12" r="1" fill="#fff"/><circle cx="3.5" cy="18" r="1" fill="#fff"/></svg>',
+  shield: '<svg width="W" height="W" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-4.5" stroke-linecap="round"/></svg>',
+  db: '<svg width="W" height="W" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v13c0 1.7 3.6 3 8 3s8-1.3 8-3v-13M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>',
+  bt: '<svg width="W" height="W" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7l10 10-5 4V3l5 4L7 17"/></svg>',
+  cloud: '<svg width="W" height="W" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linejoin="round"><path d="M7 18a5 5 0 01-.5-10A6 6 0 0118 9a4.5 4.5 0 01-.5 9z"/></svg>',
+};
+const icon = (n, w = 30) => ICON[n].replace(/W/g, w);
+
+/* ---------------- background ---------------- */
+const bg = $("#bg"), floor = $("#floor");
+const dots = [];
+for (let i = 0; i < 110; i++) {
+  const d = document.createElement("div"); d.className = "dot obj";
+  const s = 2 + rand() * 4; d.style.width = d.style.height = s + "px";
+  bg.appendChild(d);
+  dots.push({ el: d, x: (rand() - .5) * 4200, y: (rand() - .5) * 2400, z: -2600 + rand() * 3000, sp: 20 + rand() * 60, ph: rand() * 6.28, a: .25 + rand() * .75 });
+}
+function renderBg(t) {
+  SA = 1;
+  const ry = Math.sin(t * .23) * 8 + lerp(-6, 6, t / DURATION);
+  cam(bg, { x: Math.sin(t * .17) * 120, y: -40, z: 0, rx: -4, ry });
+  T(floor, { y: 520, z: -900, rx: 90 });
+  floor.style.backgroundPosition = `0 ${(t * 70) % 140}px`;
+  for (const d of dots) {
+    const z = ((d.z + t * d.sp * 6 + 2600) % 3000) - 2600;
+    T(d.el, { x: d.x, y: d.y + Math.sin(t * .6 + d.ph) * 30, z });
+    const edge = Math.min(seg(z, -2600, -2200), 1 - seg(z, 200, 400));
+    d.el.style.opacity = d.a * edge;
+  }
+}
+
+/* ---------------- 1. intro (0 – 5.2) ---------------- */
+const SI = $("#s-intro");
+const iMark = mk(SI, '<div class="markcard"></div>');
+const iTitle = mk(SI, '<div class="title">' + "Sellix".split("").map(c => `<span>${c}</span>`).join("") + ' <span class="pos">POS</span></div>');
+const iSub = mk(SI, '<div class="sub">Point of sale, built for every dimension of your store.</div>');
+const iRing = [0, 1, 2].map(() => mk(SI, '<div style="width:520px;height:520px;border-radius:50%;border:2px solid rgba(74,222,128,.45)"></div>'));
+const iLetters = [...iTitle.querySelectorAll("span")];
+function renderIntro(t) {
+  const p = seg(t, 0, 5.2);
+  cam(SI, { z: lerp(-300, 260, eio(p)), ry: lerp(-14, 10, eio(p)), rx: lerp(6, -2, p) });
+  const m = eout(seg(t, .3, 1.9));
+  T(iMark, { y: lerp(260, -170, m), z: lerp(-600, 0, m), ry: lerp(-120, 0, m) + Math.sin(t * 1.2) * 6, rx: lerp(40, 0, m) });
+  O(iMark, seg(t, .3, .9));
+  iRing.forEach((r, i) => {
+    const q = seg(t, 1.1 + i * .35, 3.3 + i * .35);
+    T(r, { y: -170, z: -40 - i * 60, rx: 72, s: lerp(.3, 1.6 + i * .4, eout(q)) });
+    O(r, Math.sin(q * Math.PI) * .9);
+  });
+  T(iTitle, { y: 60, z: 40 });
+  O(iTitle, 1);
+  iLetters.forEach((l, i) => {
+    const q = eout(seg(t, 1.3 + i * .08, 2.2 + i * .08));
+    l.style.transform = `translate3d(0,${lerp(70, 0, q)}px,0) rotateX(${lerp(-80, 0, q)}deg)`;
+    l.style.opacity = q;
+  });
+  T(iSub, { y: 175, z: 20 });
+  O(iSub, seg(t, 2.4, 3.2));
+  iSub.style.letterSpacing = lerp(.08, -.01, eout(seg(t, 2.4, 3.6))) + "em";
+}
+
+/* ---------------- 2/3. register + payment + receipt (4.6 – 19.2) ---------------- */
+const SR = $("#s-reg");
+const PRODUCTS = [
+  ["☕", "Iced Coffee", 120, 48], ["🥐", "Ensaymada", 45, 36], ["🍞", "Pandesal (10)", 50, 80], ["💧", "Bottled Water", 25, 120],
+  ["🍗", "Chicken Adobo", 165, 22], ["🍧", "Halo-Halo", 140, 30], ["🥭", "Mango Shake", 110, 41], ["🍜", "Pancit Canton", 95, 27],
+];
+const tilePos = i => ({ x: 24 + (i % 4) * 212, y: 148 + Math.floor(i / 4) * 212 });
+const ORDER = [[0, 2], [1, 1], [4, 1], [6, 1], [5, 1]]; // product idx, qty
+const ADD_T = [6.3, 7.1, 7.9, 8.7, 9.5];
+const reg = mk(SR, `
+  <div class="edge"></div>
+  <div class="hdr"><img src="assets/sellix-mark.png"><b>Sales</b><span class="pill">● Online</span>
+    <span style="flex:1"></span><span class="muted" style="font-size:15px">Maria Santos · Shift #24 · POS-01</span></div>
+  <div class="search">⌕ Search products or scan barcode…</div>
+  <div class="chip on" style="left:400px">All</div><div class="chip" style="left:470px">Drinks</div>
+  <div class="chip" style="left:574px">Bakery</div><div class="chip" style="left:676px">Meals</div><div class="chip" style="left:774px">Desserts</div>
+  ${PRODUCTS.map((p, i) => { const q = tilePos(i); return `<div class="tile" style="left:${q.x}px;top:${q.y}px"><div class="stk">${p[3]} in stock</div><div class="em">${p[0]}</div><div class="n">${p[1]}</div><div class="p">${peso(p[2])}</div></div>`; }).join("")}
+  <div style="position:absolute;left:24px;top:584px;width:836px;height:172px;border-radius:18px;background:var(--canvas);padding:20px;display:flex;gap:14px">
+    ${["Dine-in", "Take-out", "Delivery"].map((s, i) => `<div style="flex:1;border-radius:14px;background:${i ? "#fff" : "var(--g700)"};color:${i ? "#374151" : "#fff"};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:20px">${s}</div>`).join("")}
+  </div>
+  <div class="cart"><h4>Current order</h4><span class="cnt pill">0 items</span>
+    ${ORDER.map(([pi, q], i) => `<div class="line" style="top:${62 + i * 64}px"><span class="q">${q}×</span><span style="font-size:24px">${PRODUCTS[pi][0]}</span><span class="nm">${PRODUCTS[pi][1]}</span><span class="amt">${peso(PRODUCTS[pi][2] * q)}</span></div>`).join("")}
+    <div class="tot"><div><span>Subtotal</span><span class="sub-v">₱0.00</span></div><div><span>Discount</span><span>₱0.00</span></div>
+      <div class="grand"><span>Total</span><span class="tot-v">₱0.00</span></div></div>
+    <div class="charge">Charge <span class="chg-v" style="margin-left:8px">₱0.00</span></div>
+  </div>`, "obj panel");
+Object.assign(reg.style, { width: "1300px", height: "780px" });
+const tiles = [...reg.querySelectorAll(".tile")], lines = [...reg.querySelectorAll(".line")];
+const cntEl = $(".cnt", reg), subV = $(".sub-v", reg), totV = $(".tot-v", reg), chgV = $(".chg-v", reg), chargeBtn = $(".charge", reg);
+const flies = ORDER.map(([pi, q]) => mk(reg, `<div class="fly">${PRODUCTS[pi][0]}</div>`));
+const ripples = ORDER.map(() => mk(reg, "", "obj ripple"));
+const pay = mk(SR, `
+  <div class="edge"></div>
+  <h3>Payment</h3>
+  <div class="seg"><div class="on">💵 Cash</div><div>💳 Card</div><div>📱 GCash</div><div>Maya</div></div>
+  <div class="due"><span>Amount due</span><b>₱700.00</b></div>
+  <div class="tender">₱0.00</div>
+  <div class="quick"><div>₱700</div><div class="q2">₱1,000</div><div>₱1,500</div><div>Exact</div></div>
+  <div class="change"><span>Change</span><b>₱300.00</b></div>
+  <div class="done">Complete sale</div>`, "obj panel pay");
+const tenderEl = $(".tender", pay), q2 = $(".q2", pay), changeEl = $(".change", pay), doneBtn = $(".done", pay);
+const ok = mk(SR, `<div class="okbadge">${icon("check", 120)}</div>`);
+const printer = cuboid(SR, 340, 150, 260, { front: "linear-gradient(#2b3631,#141b18)", side: "#101613", top: "linear-gradient(#3a4741,#222b27)" });
+const pLed = mk(printer, '<div style="width:14px;height:14px;border-radius:50%;background:#22c55e;box-shadow:0 0 16px 4px #22c55e"></div>');
+const pSlot = mk(printer, '<div style="width:320px;height:10px;border-radius:5px;background:#050806"></div>');
+const pLabel = mk(printer, '<div style="font:700 15px \'JB Mono\',monospace;color:#9ca3af;letter-spacing:.2em;white-space:nowrap">SELLIX · ESC/POS</div>');
+const RECEIPT = `<b>       SELLIX CAFÉ</b>
+   123 Rizal Ave, Manila
+  VAT REG TIN 000-123-456
+-------------------------------
+OR# 000245      05 Oct 2026
+Cashier: Maria    POS-01
+-------------------------------
+2 Iced Coffee          240.00
+1 Ensaymada             45.00
+1 Chicken Adobo        165.00
+1 Mango Shake          110.00
+1 Halo-Halo            140.00
+-------------------------------
+<b>TOTAL                 ₱700.00</b>
+CASH                ₱1,000.00
+<b>CHANGE                ₱300.00</b>
+VATable Sales          625.00
+VAT (12%)               75.00
+-------------------------------
+   Thank you! Come again.
+<div class="bc"></div>`;
+const rwrap = mk(printer, `<div class="receipt">${RECEIPT}</div>`, "rwrap");
+const receiptEl = $(".receipt", rwrap);
+let RH = 0;
+function renderReg(t) {
+  // camera path
+  const inP = eio(seg(t, 4.6, 6.2));
+  const payP = eio(seg(t, 10.4, 11.6));
+  const prP = eio(seg(t, 13.9, 15.2));
+  let c = { x: lerp(0, 0, inP), y: 0, z: lerp(900, 150, inP), rx: lerp(18, 6, inP), ry: lerp(-30, -14, inP) };
+  c.ry += Math.sin(t * .5) * 2 + seg(t, 6.2, 10.4) * 10;
+  c = { x: lerp(c.x, 300, payP), y: c.y, z: lerp(c.z, 60, payP), rx: lerp(c.rx, 2, payP), ry: lerp(c.ry, -10, payP) };
+  c = { x: lerp(c.x, 900, prP), y: lerp(c.y, -200, prP), z: lerp(c.z, -60, prP), rx: lerp(c.rx, 8, prP), ry: lerp(c.ry, -26, prP) };
+  c.ry += seg(t, 15.2, 19.2) * 10; c.z -= seg(t, 15.2, 19.2) * 120;
+  cam(SR, c);
+
+  T(reg, { x: 0, y: 0, z: lerp(0, -260, prP), rx: 0, ry: lerp(0, 8, prP) });
+  O(reg, lerp(1, .35, prP));
+
+  // products flying into cart
+  let total = 0, items = 0;
+  ORDER.forEach(([pi, q], i) => {
+    const a = ADD_T[i], p = seg(t, a, a + .62), e = eio(p);
+    const tp = tilePos(pi);
+    const from = { x: tp.x + 98, y: tp.y + 70 }, to = { x: 884 + 14 + 60, y: 86 + 62 + i * 64 + 28 };
+    const press = Math.sin(seg(t, a - .12, a + .12) * Math.PI);
+    T(tiles[pi], { x: 0, y: 0, z: -press * 18, s: 1 - press * .05, c: false });
+    T(flies[i], { x: lerp(from.x, to.x, e), y: lerp(from.y, to.y, e) - Math.sin(p * Math.PI) * 90, z: Math.sin(p * Math.PI) * 320 + 4, s: lerp(1, .55, e) + Math.sin(p * Math.PI) * .35, ry: lerp(0, 360, e) });
+    O(flies[i], p > 0 && p < 1 ? 1 : 0);
+    const rp = seg(t, a - .05, a + .55);
+    T(ripples[i], { x: from.x, y: from.y + 20, z: 2, s: 1 });
+    Object.assign(ripples[i].style, { width: 60 + rp * 240 + "px", height: 60 + rp * 240 + "px" });
+    O(ripples[i], rp > 0 && rp < 1 ? 1 - rp : 0);
+    const lp = eout(seg(t, a + .5, a + .8));
+    lines[i].style.opacity = lp;
+    lines[i].style.transform = `translateX(${lerp(40, 0, lp)}px)`;
+    if (t >= a + .55) { total += PRODUCTS[pi][2] * q; items += q; }
+  });
+  cntEl.textContent = items + " items";
+  subV.textContent = totV.textContent = chgV.textContent = peso(total);
+  const cp = Math.sin(seg(t, 10.1, 10.45) * Math.PI);
+  chargeBtn.style.transform = `scale(${1 - cp * .06})`;
+  chargeBtn.style.boxShadow = `0 0 0 ${cp * 10}px rgba(34,197,94,.35)`;
+
+  // payment modal
+  const mp = back(seg(t, 10.5, 11.4));
+  const mOut = eio(seg(t, 13.9, 14.6));
+  T(pay, { x: lerp(900, 380, mp) + mOut * 120, y: lerp(160, 0, mp), z: lerp(-200, 300, mp) + mOut * 420, ry: lerp(-40, -6, mp) + mOut * 30, rx: lerp(20, 0, mp) });
+  O(pay, seg(t, 10.5, 10.9) * (1 - mOut));
+  const tp2 = eout(seg(t, 11.7, 12.5));
+  tenderEl.textContent = peso(Math.round(tp2 * 1000));
+  const qp = Math.sin(seg(t, 11.55, 11.85) * Math.PI);
+  q2.className = t > 11.6 ? "q2 on" : "q2";
+  q2.style.transform = `scale(${1 - qp * .08})`;
+  const chp = eout(seg(t, 12.6, 13.0));
+  changeEl.style.opacity = chp; changeEl.style.transform = `translateY(${lerp(14, 0, chp)}px)`;
+  const dp = Math.sin(seg(t, 13.2, 13.5) * Math.PI);
+  doneBtn.style.transform = `scale(${1 - dp * .06})`;
+  doneBtn.innerHTML = t > 13.35 ? icon("check", 26) + " Sale completed" : "Complete sale";
+  const okp = seg(t, 13.4, 14.4);
+  T(ok, { x: 380, y: 0, z: 520 + okp * 200, s: back(clamp(okp * 2.2)) * (1 - eio(seg(okp, .7, 1)) * .3) });
+  O(ok, okp > 0 ? 1 - seg(okp, .7, 1) : 0);
+
+  // printer + receipt
+  const pp = back(seg(t, 14.1, 15.0));
+  T(printer, { x: 1060, y: lerp(560, 40, pp), z: 220, ry: lerp(-60, -22, pp), rx: -6 });
+  O(printer, seg(t, 14.1, 14.4));
+  T(pLed, { x: 130, y: 30, z: 131 });
+  pLed.style.opacity = t > 15 && t < 17.8 ? (Math.sin(t * 30) > 0 ? 1 : .25) : 1;
+  T(pSlot, { x: 0, y: -75, z: -10, rx: 90 });
+  T(pLabel, { x: -40, y: 30, z: 131 });
+  if (!RH) RH = receiptEl.offsetHeight;
+  const rp = seg(t, 15.0, 17.8);
+  const rh = Math.floor(RH * rp);
+  rwrap.style.height = rh + "px"; rwrap.style.top = -75 - rh + "px";
+  rwrap.style.transform = `translateZ(-10px) rotateX(${lerp(0, -8, rp)}deg)`;
+}
+
+/* ---------------- 4. insights (18.6 – 26.2) ---------------- */
+const SN = $("#s-ins");
+const HOURLY = [22, 35, 58, 80, 64, 92, 100, 76, 60, 70, 88, 54];
+const dash = mk(SN, `<div class="edge"></div>
+  <h3>Dashboard <span class="pill">Today</span></h3>
+  <div class="kpis">
+    <div class="kpi"><div class="l">Gross sales</div><div class="v k1">₱0</div><div class="d">▲ 18.4% vs last week</div></div>
+    <div class="kpi"><div class="l">Transactions</div><div class="v k2">0</div><div class="d">▲ 9.1%</div></div>
+  </div>
+  <div class="bars">${HOURLY.map(() => "<div></div>").join("")}</div>`, "obj panel ip");
+const k1 = $(".k1", dash), k2 = $(".k2", dash), barEls = [...dash.querySelectorAll(".bars div")];
+const INV = [["☕", "Iced Coffee", 48, 120, 0], ["🥐", "Ensaymada", 36, 80, 0], ["🍗", "Chicken Adobo", 6, 60, 1], ["🥭", "Mango Shake", 41, 70, 0], ["🍧", "Halo-Halo", 4, 50, 1], ["💧", "Bottled Water", 120, 150, 0]];
+const inv = mk(SN, `<div class="edge"></div>
+  <h3>Inventory <span class="pill" style="background:#fee2e2;color:#b91c1c">2 low stock</span></h3>
+  <div class="inv">${INV.map(r => `<div class="ir"><span class="e">${r[0]}</span><span class="nm">${r[1]}</span><span class="bar"><i class="${r[4] ? "low" : ""}"></i></span><span class="qty">${r[2]}</span><span class="st ${r[4] ? "low" : ""}">${r[4] ? "Reorder" : "In stock"}</span></div>`).join("")}</div>`, "obj panel ip");
+const invBars = [...inv.querySelectorAll(".bar i")], lowChips = [...inv.querySelectorAll(".st.low")];
+const LINE = [40, 52, 47, 63, 58, 72, 69, 84, 80, 95, 91, 108];
+const W = 704, H = 230;
+const pts = LINE.map((v, i) => [i * W / (LINE.length - 1), H - (v - 30) / 90 * H]);
+const pathD = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+const rep = mk(SN, `<div class="edge"></div>
+  <h3>Reports <span class="pill">Last 12 weeks</span></h3>
+  <svg width="${W}" height="${H + 10}" style="margin-top:22px;overflow:visible">
+    <defs><linearGradient id="ga" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22c55e" stop-opacity=".35"/><stop offset="1" stop-color="#22c55e" stop-opacity="0"/></linearGradient>
+    <clipPath id="clipA"><rect class="clipr" x="0" y="-10" width="0" height="${H + 20}"/></clipPath></defs>
+    ${[0, 1, 2, 3].map(i => `<line x1="0" x2="${W}" y1="${i * H / 3}" y2="${i * H / 3}" stroke="#e5e7eb"/>`).join("")}
+    <path d="${pathD} L ${W} ${H} L 0 ${H} Z" fill="url(#ga)" clip-path="url(#clipA)"/>
+    <path class="lp" d="${pathD}" fill="none" stroke="#16a34a" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle class="hd" r="9" fill="#fff" stroke="#16a34a" stroke-width="5"/>
+  </svg>
+  <div class="top5"><div>Iced Coffee<b>1,284</b></div><div>Adobo<b>962</b></div><div>Halo-Halo<b>815</b></div><div>Ensaymada<b>790</b></div></div>`, "obj panel ip");
+const lp = $(".lp", rep), hd = $(".hd", rep), clipr = $(".clipr", rep);
+let pathLen = 0;
+function renderIns(t) {
+  const p = seg(t, 18.6, 26.2);
+  cam(SN, { x: lerp(-700, 700, eio(seg(t, 19.2, 25.6))), y: -20, z: lerp(700, 120, eio(seg(t, 18.6, 20.4))) + Math.sin(p * Math.PI) * -60, rx: 6, ry: lerp(-24, 24, eio(seg(t, 19.2, 25.6))) });
+  const pin = i => back(seg(t, 18.8 + i * .35, 19.9 + i * .35));
+  const a = pin(0), b = pin(1), c = pin(2);
+  T(inv, { x: lerp(-1400, -880, a), y: lerp(200, 0, a), z: lerp(-800, -180, a), ry: lerp(70, 30, a) });
+  T(dash, { x: 0, y: lerp(300, 0, b), z: lerp(-800, 0, b), rx: lerp(30, 0, b) });
+  T(rep, { x: lerp(1400, 880, c), y: lerp(200, 0, c), z: lerp(-800, -180, c), ry: lerp(-70, -30, c) });
+  O(inv, seg(t, 18.8, 19.3)); O(dash, seg(t, 19.15, 19.6)); O(rep, seg(t, 19.5, 20));
+  // dashboard numbers
+  const kp = eout(seg(t, 19.8, 22.6));
+  k1.textContent = peso(Math.round(48320 * kp), 0); k2.textContent = Math.round(312 * kp);
+  barEls.forEach((el, i) => { el.style.height = HOURLY[i] * eout(seg(t, 20 + i * .09, 21 + i * .09)) * 1.6 + "px"; });
+  // inventory
+  invBars.forEach((el, i) => { el.style.width = (INV[i][2] / INV[i][3] * 100 * eout(seg(t, 19.6 + i * .1, 20.8 + i * .1))) + "%"; });
+  lowChips.forEach(el => { const k = (Math.sin(t * 6) + 1) / 2; el.style.boxShadow = `0 0 0 ${k * 6}px rgba(239,68,68,${.35 * seg(t, 21, 21.5)})`; });
+  // report line
+  if (!pathLen) pathLen = lp.getTotalLength();
+  const rp = eio(seg(t, 20.4, 23.4));
+  lp.style.strokeDasharray = pathLen; lp.style.strokeDashoffset = pathLen * (1 - rp);
+  const pt = lp.getPointAtLength(pathLen * rp);
+  hd.setAttribute("cx", pt.x); hd.setAttribute("cy", pt.y);
+  clipr.setAttribute("width", pt.x);
+}
+
+/* ---------------- 5. everywhere / offline (25.6 – 31.6) ---------------- */
+const SW = $("#s-net");
+const board = mk(SW, `<svg width="1800" height="1000" style="position:absolute;left:0;top:0;overflow:visible">
+  <defs><filter id="glow"><feGaussianBlur stdDeviation="6"/></filter></defs>
+  <g class="links" fill="none" stroke-linecap="round">
+    <path id="l1" d="M 380 640 Q 600 380 900 260" />
+    <path id="l2" d="M 900 660 L 900 260" />
+    <path id="l3" d="M 1420 640 Q 1200 380 900 260" />
+    <path id="l4" d="M 470 700 Q 900 900 1330 700" />
+  </g></svg>`, "obj board flat");
+const linkEls = ["#l1", "#l2", "#l3", "#l4"].map(s => $(s, board));
+linkEls.forEach(l => { l.setAttribute("stroke-width", 6); });
+const phone = mk(SW, `<div class="phone"><div class="scr"><div class="mhdr"><span>Sellix POS</span><span>9:41</span></div>
+  <div class="mgrid">${PRODUCTS.slice(0, 6).map(p => `<div>${p[0]}<span>${p[1]}</span></div>`).join("")}</div>
+  <div class="mbar"><span>3 items</span><span>₱330.00 →</span></div></div></div>`);
+const mon = mk(SW, `<div class="monitor"><div class="scr"><div class="mini-hdr"><img src="assets/sellix-mark.png" style="width:20px;height:20px;border-radius:5px">Sales<span class="pill" style="font-size:10px;padding:2px 8px;margin-left:auto">● POS-01</span></div>
+  <div class="mini-grid">${PRODUCTS.map(p => `<div>${p[0]}</div>`).join("")}</div><div class="mini-cart"><i></i><i style="width:80%"></i><i style="width:60%"></i><i style="width:85%"></i><b></b></div></div></div><div class="stand"></div>`);
+const prn = mk(SW, `<div style="width:260px;height:190px;border-radius:26px;background:linear-gradient(#2b3631,#101613);box-shadow:0 30px 80px rgba(0,0,0,.6);position:relative">
+  <div style="position:absolute;left:30px;right:30px;top:-70px;height:84px;background:#fffef8;border-radius:4px 4px 0 0;font:600 11px/1.6 'JB Mono',monospace;padding:8px 12px;color:#374151;white-space:pre">SELLIX CAFÉ\n2 Iced Coffee 240.00\nTOTAL      ₱700.00</div>
+  <div style="position:absolute;left:24px;right:24px;top:8px;height:12px;border-radius:6px;background:#050806"></div>
+  <div style="position:absolute;right:26px;bottom:26px;width:14px;height:14px;border-radius:50%;background:#22c55e;box-shadow:0 0 14px 4px #22c55e"></div>
+  <div style="position:absolute;left:26px;bottom:22px;font:700 13px 'JB Mono',monospace;color:#9ca3af;letter-spacing:.15em">THERMAL 80mm</div></div>`);
+const cloud = mk(SW, `<div class="node">${icon("cloud", 64)}Sellix API<small>sync · backup</small></div>`);
+const bDb = mk(SW, `<div class="glass badge"><span class="ic">${icon("db", 22)}</span>Offline-first SQLite</div>`);
+const bBt = mk(SW, `<div class="glass badge"><span class="ic">${icon("bt", 22)}</span>Bluetooth & USB printers</div>`);
+const bAnd = mk(SW, `<div class="glass badge"><span class="ic">${icon("check", 22)}</span>Android · Windows · Web</div>`);
+const beam = mk(SW, '<div style="width:6px;height:520px;border-radius:3px;background:linear-gradient(rgba(74,222,128,.95),rgba(74,222,128,.05));box-shadow:0 0 24px rgba(74,222,128,.8)"></div>');
+const status = mk(SW, `<div class="status"></div>`);
+const statusEl = status.firstElementChild;
+function renderNet(t) {
+  const p = seg(t, 25.6, 31.6);
+  cam(SW, { x: 0, y: lerp(60, -20, eio(p)), z: lerp(900, 280, eio(seg(t, 25.6, 27.4))) - p * 140, rx: lerp(30, 14, eio(p)), ry: lerp(-22, 18, eio(p)) });
+  const BRX = 58;
+  T(board, { x: 0, y: 160, z: 0, rx: BRX });
+  O(board, seg(t, 25.8, 26.6));
+  // map board point (bx,by) into scene coords so standing objects sit on the board
+  const onB = (bx, by, lift = 0) => {
+    const dx = bx - 900, dy = by - 500, r = BRX * Math.PI / 180;
+    return { x: dx, y: 160 + dy * Math.cos(r) - lift, z: dy * Math.sin(r) };
+  };
+  const pop = (k, a) => back(seg(t, a, a + .8));
+  const P1 = onB(380, 640, 320), P2 = onB(900, 660, 230), P3 = onB(1420, 640, 110), P4 = onB(900, 260, 560);
+  const a1 = pop(1, 26.1), a2 = pop(2, 26.35), a3 = pop(3, 26.6), a4 = pop(4, 26.85);
+  T(phone, { ...P1, y: P1.y + (1 - a1) * 300, ry: 16 + Math.sin(t) * 4, s: a1 }); O(phone, seg(t, 26.1, 26.4));
+  T(mon, { ...P2, y: P2.y + (1 - a2) * 300, s: a2 }); O(mon, seg(t, 26.35, 26.6));
+  T(prn, { ...P3, y: P3.y + (1 - a3) * 300, ry: -18, s: a3 }); O(prn, seg(t, 26.6, 26.9));
+  T(cloud, { ...P4, y: P4.y - 60 + Math.sin(t * 1.4) * 12, s: a4 }); O(cloud, seg(t, 26.85, 27.1));
+  // offline story: phone loses connection 28.2 – 29.6, then syncs
+  const offline = t > 28.2 && t < 29.6;
+  const synced = t >= 29.6;
+  const flow = -t * 160;
+  linkEls.forEach((l, i) => {
+    const drawn = eout(seg(t, 27 + i * .15, 27.8 + i * .15));
+    const isPhone = i === 0;
+    const off = isPhone && offline;
+    l.setAttribute("stroke", off ? "rgba(248,113,113,.9)" : "rgba(74,222,128,.95)");
+    l.setAttribute("stroke-dasharray", off ? "4 22" : "26 18");
+    l.setAttribute("stroke-dashoffset", flow);
+    l.style.opacity = drawn * (off ? .7 : 1);
+  });
+  const BM = onB(900, 260, 260);
+  T(beam, { ...BM, s: 1 }); O(beam, eout(seg(t, 27.4, 28)));
+  beam.firstElementChild.style.height = 520 * eout(seg(t, 27.4, 28)) + 'px';
+  T(status, { x: P1.x, y: P1.y - 360, z: P1.z + 40 });
+  if (t < 28.2) { statusEl.textContent = "● Online"; Object.assign(statusEl.style, { background: "rgba(22,163,74,.9)", color: "#fff" }); }
+  else if (offline) { statusEl.textContent = "○ Offline · 3 sales saved locally"; Object.assign(statusEl.style, { background: "rgba(220,38,38,.9)", color: "#fff" }); }
+  else { statusEl.textContent = "✓ Back online · synced"; Object.assign(statusEl.style, { background: "rgba(22,163,74,.9)", color: "#fff" }); }
+  O(status, seg(t, 27.2, 27.6));
+  const sp = Math.sin(seg(t, 29.6, 30.2) * Math.PI);
+  statusEl.style.boxShadow = `0 0 0 ${sp * 14}px rgba(74,222,128,.35)`;
+  const bp = i => eout(seg(t, 27.6 + i * .3, 28.3 + i * .3));
+  const B1 = onB(560, 900, 90), B2 = onB(1420, 640, 360), B3 = onB(1500, 260, 520);
+  T(bDb, { ...B1, z: B1.z + 80 + (1 - bp(0)) * 200 }); O(bDb, bp(0));
+  T(bBt, { ...B2, z: B2.z + 80 + (1 - bp(1)) * 200 }); O(bBt, bp(1));
+  T(bAnd, { ...B3, z: B3.z + (1 - bp(2)) * 200 }); O(bAnd, bp(2));
+}
+
+/* ---------------- 6. feature wall (31.2 – 36) ---------------- */
+const SF = $("#s-ft");
+const FEAT = [
+  ["clock", "Shifts & cash drawer", "Open, close and reconcile every shift."],
+  ["undo", "Returns & refunds", "Process returns with full traceability."],
+  ["truck", "Suppliers & stock-in", "Purchase orders, receiving, adjustments."],
+  ["users", "Customers", "Profiles, history and loyalty at checkout."],
+  ["list", "Audit log", "Every change, by who and when."],
+  ["shield", "Roles & permissions", "Cashier, manager, admin — each in their lane."],
+];
+const fts = FEAT.map(f => mk(SF, `<div class="ic">${icon(f[0], 34)}</div><h4>${f[1]}</h4><p>${f[2]}</p>`, "obj glass ft"));
+function renderFt(t) {
+  const p = seg(t, 31.2, 36);
+  cam(SF, { z: lerp(500, 60, eio(p)), rx: lerp(14, -4, eio(p)), ry: lerp(16, -12, eio(p)), x: lerp(-60, 60, p) });
+  fts.forEach((el, i) => {
+    const c = i % 3, r = Math.floor(i / 3);
+    const q = back(seg(t, 31.5 + i * .14, 32.5 + i * .14));
+    const wave = Math.sin(t * 1.6 + i * .9) * 14;
+    T(el, { x: (c - 1) * 480, y: (r - .5) * 290, z: lerp(-500, 0, q) + wave, ry: lerp(-100, 0, q), rx: lerp(30, 0, q) });
+    O(el, seg(t, 31.5 + i * .14, 31.9 + i * .14));
+  });
+}
+
+/* ---------------- 7. end card (35.6 – 40) ---------------- */
+const SE = $("#s-end");
+const eMark = mk(SE, '<div class="markcard" style="width:200px;height:200px;border-radius:48px"></div>');
+const eTitle = mk(SE, '<div class="title" style="font-size:120px">Sellix <span class="pos">POS</span></div>');
+const eTag = mk(SE, '<div class="sub" style="font-size:38px;color:#fff;font-weight:600">Sell smarter. Anywhere.</div>');
+const eMeta = mk(SE, '<div class="sub" style="font:600 20px \'JB Mono\',monospace;letter-spacing:.3em;color:var(--g300)">ANDROID · DESKTOP · OFFLINE-FIRST</div>');
+const eRing = mk(SE, '<div style="width:700px;height:700px;border-radius:50%;border:2px solid rgba(74,222,128,.35);box-shadow:0 0 80px rgba(34,197,94,.25) inset"></div>');
+function renderEnd(t) {
+  const p = seg(t, 35.6, 40);
+  cam(SE, { z: lerp(300, 0, eout(p)), ry: lerp(-12, 4, eio(p)), rx: lerp(-6, 2, p) });
+  const m = back(seg(t, 35.8, 36.8));
+  T(eMark, { y: -170, z: lerp(-400, 0, m), ry: lerp(180, 0, eout(seg(t, 35.8, 37))) + Math.sin(t * 1.3) * 5, s: m });
+  O(eMark, seg(t, 35.8, 36.1));
+  const r = eout(seg(t, 36, 38));
+  T(eRing, { y: -170, z: -120, rx: 74, s: lerp(.2, 1.3, r), rz: t * 20 }); O(eRing, r * (1 - seg(t, 38, 39.4)) * .9);
+  const tp = eout(seg(t, 36.3, 37.2));
+  T(eTitle, { y: 40, z: lerp(-200, 30, tp), rx: lerp(-50, 0, tp) }); O(eTitle, tp);
+  const gp = eout(seg(t, 36.9, 37.7));
+  T(eTag, { y: 150, z: lerp(-120, 20, gp) }); O(eTag, gp);
+  const mp = eout(seg(t, 37.4, 38.2));
+  T(eMeta, { y: 222, z: 10 }); O(eMeta, mp);
+  eMeta.firstElementChild.style.letterSpacing = lerp(.6, .3, mp) + "em";
+}
+
+/* ---------------- captions & master ---------------- */
+const CAPS = [
+  [5.4, 10.3, "REGISTER", "Ring up orders in seconds."],
+  [10.6, 13.9, "PAYMENTS", "Cash, card or GCash — change done for you."],
+  [14.3, 18.5, "PRINTING", "ESC/POS receipts, straight to your thermal printer."],
+  [19.4, 25.6, "INSIGHTS", "Live sales, inventory and reports at a glance."],
+  [26.3, 31.1, "EVERYWHERE", "Android & desktop. Sells offline, syncs later."],
+  [31.7, 35.5, "OPERATIONS", "Everything your store runs on, built in."],
+];
+const capEl = $("#caption"), capK = $("#caption .k"), capH = $("#caption .h");
+function renderCaption(t) {
+  const c = CAPS.find(c => t >= c[0] && t <= c[1]);
+  if (!c) { capEl.style.opacity = 0; return; }
+  const a = Math.min(seg(t, c[0], c[0] + .5), 1 - seg(t, c[1] - .4, c[1]));
+  capK.textContent = c[2]; capH.textContent = c[3];
+  capEl.style.opacity = a;
+  capEl.style.transform = `translateY(${lerp(24, 0, eout(seg(t, c[0], c[0] + .6)))}px)`;
+  capEl.style.filter = `blur(${(1 - a) * 6}px)`;
+}
+
+const SCENES = [
+  [SI, 0, 5.2, renderIntro, 0, .7],
+  [SR, 4.6, 19.2, renderReg, .8, .8],
+  [SN, 18.6, 26.2, renderIns, .7, .7],
+  [SW, 25.6, 31.6, renderNet, .7, .7],
+  [SF, 31.2, 36.0, renderFt, .6, .6],
+  [SE, 35.6, 40.1, renderEnd, .6, 0.01],
+];
+window.render = function (t) {
+  renderBg(t);
+  for (const [el, a, b, fn, fi, fo] of SCENES) {
+    if (t < a || t > b) { el.classList.add("hide"); continue; }
+    el.classList.remove("hide");
+    SA = fi === 0 ? 1 - seg(t, b - fo, b) : sceneAlpha(t, a, b, fi, fo);
+    fn(t);
+  }
+  renderCaption(t);
+  $("#brandbug").style.opacity = seg(t, 5, 6) * (1 - seg(t, 35.2, 35.8)) * .9;
+  $("#fade").style.opacity = Math.max(1 - seg(t, 0, .6), seg(t, 39.2, 40));
+};
+window.DURATION = DURATION;
+window.ready = document.fonts.ready.then(() => Promise.all([...document.images].map(i => i.decode().catch(() => {}))));
+if (!/[?&]capture/.test(location.search)) {
+  // live preview: loop in real time
+  const t0 = performance.now();
+  window.ready.then(() => { const loop = now => { render(((now - t0) / 1000) % DURATION); requestAnimationFrame(loop); }; requestAnimationFrame(loop); });
+}
+</script>
+</body>
+</html>
