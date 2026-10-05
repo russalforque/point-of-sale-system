@@ -1,0 +1,20 @@
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
+const { chromium } = require('/opt/node22/lib/node_modules/playwright')
+const out = process.argv[2]
+const b = await chromium.launch()
+const ctx = await b.newContext({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1, timezoneId: 'Asia/Manila' })
+const page = await ctx.newPage()
+page.on('console', m => { if (/SEED|ERROR|error|SQLITE/.test(m.text())) console.log('console:', m.text().slice(0, 300)) })
+page.on('pageerror', e => console.log('pageerror:', e.message))
+await page.goto('http://localhost:5199/login')
+await page.waitForTimeout(2500)
+await page.screenshot({ path: out + '/p-login.png' })
+await page.fill('input[type=email]', 'admin@sellix.local').catch(e => console.log('no email', e.message))
+await page.fill('input[type=password]', 'Admin123!').catch(e => console.log('no pw'))
+await page.keyboard.press('Enter')
+await page.waitForTimeout(2500)
+console.log('url', page.url())
+await page.screenshot({ path: out + '/p-after.png' })
+for (const r of ['/sales', '/inventory', '/reports']) { await page.goto('http://localhost:5199' + r); await page.waitForTimeout(2500); await page.screenshot({ path: out + '/p' + r.replace('/', '-') + '.png' }) }
+await b.close()

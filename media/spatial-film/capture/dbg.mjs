@@ -1,0 +1,11 @@
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
+const { chromium } = require('/opt/node22/lib/node_modules/playwright')
+const b = await chromium.launch()
+const ctx = await b.newContext({ viewport: { width: 1600, height: 1000 }, timezoneId: 'UTC' })
+await ctx.addInitScript(() => { localStorage.setItem('sellix.token', 'local:1:1'); localStorage.setItem('sellix.user', JSON.stringify({ id: '1', email: 'admin@sellix.local', fullName: 'Maria Santos', role: 'admin' })) })
+const page = await ctx.newPage()
+await page.clock.install({ time: new Date('2026-10-05T15:30:00Z') }); await page.clock.resume()
+await page.goto('http://localhost:5199/dashboard'); await page.waitForTimeout(2500)
+console.log(await page.evaluate(async () => { const m = await import('/media/spatial-film/capture/sqlite-web.ts'); const r = await m.querySQL("select invoice_number, created_at from sales order by id desc limit 3"); return [new Date().toString(), JSON.stringify(r.values)] }))
+await b.close()

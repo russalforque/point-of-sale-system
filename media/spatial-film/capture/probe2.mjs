@@ -1,0 +1,22 @@
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
+const { chromium } = require('/opt/node22/lib/node_modules/playwright')
+const out = process.argv[2]
+const b = await chromium.launch()
+const ctx = await b.newContext({ viewport: { width: 1600, height: 1000 }, timezoneId: 'Asia/Manila' })
+await ctx.addInitScript(() => { localStorage.setItem('sellix.token', 'local:1:1'); localStorage.setItem('sellix.user', JSON.stringify({ id: '1', email: 'admin@sellix.local', fullName: 'Maria Santos', role: 'admin' })) })
+const page = await ctx.newPage()
+await page.clock.install({ time: new Date('2026-10-05T15:30:00+08:00') }); await page.clock.resume()
+page.on('pageerror', e => console.log('pageerror:', e.message))
+await page.goto('http://localhost:5199/dashboard'); await page.waitForTimeout(2500)
+await page.screenshot({ path: out + '/q-dash.png' })
+await page.click('text=Start new sale'); await page.waitForTimeout(1200)
+for (const n of ['Iced Coffee', 'Ensaymada', 'Chicken Adobo Rice', 'Mango Shake', 'Halo-Halo']) { await page.click(`button:has-text("${n}")`).catch(e => console.log('miss', n)); await page.waitForTimeout(300) }
+await page.click('button:has-text("Iced Coffee")'); await page.waitForTimeout(500)
+await page.screenshot({ path: out + '/q-cart.png' })
+const btns = await page.$$eval('button', bs => bs.map(b => b.innerText.trim()).filter(Boolean).slice(-15)); console.log(btns)
+await page.click('button:has-text("Charge")'); await page.waitForTimeout(1200)
+await page.screenshot({ path: out + '/q-pay.png' })
+console.log(page.url())
+const btns2 = await page.$$eval('button', bs => bs.map(b => b.innerText.trim().replace(/\n/g,' ')).filter(Boolean)); console.log(btns2.join(' | '))
+await b.close()
