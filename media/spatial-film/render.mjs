@@ -33,7 +33,7 @@ const from = Number(args.from ?? 0), to = Number(args.to ?? duration);
 const frames = Math.round((to - from) * FPS);
 const ff = spawn("ffmpeg", [
   "-y", "-loglevel", "error",
-  "-f", "image2pipe", "-framerate", String(FPS), "-c:v", "png", "-i", "-",
+  "-f", "image2pipe", "-framerate", String(FPS), "-c:v", "mjpeg", "-i", "-",
   "-c:v", "libx264", "-preset", "slow", "-crf", "17", "-profile:v", "high", "-level", "4.2",
   "-pix_fmt", "yuv420p", "-r", String(FPS), "-movflags", "+faststart",
   "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
@@ -44,7 +44,7 @@ const t0 = Date.now();
 for (let i = 0; i < frames; i++) {
   const t = from + i / FPS;
   await page.evaluate(t => window.render(t), t);
-  const buf = await page.screenshot({ type: "png" });
+  const buf = await page.screenshot({ type: "jpeg", quality: 95 });
   if (!ff.stdin.write(buf)) await new Promise(r => ff.stdin.once("drain", r));
   if (i % 120 === 0) console.log(`frame ${i}/${frames}  (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
 }
