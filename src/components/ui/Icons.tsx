@@ -1,6 +1,10 @@
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
+  faArrowDown,
   faArrowRight,
+  faArrowRotateRight,
+  faArrowUp,
+  faClock,
   faBars,
   faBox,
   faBoxOpen,
@@ -46,6 +50,10 @@ function Icon({ icon, size = 16, className = '' }: IconProps & { icon: IconDefin
 }
 
 export const ArrowRight = (props: IconProps) => <Icon icon={faArrowRight} {...props} />
+export const ArrowDown = (props: IconProps) => <Icon icon={faArrowDown} {...props} />
+export const ArrowUp = (props: IconProps) => <Icon icon={faArrowUp} {...props} />
+export const Refresh = (props: IconProps) => <Icon icon={faArrowRotateRight} {...props} />
+export const Clock = (props: IconProps) => <Icon icon={faClock} {...props} />
 export const Menu = (props: IconProps) => <Icon icon={faBars} {...props} />
 export const Package = (props: IconProps) => <Icon icon={faBox} {...props} />
 export const PackagePlus = (props: IconProps) => <Icon icon={faBoxOpen} {...props} />

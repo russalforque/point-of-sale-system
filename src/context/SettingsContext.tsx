@@ -14,6 +14,15 @@ const fallback: StoreSetting = {
   taxRate: 0.12,
   receiptFooter: '',
   showLogoOnReceipt: false,
+  maxDiscountPercent: 10,
+  seniorDiscountPercent: 20,
+  loyaltyEnabled: false,
+  loyaltyAmountPerPoint: 100,
+  loyaltyPointValue: 1,
+  creditEnabled: false,
+  creditDefaultDays: 30,
+  allowNegativeStock: false,
+  foodServiceEnabled: false,
 }
 
 type SettingsContextValue = {

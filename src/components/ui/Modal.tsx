@@ -22,6 +22,9 @@ export function Modal({
   size,
   preventClose,
   mobileFullScreen,
+  panelClassName,
+  bodyClassName,
+  dense,
 }: {
   title: ReactNode
   description?: string
@@ -35,6 +38,12 @@ export function Modal({
   preventClose?: boolean
   /** Expand to a full-screen sheet below the `sm` breakpoint instead of a centered card. */
   mobileFullScreen?: boolean
+  /** Replaces the default max-height + width classes, for dialogs that size themselves to the viewport. */
+  panelClassName?: string
+  /** Replaces the default body padding (the body still scrolls as a last resort). */
+  bodyClassName?: string
+  /** Tighter header/footer with the description inline — for task screens that need every pixel. */
+  dense?: boolean
 }) {
   const resolvedSize: ModalSize = size ?? (wide ? 'xl' : 'md')
   const titleId = useId()
@@ -70,8 +79,8 @@ export function Modal({
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px] animate-in fade-in duration-150 ${
-        mobileFullScreen ? 'p-0 sm:p-4' : 'p-3 sm:p-4'
+      className={`fixed inset-0 z-50 flex items-end justify-center bg-[#091413]/40 backdrop-blur-[2px] animate-in fade-in duration-150 sm:items-center ${
+        mobileFullScreen ? 'p-0 sm:p-4' : 'p-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] sm:p-4'
       }`}
       onMouseDown={(e) => {
         if (preventClose) return
@@ -84,34 +93,46 @@ export function Modal({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className={`flex max-h-[min(88vh,44rem)] w-full flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.18)] outline-none animate-in fade-in zoom-in-95 duration-150 ${sizeClass[resolvedSize]} ${
+        className={`flex w-full flex-col overflow-hidden rounded-2xl bg-white shadow-[0_20px_60px_rgba(9,20,19,0.18)] ring-1 ring-slate-100 outline-none animate-in fade-in zoom-in-95 duration-150 ${
+          panelClassName ?? `max-h-[min(88vh,44rem)] ${sizeClass[resolvedSize]}`
+        } ${
           mobileFullScreen
-            ? 'max-sm:h-full max-sm:max-h-full max-sm:max-w-full max-sm:rounded-none max-sm:border-0'
+            ? 'max-sm:h-full max-sm:max-h-full max-sm:max-w-full max-sm:rounded-none max-sm:ring-0'
             : ''
         }`}
       >
-        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 px-5 py-4">
-          <div className="min-w-0">
-            <h2 id={titleId} className="text-base font-semibold text-gray-900">
+        <div
+          className={`flex shrink-0 justify-between gap-3 border-b border-slate-100 px-5 ${
+            dense ? 'items-center py-1.5' : 'items-start py-4'
+          }`}
+        >
+          <div className={`min-w-0 ${dense ? 'flex items-baseline gap-2' : ''}`}>
+            <h2 id={titleId} className="text-base font-semibold text-[#091413]">
               {title}
             </h2>
-            {description && <p className="mt-0.5 text-sm text-gray-500">{description}</p>}
+            {description && <p className={`text-sm text-slate-500 ${dense ? 'truncate' : 'mt-0.5'}`}>{description}</p>}
           </div>
           <button
             type="button"
             onClick={onClose}
             disabled={preventClose}
             aria-label="Close dialog"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300 touch-manipulation"
+            className={`flex shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-[#F3F5F4] hover:text-[#091413] disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] touch-manipulation ${
+              dense ? '-mr-2 h-11 w-11' : '-mr-1.5 -mt-1 h-10 w-10 pointer-coarse:h-11 pointer-coarse:w-11'
+            }`}
           >
             <X size={16} />
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
+        <div className={`min-h-0 flex-1 overflow-y-auto ${bodyClassName ?? 'px-5 py-4'}`}>{children}</div>
 
         {footer ? (
-          <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-gray-100 bg-gray-50/60 px-5 py-3.5">
+          <div
+            className={`flex shrink-0 flex-wrap justify-end gap-2 border-t border-slate-100 bg-white ${
+              dense ? 'px-4 py-2.5 sm:px-5' : 'px-5 py-3.5'
+            }`}
+          >
             {footer}
           </div>
         ) : null}
@@ -165,7 +186,7 @@ export function ConfirmDialog({
             <TriangleWarning size={16} />
           </div>
         )}
-        <p className="pt-1.5 text-sm leading-relaxed text-gray-600">{message}</p>
+        <p className="pt-1.5 text-sm leading-relaxed text-slate-600">{message}</p>
       </div>
     </Modal>
   )

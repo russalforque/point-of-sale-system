@@ -5,6 +5,7 @@ import { Capacitor } from '@capacitor/core'
 import { authApi } from '../api/authApi'
 import { settingsApi, type SettingsPayload } from '../api/settingsApi'
 import { DataManagement } from '../components/settings/DataManagement'
+import { SalesRulesSettings, salesRulesErrors } from '../components/settings/SalesRulesSettings'
 import { DesktopPage, SectionCard } from '../components/ui/DesktopKit'
 import { ChevronRight } from '../components/ui/Icons'
 import { Avatar, EMAIL_PATTERN, PrimaryButton, SwitchRow, TextAreaField, TextButton, TextField } from '../components/ui/MobileKit'
@@ -40,6 +41,15 @@ function toPayload(data: SettingsPayload): SettingsPayload {
     taxRate: data.taxRate,
     receiptFooter: data.receiptFooter,
     showLogoOnReceipt: data.showLogoOnReceipt,
+    maxDiscountPercent: data.maxDiscountPercent,
+    seniorDiscountPercent: data.seniorDiscountPercent,
+    loyaltyEnabled: data.loyaltyEnabled,
+    loyaltyAmountPerPoint: data.loyaltyAmountPerPoint,
+    loyaltyPointValue: data.loyaltyPointValue,
+    creditEnabled: data.creditEnabled,
+    creditDefaultDays: data.creditDefaultDays,
+    allowNegativeStock: data.allowNegativeStock,
+    foodServiceEnabled: data.foodServiceEnabled,
   }
 }
 
@@ -85,7 +95,7 @@ function DesktopSettingsPage() {
     const tax = Number(taxInput)
     if (taxInput.trim() === '' || Number.isNaN(tax) || tax < 0 || tax > 100) errors.taxRate = 'Enter a rate from 0 to 100.'
   }
-  const isValid = Object.keys(errors).length === 0
+  const isValid = Object.keys(errors).length === 0 && (!form || Object.keys(salesRulesErrors(form)).length === 0)
 
   const passwordError =
     newPassword.length > 0 && newPassword.length < MIN_PASSWORD
@@ -233,6 +243,18 @@ function DesktopSettingsPage() {
                   />
                 </div>
               </SectionCard>
+
+              <SalesRulesSettings
+                form={form}
+                update={update}
+                disabled={!canManageSettings || busy}
+                currencySymbol={form.currencySymbol || '₱'}
+                section={({ title, description, children }) => (
+                  <SectionCard title={title} description={description}>
+                    {children}
+                  </SectionCard>
+                )}
+              />
             </fieldset>
           )}
 

@@ -1,7 +1,7 @@
 import type { PaymentMethod } from '../types'
 import { roundMoney, sumMoney } from '../utils/amount'
 import { ApiError } from '../utils/errors'
-import { PAYMENT_OPTIONS } from '../utils/pos'
+import { ALL_TENDER_OPTIONS } from '../utils/pos'
 
 /**
  * Tender rules shared by the payment screen and salesApi, so the UI can never accept a payment
@@ -30,7 +30,7 @@ export type SettledPayments = {
 
 export function methodLabel(method: number): string {
   if (method === SPLIT_METHOD) return 'Split'
-  return PAYMENT_OPTIONS.find((option) => option.value === method)?.label ?? 'Other'
+  return ALL_TENDER_OPTIONS.find((option) => option.value === method)?.label ?? 'Other'
 }
 
 /** "Cash + GCash" for split sales, the method name otherwise. */
@@ -69,7 +69,7 @@ export function settlePayments(totalInput: number, tendersInput: Tender[]): Sett
     if (!Number.isFinite(tender.amount) || tender.amount < 0) {
       throw new ApiError('Payment amounts must be positive.', 400)
     }
-    if (!PAYMENT_OPTIONS.some((option) => option.value === tender.method)) {
+    if (!ALL_TENDER_OPTIONS.some((option) => option.value === tender.method)) {
       throw new ApiError('Unknown payment method.', 400)
     }
   }
@@ -93,7 +93,7 @@ export function settlePayments(totalInput: number, tendersInput: Tender[]): Sett
 
   const nonCash = sumMoney(paying.filter((tender) => tender.method !== CASH_METHOD).map((tender) => tender.amount))
   if (nonCash > total) {
-    throw new ApiError('Card, GCash and other payments can’t be more than the amount due.', 400)
+    throw new ApiError('Card, GCash, charge and other payments can’t be more than the amount due.', 400)
   }
 
   // Change only ever comes out of cash; take it from the last cash tenders first.

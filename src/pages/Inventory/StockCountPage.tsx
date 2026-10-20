@@ -112,7 +112,7 @@ function CountSheet({ onConfirmed }: { onConfirmed: (count: StockCount) => void 
 
   const term = search.trim().toLowerCase()
   const visible = rows.filter((row) => {
-    if (term && !row.name.toLowerCase().includes(term) && !row.sku.toLowerCase().includes(term)) return false
+    if (term && !row.name.toLowerCase().includes(term) && !row.sku.toLowerCase().includes(term) && !(row.barcode ?? '').includes(term)) return false
     const value = counts[row.productId]
     if (filter === 'counted') return value !== undefined
     if (filter === 'uncounted') return value === undefined
@@ -150,7 +150,7 @@ function CountSheet({ onConfirmed }: { onConfirmed: (count: StockCount) => void 
           aria-label="Search products"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search name or SKU"
+          placeholder="Search name, SKU or barcode"
           className="h-12 w-full rounded-2xl border-0 bg-white pl-11 pr-4 text-[15px] ring-1 ring-slate-200 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-[#1F5E3B] [&::-webkit-search-cancel-button]:hidden"
         />
       </div>

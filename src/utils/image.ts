@@ -1,34 +1,70 @@
 /** Longest side, in pixels, for product photos stored in the database. */
 const MAX_IMAGE_SIZE = 600
 
+/** JPEG quality for stored product photos: visually clean, typically 30–80 KB at 600px. */
+const IMAGE_QUALITY = 0.82
+
 /** Photos from phone cameras can be several MB; store a small JPEG instead. */
 export function resizeImage(file: File, maxSize = MAX_IMAGE_SIZE): Promise<string> {
+  return compressImage(file, maxSize)
+}
+
+/**
+ * Decodes any browser-supported image (JPEG, PNG, WebP…) and re-encodes it as a JPEG data URL
+ * no larger than `maxSize` on its longest side. Transparent areas become white. Product photos
+ * are stored in the local database in this form, so they work offline and are included in backups.
+ */
+export function compressImage(blob: Blob, maxSize = MAX_IMAGE_SIZE): Promise<string> {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onerror = () => reject(new Error('Could not read this image.'))
-    reader.onload = () => {
-      const source = String(reader.result)
-      const img = new Image()
-      img.onerror = () => reject(new Error('This file is not a supported image.'))
-      img.onload = () => {
-        const scale = Math.min(1, maxSize / Math.max(img.width, img.height))
+    const url = URL.createObjectURL(blob)
+    const img = new Image()
+    const done = () => URL.revokeObjectURL(url)
+    img.onerror = () => {
+      done()
+      reject(new Error('This file is not a supported image.'))
+    }
+    img.onload = () => {
+      try {
+        if (!img.naturalWidth || !img.naturalHeight) throw new Error('This file is not a supported image.')
+        const scale = Math.min(1, maxSize / Math.max(img.naturalWidth, img.naturalHeight))
         const canvas = document.createElement('canvas')
-        canvas.width = Math.round(img.width * scale)
-        canvas.height = Math.round(img.height * scale)
+        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale))
+        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale))
         const ctx = canvas.getContext('2d')
-        if (!ctx) {
-          resolve(source)
-          return
-        }
+        if (!ctx) throw new Error('Could not process this image.')
         ctx.fillStyle = '#ffffff'
         ctx.fillRect(0, 0, canvas.width, canvas.height)
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-        resolve(canvas.toDataURL('image/jpeg', 0.82))
+        const dataUrl = canvas.toDataURL('image/jpeg', IMAGE_QUALITY)
+        // Free the canvas memory right away; bulk imports process hundreds in a row.
+        canvas.width = 0
+        canvas.height = 0
+        resolve(dataUrl)
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error('Could not process this image.'))
+      } finally {
+        done()
       }
-      img.src = source
     }
-    reader.readAsDataURL(file)
+    img.src = url
   })
+}
+
+export type ImageKind = 'jpeg' | 'png' | 'webp'
+
+/** Identifies an image by its first bytes (not its file name), or null if it isn't one we accept. */
+export async function sniffImageType(blob: Blob): Promise<ImageKind | null> {
+  const bytes = new Uint8Array(await blob.slice(0, 12).arrayBuffer())
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'jpeg'
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'png'
+  if (
+    bytes.length >= 12 &&
+    String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF' &&
+    String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP'
+  ) {
+    return 'webp'
+  }
+  return null
 }
 
 /** Resolves once the URL has loaded as a real image; rejects with a user-facing message otherwise. */

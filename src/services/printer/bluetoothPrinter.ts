@@ -2,7 +2,7 @@ import { App } from '@capacitor/app'
 import { BleClient, numbersToDataView, type BleService } from '@capacitor-community/bluetooth-le'
 import { buildDrawerKickCommand } from './cashDrawer'
 import { logPrinterError, PrinterError } from './errors'
-import { buildReceipt, buildTestReceipt } from './receiptFormatter'
+import { buildProductLabels, buildReceipt, buildTestReceipt, type ProductLabel } from './receiptFormatter'
 import type {
   DiscoveredPrinter,
   PrinterAvailability,
@@ -396,6 +396,11 @@ export class BluetoothPrinterService implements PrinterService {
       connectionType: 'bluetooth',
       printerName: this.connectedPrinter?.name,
     })
+    await this.runJob(bytes)
+  }
+
+  async printLabels(labels: { label: ProductLabel; copies: number }[], settings: StoreSetting, config: PrinterConfig): Promise<void> {
+    const { bytes } = buildProductLabels(labels, settings, config.paperWidth, { cut: config.autoCut })
     await this.runJob(bytes)
   }
 

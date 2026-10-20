@@ -6,7 +6,7 @@ import { useSettings } from '../../context/SettingsContext'
 import { useAsync } from '../../hooks/useAsync'
 import { useDebounced } from '../../hooks/useDebounced'
 import type { Shift } from '../../types'
-import { formatDateTime, formatDuration, formatMoney, formatTime } from '../../utils/format'
+import { formatDateTime, formatDayLabel, formatDuration, formatMoney, formatTime } from '../../utils/format'
 
 /**
  * Shared pieces of the Shift History screen. The phone list and the tablet/desktop
@@ -68,6 +68,36 @@ export function useShiftHistory() {
       setStatus('')
     },
   }
+}
+
+/** Open shifts, oldest first, for the "On shift now" strip. Failures just hide the strip. */
+export function useOnShiftNow(enabled: boolean) {
+  const { data, reload } = useAsync(
+    () => (enabled ? shiftApi.history({ status: 'open', page: 1, pageSize: 12 }) : Promise.resolve(null)),
+    [enabled],
+  )
+  const items = [...(data?.items ?? [])].sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+  return { items, total: data?.totalCount ?? 0, reload }
+}
+
+/** A shift still open after this many hours was probably never closed. */
+export const LONG_SHIFT_HOURS = 12
+
+export function hoursOpen(shift: Shift, now = Date.now()): number {
+  const start = new Date(shift.startedAt).getTime()
+  return Number.isNaN(start) ? 0 : (now - start) / 3_600_000
+}
+
+/** Consecutive shifts that started on the same day (the list is already newest first). */
+export function groupByDay(shifts: Shift[]): { day: string; shifts: Shift[] }[] {
+  const groups: { day: string; shifts: Shift[] }[] = []
+  for (const shift of shifts) {
+    const day = formatDayLabel(shift.startedAt)
+    const last = groups[groups.length - 1]
+    if (last && last.day === day) last.shifts.push(shift)
+    else groups.push({ day, shifts: [shift] })
+  }
+  return groups
 }
 
 /* ------------------------------------------------------------------

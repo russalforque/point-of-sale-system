@@ -19,12 +19,14 @@ import { customerApi } from '../../api/customerApi'
 import { productApi } from '../../api/productApi'
 import { salesApi } from '../../api/salesApi'
 
-import { AmountInput } from '../../components/ui/AmountInput'
+import { DiscountControl } from '../../components/pos/DiscountControl'
 import { Pagination } from '../../components/ui/Pagination'
 import { EmptyState, ErrorState, Spinner } from '../../components/ui/States'
 import { HeldOrdersDialog, HoldOrderDialog, useHeldOrders } from '../../components/pos/HeldOrders'
 import { OrderTypeSelector } from '../../components/pos/OrderTypeSelector'
 import { PaymentModal } from '../../components/pos/PaymentModal'
+import { SafeImage } from '../../components/ui/DesktopKit'
+import { QtyField } from '../../components/pos/QtyField'
 
 import { useAuth } from '../../context/AuthContext'
 import { useCheckout } from '../../context/CheckoutContext'
@@ -38,19 +40,24 @@ import { useDebounced } from '../../hooks/useDebounced'
 import type { Category, Customer, Product, Sale, SaleItem } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
 import { formatDateTime, formatMoney } from '../../utils/format'
+import { checkoutTotals } from '../../services/checkout'
 import {
   addToCart,
-  calculateTotals,
   canSell,
   DEFAULT_ORDER_TYPE,
+  lineKey,
+  lineMax,
+  lineQty,
+  lineTotal,
+  modifierSummary,
   orderTypeLabel,
+  REGISTER_GRID_LIMIT,
   setLineQty,
+  unitPrice,
+  type CartLine,
+  type CartModifier,
 } from '../../utils/pos'
-
-export interface CartLine {
-  product: Product
-  quantity: number
-}
+import { ModifierPicker } from '../../components/pos/ModifierPicker'
 
 // Keeps floating UI above the layout's fixed bottom navigation.
 const ABOVE_BOTTOM_NAV =
@@ -83,8 +90,10 @@ export function MobileSales() {
   const [openingOrderId, setOpeningOrderId] = useState<number | null>(null)
 
   const cart: CartLine[] = checkout.cart
+  /** Product whose options (size, milk…) are being chosen before it is added. */
+  const [pickerProduct, setPickerProduct] = useState<Product | null>(null)
+  const allowOversell = settings.allowNegativeStock
   const customerId = checkout.customerId
-  const discount = checkout.discount
   const money = (value: number) => formatMoney(value, settings.currencySymbol)
 
   const q = useDebounced(search)
@@ -97,9 +106,12 @@ export function MobileSales() {
       productApi.catalog({
         search: q || undefined,
         categoryId: categoryId ? Number(categoryId) : undefined,
+        limit: REGISTER_GRID_LIMIT,
       }),
     [q, categoryId],
   )
+  // Stores without product photos get compact text tiles: twice as many items per screen.
+  const catalogHasImages = (catalog.data ?? []).some((product: Product) => product.imageUrl)
   const customers = useAsync(() => customerApi.lookup(cq || undefined), [cq])
   const history = useAsync(
     () =>
@@ -114,10 +126,7 @@ export function MobileSales() {
     [historySearch, historyPage, showHistory, user],
   )
 
-  const totals = useMemo(
-    () => calculateTotals(cart, discount, settings.taxRate),
-    [cart, discount, settings.taxRate],
-  )
+  const totals = useMemo(() => checkoutTotals(checkout, settings), [checkout, settings])
 
   // The lookup list changes as the user searches, so remember the picked customer.
   const selectedCustomer =
@@ -137,26 +146,52 @@ export function MobileSales() {
   ------------------------------------------------------------------ */
 
   function add(product: Product) {
-    if (product.stockQuantity <= 0) {
-      notify('This item is out of stock.', 'error')
+    if (!canSell(product, cart, 1, allowOversell)) {
+      notify(
+        (product.availableQuantity ?? 0) <= 0
+          ? 'This item is out of stock.'
+          : `Only ${product.availableQuantity} ${product.inventoryMode === 'recipe' ? 'can be made' : 'in stock'}.`,
+        'error',
+      )
       return
     }
-
-    if (!canSell(product, cart)) {
-      notify(`Only ${product.stockQuantity} in stock.`, 'error')
+    // Drinks with sizes, milks or add-ons: choose them first.
+    if (product.modifierGroupCount > 0) {
+      setPickerProduct(product)
       return
     }
-
-    setCheckout({ ...checkout, cart: addToCart(cart, product) })
+    setCheckout({ ...checkout, cart: addToCart(cart, product, { allowOversell }) })
   }
 
-  function changeQty(product: Product, quantity: number) {
-    setCheckout({ ...checkout, cart: setLineQty(cart, product.id, quantity) })
+  function addWithOptions(product: Product, modifiers: CartModifier[], quantity: number) {
+    setCheckout({ ...checkout, cart: addToCart(cart, product, { modifiers, quantity, allowOversell }) })
+    setPickerProduct(null)
+  }
+
+  /** Barcode scanners type the code and press Enter: add the exact barcode/SKU match directly. */
+  async function handleScan() {
+    const term = search.trim()
+    if (!term) return
+    try {
+      const match = await productApi.findByCode(term)
+      if (match) {
+        add(match)
+        setSearch('')
+      }
+      // No exact match: leave the typed text as a normal search.
+    } catch (err) {
+      notify(getErrorMessage(err), 'error')
+    }
+  }
+
+  function changeQty(key: string, quantity: number) {
+    setCheckout({ ...checkout, cart: setLineQty(cart, key, quantity, allowOversell) })
   }
 
   function selectCustomer(customer: Customer | null) {
     setPickedCustomer(customer)
-    setCheckout({ ...checkout, customerId: customer?.id ?? null })
+    // Points belong to a customer: switching customer drops any redemption.
+    setCheckout({ ...checkout, customerId: customer?.id ?? null, redeemPoints: 0 })
     setIsPickingCustomer(false)
     setCustomerSearch('')
   }
@@ -170,7 +205,15 @@ export function MobileSales() {
       return
     }
 
-    setCheckout({ ...checkout, cart: [], discount: 0, orderType: DEFAULT_ORDER_TYPE })
+    setCheckout({
+      ...checkout,
+      cart: [],
+      discount: 0,
+      discountType: 'manual',
+      discountReference: '',
+      redeemPoints: 0,
+      orderType: DEFAULT_ORDER_TYPE,
+    })
     setConfirmClear(false)
     setIsCartOpen(false)
     notify('Cart cleared.')
@@ -305,6 +348,12 @@ export function MobileSales() {
             aria-label="Search products"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                void handleScan()
+              }
+            }}
             placeholder="Search or scan an item"
             className="h-12 w-full rounded-2xl border-0 bg-[#F3F5F4] pl-11 pr-12 text-[15px] placeholder:text-slate-400 outline-none transition focus:bg-white focus:ring-2 focus:ring-[#1F5E3B] [&::-webkit-search-cancel-button]:hidden"
           />
@@ -378,7 +427,7 @@ export function MobileSales() {
 
         {catalog.data && catalog.data.length > 0 && (
           <div
-            className={`grid grid-cols-2 gap-3 transition-opacity sm:grid-cols-3 ${
+            className={`grid auto-rows-fr grid-cols-2 gap-3 transition-opacity sm:grid-cols-3 ${
               catalog.loading ? 'opacity-60' : ''
             }`}
           >
@@ -386,14 +435,21 @@ export function MobileSales() {
               <ProductCard
                 key={product.id}
                 product={product}
-                qtyInCart={cart.find((l: CartLine) => l.product.id === product.id)?.quantity ?? 0}
-                canAddMore={canSell(product, cart)}
+                showImage={catalogHasImages}
+                qtyInCart={lineQty(cart, product.id)}
+                canAddMore={canSell(product, cart, 1, allowOversell)}
+                allowOversell={allowOversell}
                 price={money(product.sellingPrice)}
                 onAdd={() => add(product)}
-                onChangeQty={(qty) => changeQty(product, qty)}
+                onChangeQty={(qty) => changeQty(lineKey(product.id), qty)}
               />
             ))}
           </div>
+        )}
+        {(catalog.data?.length ?? 0) >= REGISTER_GRID_LIMIT && (
+          <p className="mt-4 text-center text-sm text-slate-500">
+            Showing the first {REGISTER_GRID_LIMIT} products. Search, scan or pick a category to find the rest.
+          </p>
         )}
       </main>
 
@@ -419,6 +475,21 @@ export function MobileSales() {
             <ChevronRight size={14} className="text-white/70" />
           </button>
         </div>
+      )}
+
+      {pickerProduct && (
+        <ModifierPicker
+          product={pickerProduct}
+          money={money}
+          variant="sheet"
+          maxQuantity={
+            allowOversell || pickerProduct.availableQuantity === null
+              ? Infinity
+              : Math.max(pickerProduct.availableQuantity - lineQty(cart, pickerProduct.id), 0)
+          }
+          onAdd={(modifiers, quantity) => addWithOptions(pickerProduct, modifiers, quantity)}
+          onClose={() => setPickerProduct(null)}
+        />
       )}
 
       {/* CART SHEET */}
@@ -454,7 +525,7 @@ export function MobileSales() {
                     : 'text-rose-600 active:bg-rose-50'
                 }`}
               >
-                {confirmClear ? 'Tap to confirm' : 'Clear'}
+                {confirmClear ? 'Tap again to clear' : 'Clear'}
               </button>
               <CloseButton onClick={() => setIsCartOpen(false)} label="Close order" />
             </div>
@@ -482,9 +553,13 @@ export function MobileSales() {
                   <span className="block truncate text-[15px]">
                     {selectedCustomer?.fullName ?? 'Walk-in customer'}
                   </span>
-                  {selectedCustomer && (
-                    <span className="block text-xs text-[#1F5E3B]">
-                      {selectedCustomer.loyaltyPoints} loyalty pts
+                  {selectedCustomer && (settings.loyaltyEnabled || selectedCustomer.creditBalance > 0.004) && (
+                    <span className="block truncate text-xs text-[#1F5E3B]">
+                      {settings.loyaltyEnabled && `${selectedCustomer.loyaltyPoints} pts`}
+                      {settings.loyaltyEnabled && selectedCustomer.creditBalance > 0.004 && ' · '}
+                      {selectedCustomer.creditBalance > 0.004 && (
+                        <span className="text-amber-700">owes {money(selectedCustomer.creditBalance)}</span>
+                      )}
                     </span>
                   )}
                 </span>
@@ -524,7 +599,7 @@ export function MobileSales() {
                       <CustomerOption
                         key={c.id}
                         name={c.fullName}
-                        detail={`${c.loyaltyPoints} pts`}
+                        detail={settings.loyaltyEnabled ? `${c.loyaltyPoints} pts` : c.phone ?? undefined}
                         selected={c.id === customerId}
                         onSelect={() => selectCustomer(c)}
                       />
@@ -538,57 +613,51 @@ export function MobileSales() {
             <ul className="mt-2">
               {cart.map((line: CartLine) => (
                 <li
-                  key={line.product.id}
+                  key={line.key}
                   className="flex items-center gap-3 border-b border-slate-100 py-3 last:border-b-0"
                 >
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-[15px]">{line.product.name}</p>
+                    {line.modifiers.length > 0 && <p className="truncate text-sm text-[#1F5E3B]">{modifierSummary(line.modifiers)}</p>}
                     <p className="text-sm tabular-nums text-slate-500">
-                      {money(line.product.sellingPrice * line.quantity)}
+                      {money(lineTotal(line))}
                       {line.quantity > 1 && (
-                        <span className="text-slate-400"> · {money(line.product.sellingPrice)} each</span>
+                        <span className="text-slate-400"> · {money(unitPrice(line))} each</span>
                       )}
                     </p>
                   </div>
 
                   <Stepper
                     name={line.product.name}
+                    max={lineMax(cart, line, allowOversell)}
                     quantity={line.quantity}
-                    canIncrease={canSell(line.product, cart)}
-                    onChange={(qty) => changeQty(line.product, qty)}
+                    canIncrease={line.quantity + 1 <= lineMax(cart, line, allowOversell)}
+                    onChange={(qty) => changeQty(line.key, qty)}
                   />
                 </li>
               ))}
             </ul>
 
             {/* Discount */}
-            <label className="mb-4 mt-2 flex min-h-14 items-center justify-between gap-3 rounded-2xl bg-[#F6F8F7] px-4">
-              <span className="text-[15px]">Discount</span>
-              <span className="flex items-center gap-1.5">
-                <span className="text-sm text-slate-400">{settings.currencySymbol}</span>
-                <AmountInput
-                  value={discount || ''}
-                  placeholder="0.00"
-                  onChange={(value) =>
-                    setCheckout({ ...checkout, discount: Math.max(0, Number(value) || 0) })
-                  }
-                  className="h-10 w-24 rounded-xl border-0 bg-white px-3 text-right text-[15px] tabular-nums outline-none focus:ring-2 focus:ring-[#1F5E3B]"
-                />
-              </span>
-            </label>
-            {discount > totals.subtotal && (
-              <p className="-mt-2 mb-4 px-1 text-xs text-amber-700">
-                Discount is capped at the subtotal ({money(totals.subtotal)}).
-              </p>
-            )}
+            <div className="mb-4 mt-2 rounded-2xl bg-[#F6F8F7] px-4 py-3 text-[15px]">
+              <DiscountControl
+                checkout={checkout}
+                onChange={(patch) => setCheckout({ ...checkout, ...patch })}
+                totals={totals}
+                settings={settings}
+              />
+            </div>
           </div>
 
           {/* Totals + primary action */}
           <div className="border-t border-slate-100 px-5 pb-[max(1rem,env(safe-area-inset-bottom,0px))] pt-4">
             <dl className="space-y-1.5 text-sm">
               <TotalRow label="Subtotal" value={money(totals.subtotal)} />
-              {totals.discount > 0 && (
-                <TotalRow label="Discount" value={`−${money(totals.discount)}`} />
+              {totals.manualDiscount > 0 && (
+                <TotalRow label="Discount" value={`−${money(totals.manualDiscount)}`} />
+              )}
+              {totals.loyaltyDiscount > 0 && (
+                <TotalRow label={`Points (${checkout.redeemPoints})`} value={`−${money(totals.loyaltyDiscount)}`} />
               )}
               <TotalRow label={`Tax (${Math.round(settings.taxRate * 10000) / 100}%)`} value={money(totals.tax)} />
             </dl>
@@ -754,12 +823,15 @@ export function MobileSales() {
               <ul className="flex-1 overflow-y-auto px-5">
                 {selectedOrder.items.map((item: SaleItem) => (
                   <li
-                    key={item.productId}
+                    key={item.id}
                     className="flex items-baseline justify-between gap-3 border-b border-slate-100 py-3 text-[15px] last:border-b-0"
                   >
-                    <span className="min-w-0 truncate">
-                      {item.productName}
-                      <span className="text-slate-400"> × {item.quantity}</span>
+                    <span className="min-w-0">
+                      <span className="block truncate">
+                        {item.productName}
+                        <span className="text-slate-400"> × {item.quantity}</span>
+                      </span>
+                      {item.modifiers.length > 0 && <span className="block truncate text-sm text-slate-500">{modifierSummary(item.modifiers)}</span>}
                     </span>
                     <span className="shrink-0 tabular-nums">{money(item.lineTotal)}</span>
                   </li>
@@ -814,19 +886,28 @@ function ProductCard({
   product,
   qtyInCart,
   canAddMore,
+  allowOversell,
   price,
+  showImage,
   onAdd,
   onChangeQty,
 }: {
   product: Product
+  /** False when no product in the list has a photo: skip the placeholder so more items fit. */
+  showImage: boolean
   qtyInCart: number
   canAddMore: boolean
+  /** Store sells even when stock runs out: never disable the card. */
+  allowOversell: boolean
   price: string
   onAdd: () => void
   onChangeQty: (qty: number) => void
 }) {
-  const outOfStock = product.stockQuantity <= 0
-  const lowStock = !outOfStock && product.stockStatus === 'Low Stock'
+  const available = product.availableQuantity
+  const outOfStock = available !== null && available <= 0 && !allowOversell
+  const lowStock = available !== null && available > 0 && product.stockStatus === 'Low Stock'
+  // With options, each tap adds a line the cashier configures; the card can't step one quantity.
+  const hasOptions = product.modifierGroupCount > 0
   const inCart = qtyInCart > 0
 
   return (
@@ -843,36 +924,36 @@ function ProductCard({
         aria-label={`Add ${product.name}`}
         className="flex flex-1 flex-col text-left active:bg-slate-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1F5E3B]"
       >
-        <div className="aspect-4/3 w-full bg-[#F3F5F4]">
-          {product.imageUrl ? (
-            <img
-              src={product.imageUrl}
-              alt=""
-              loading="lazy"
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center text-2xl font-semibold text-slate-300">
-              {product.name.slice(0, 1).toUpperCase()}
+        {showImage && (
+          // Fixed 4:3 box: the photo is positioned inside it, so a tall or odd-sized photo can never stretch the card.
+          <div className="relative aspect-4/3 w-full shrink-0 overflow-hidden bg-[#F3F5F4]">
+            <div className="absolute inset-0">
+              {product.imageUrl ? (
+                <SafeImage src={product.imageUrl} className="h-full w-full object-cover" fallback={initialTile(product.name)} />
+              ) : (
+                initialTile(product.name)
+              )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
-        <div className="flex flex-1 flex-col px-3 pt-2.5">
-          <p className="line-clamp-2 text-sm leading-5">{product.name}</p>
+        <div className={`flex flex-1 flex-col px-3 pt-2.5 ${showImage ? '' : 'min-h-20'}`}>
+          {/* Always two lines tall, so one-line names don't make shorter cards. */}
+          <p className={`line-clamp-2 min-h-10 leading-5 ${showImage ? 'text-sm' : 'text-[15px] font-medium'}`}>{product.name}</p>
           <p className="mt-auto pt-1 text-[15px] font-semibold tabular-nums">{price}</p>
           {(outOfStock || lowStock) && (
             <p className={`text-xs ${outOfStock ? 'text-rose-600' : 'text-amber-700'}`}>
-              {outOfStock ? 'Out of stock' : `${product.stockQuantity} left`}
+              {outOfStock ? 'Out of stock' : `${available} left`}
             </p>
           )}
         </div>
       </button>
 
       <div className="px-3 pb-3 pt-2">
-        {inCart ? (
+        {inCart && !hasOptions ? (
           <Stepper
             name={product.name}
+            max={available === null || allowOversell ? Infinity : available}
             quantity={qtyInCart}
             canIncrease={canAddMore}
             onChange={onChangeQty}
@@ -882,16 +963,24 @@ function ProductCard({
           <button
             type="button"
             onClick={onAdd}
-            disabled={outOfStock}
+            disabled={outOfStock || !canAddMore}
             tabIndex={-1}
             aria-hidden="true"
             className="flex h-10 w-full items-center justify-center gap-1.5 rounded-xl bg-[#F3F5F4] text-sm font-medium text-[#1F5E3B] active:bg-[#E6F1EA] disabled:text-slate-400"
           >
             <Plus size={11} />
-            Add
+            {inCart ? 'Add another' : hasOptions ? 'Choose' : 'Add'}
           </button>
         )}
       </div>
+    </div>
+  )
+}
+
+function initialTile(name: string) {
+  return (
+    <div className="flex h-full w-full items-center justify-center text-2xl font-semibold text-slate-300">
+      {name.slice(0, 1).toUpperCase()}
     </div>
   )
 }
@@ -903,12 +992,15 @@ function ProductCard({
 function Stepper({
   name,
   quantity,
+  max,
   canIncrease,
   onChange,
   fullWidth = false,
 }: {
   name: string
   quantity: number
+  /** Stock on hand; typed quantities above it are capped with a message. */
+  max: number
   canIncrease: boolean
   onChange: (qty: number) => void
   fullWidth?: boolean
@@ -918,7 +1010,7 @@ function Stepper({
 
   return (
     <div
-      className={`flex h-10 items-center rounded-xl bg-[#E6F1EA] text-[#1F5E3B] ${
+      className={`flex h-11 items-center rounded-xl bg-[#E6F1EA] text-[#1F5E3B] ${
         fullWidth ? 'w-full justify-between' : ''
       }`}
     >
@@ -926,24 +1018,19 @@ function Stepper({
         type="button"
         onClick={() => onChange(quantity - 1)}
         aria-label={willRemove ? `Remove ${name}` : `Decrease ${name}`}
-        className="flex h-10 w-10 items-center justify-center rounded-xl active:bg-[#D3E6DB]"
+        className="flex h-11 w-11 items-center justify-center rounded-xl active:bg-[#D3E6DB]"
       >
         {willRemove ? <Trash2 size={13} /> : <Minus size={11} />}
       </button>
 
-      <span
-        aria-live="polite"
-        className="min-w-8 text-center text-[15px] font-semibold tabular-nums"
-      >
-        {quantity}
-      </span>
+      <QtyField value={quantity} max={max} productName={name} onCommit={onChange} className="text-[15px]" />
 
       <button
         type="button"
         onClick={() => onChange(quantity + 1)}
         disabled={!canIncrease}
         aria-label={`Increase ${name}`}
-        className="flex h-10 w-10 items-center justify-center rounded-xl active:bg-[#D3E6DB] disabled:opacity-30"
+        className="flex h-11 w-11 items-center justify-center rounded-xl active:bg-[#D3E6DB] disabled:opacity-30"
       >
         <Plus size={11} />
       </button>

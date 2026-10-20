@@ -4,8 +4,22 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { categoryApi } from '../../api/categoryApi'
 import { productApi, type ProductPayload } from '../../api/productApi'
 import { supplierApi } from '../../api/supplierApi'
+import { ingredientApi } from '../../api/ingredientApi'
+import { modifierApi } from '../../api/modifierApi'
+import {
+  draftCost,
+  emptyTracking,
+  hasTrackingErrors,
+  InventoryTrackingSection,
+  trackingErrors,
+  trackingFromProduct,
+  trackingPayload,
+  type TrackingDraft,
+} from '../../components/products/InventoryTrackingSection'
+import { stockSummary } from '../../utils/productStock'
 
 import {
+  ActionMenu,
   DataCard,
   DesktopPage,
   DesktopSearch,
@@ -21,6 +35,10 @@ import {
   Th,
   Toolbar,
 } from '../../components/ui/DesktopKit'
+import { ProductImportDialog } from '../../components/products/ProductImportDialog'
+import { ImageImportDialog } from '../../components/products/ImageImportDialog'
+import { GenerateCodeButton } from '../../components/products/GenerateCodeButton'
+import { PrintLabelsDialog } from '../../components/products/PrintLabelsDialog'
 import { ChevronRight } from '../../components/ui/Icons'
 import {
   AddButton,
@@ -58,6 +76,8 @@ const FORM_ID = 'product-form'
 
 const emptyForm = (): ProductPayload => ({
   sku: '',
+  barcode: '',
+  unit: '',
   name: '',
   description: '',
   categoryId: 0,
@@ -73,6 +93,8 @@ const emptyForm = (): ProductPayload => ({
 function toForm(product: Product): ProductPayload {
   return {
     sku: product.sku,
+    barcode: product.barcode ?? '',
+    unit: product.unit ?? '',
     name: product.name,
     description: product.description ?? '',
     categoryId: product.categoryId,
@@ -89,7 +111,7 @@ function toForm(product: Product): ProductPayload {
 function validate(form: ProductPayload, isNew: boolean): FormErrors {
   const errors: FormErrors = {}
   if (!form.name.trim()) errors.name = 'Enter a product name.'
-  if (!form.sku.trim()) errors.sku = 'Enter a SKU or scan the barcode.'
+  if (!form.sku.trim()) errors.sku = 'Enter a SKU.'
   if (!form.categoryId) errors.categoryId = 'Choose a category.'
   if (!(form.sellingPrice > 0)) errors.sellingPrice = 'Enter the selling price.'
   if (form.costPrice < 0) errors.costPrice = 'Cost can’t be negative.'
@@ -135,8 +157,16 @@ function DesktopProductsPage() {
   const [initialForm, setInitialForm] = useState<ProductPayload>(emptyForm())
   const [showErrors, setShowErrors] = useState(false)
   const [deactivate, setDeactivate] = useState<Product | null>(null)
+  const [labelsFor, setLabelsFor] = useState<Product | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [importingImages, setImportingImages] = useState(false)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [busy, setBusy] = useState(false)
+  // How the product uses stock (mode, recipe, batch size, options). Loaded with the product when editing.
+  const [tracking, setTracking] = useState<TrackingDraft>(emptyTracking())
+  const [initialTracking, setInitialTracking] = useState<TrackingDraft>(emptyTracking())
+  const [trackingReady, setTrackingReady] = useState(true)
+  const foodService = settings.foodServiceEnabled
 
   // Photo
   const [processingImage, setProcessingImage] = useState(false)
@@ -152,6 +182,9 @@ function DesktopProductsPage() {
 
   const categories = useAsync(() => categoryApi.list(), [])
   const suppliers = useAsync(() => supplierApi.list(), [])
+  // Only cafés and kitchens (Settings → Recipes, ingredients & options) need these on the form.
+  const ingredients = useAsync(() => (foodService && open ? ingredientApi.all() : Promise.resolve([])), [foodService, open])
+  const modifierGroups = useAsync(() => (foodService && open ? modifierApi.list() : Promise.resolve([])), [foodService, open])
 
   const { data, loading, error, reload } = useAsync(
     () =>
@@ -182,9 +215,10 @@ function DesktopProductsPage() {
   }, [q, categoryFilter])
 
   const items = data?.items ?? []
-  const errors = validate(form, !editing)
-  const isValid = Object.keys(errors).length === 0
-  const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm)
+  const recipeCost = draftCost(tracking)
+  const errors = validate({ ...form, costPrice: recipeCost ?? form.costPrice }, !editing)
+  const isValid = Object.keys(errors).length === 0 && !hasTrackingErrors(trackingErrors(tracking))
+  const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm) || JSON.stringify(tracking) !== JSON.stringify(initialTracking)
   const hasFilters = Boolean(q || categoryId || filter)
   const margin = form.sellingPrice > 0 ? (form.sellingPrice - form.costPrice) / form.sellingPrice : null
   const fieldError = (key: keyof FormErrors) => (showErrors ? errors[key] : undefined)
@@ -207,6 +241,19 @@ function DesktopProductsPage() {
     setEditing(product)
     setForm(toForm(product))
     setInitialForm(toForm(product))
+    const loading = trackingFromProduct(product, { lines: [], modifierGroupIds: [] })
+    setTracking(loading)
+    setInitialTracking(loading)
+    setTrackingReady(false)
+    void productApi
+      .recipe(product.id)
+      .then((recipe) => {
+        const loaded = trackingFromProduct(product, recipe)
+        setTracking(loaded)
+        setInitialTracking(loaded)
+      })
+      .catch((err) => notify(getErrorMessage(err), 'error'))
+      .finally(() => setTrackingReady(true))
     setShowErrors(false)
     resetPhotoControls()
     setOpen(true)
@@ -226,6 +273,9 @@ function DesktopProductsPage() {
       setEditing(null)
       setForm(next)
       setInitialForm(next)
+      setTracking(emptyTracking())
+      setInitialTracking(emptyTracking())
+      setTrackingReady(true)
       setShowErrors(false)
       resetPhotoControls()
       setOpen(true)
@@ -336,14 +386,19 @@ function DesktopProductsPage() {
 
   async function save() {
     setShowErrors(true)
-    if (!isValid || busy) return
+    if (!isValid || busy || !trackingReady) return
 
     setBusy(true)
     try {
       const payload: ProductPayload = {
         ...form,
+        ...trackingPayload(tracking, foodService),
+        // Recipe-costed products: the cost comes from the ingredients.
+        costPrice: recipeCost ?? form.costPrice,
         name: form.name.trim(),
         sku: form.sku.trim(),
+        barcode: form.barcode?.trim() || null,
+        unit: form.unit?.trim() || null,
         description: form.description?.trim(),
         supplierId: form.supplierId || null,
         imageUrl: form.imageUrl || undefined,
@@ -351,8 +406,10 @@ function DesktopProductsPage() {
       const saved = editing ? await productApi.update(editing.id, payload) : await productApi.create(payload)
       notify(editing ? 'Changes saved.' : `${saved.name} added.`)
       setInitialForm(form)
+      setInitialTracking(tracking)
       await Promise.all([reload(), counts.reload()])
-      navigate(`/products/${saved.id}`, { replace: true })
+      // A new product goes back to the list (the "added" toast confirms it); an edit returns to its details.
+      navigate(editing ? `/products/${saved.id}` : '/products', { replace: true })
     } catch (err) {
       notify(getErrorMessage(err), 'error')
     } finally {
@@ -411,7 +468,20 @@ function DesktopProductsPage() {
           ? `${counts.data.all} ${counts.data.all === 1 ? 'product' : 'products'}${needRestock > 0 ? ` · ${needRestock} need restocking` : ''}`
           : 'Catalog and prices'
       }
-      actions={canManage ? <AddButton label="Add product" onClick={() => navigate('/products/create')} /> : undefined}
+      actions={
+        canManage ? (
+          <>
+            <ActionMenu
+              label="Import"
+              items={[
+                { label: 'Import products', description: 'Add or update many products from a spreadsheet', onSelect: () => setImporting(true) },
+                { label: 'Import images', description: 'Match photos to products by SKU or name', onSelect: () => setImportingImages(true) },
+              ]}
+            />
+            <AddButton label="Add product" onClick={() => navigate('/products/create')} />
+          </>
+        ) : undefined
+      }
     >
       <Toolbar>
         <div className="flex min-w-0 flex-1 basis-md items-center gap-2">
@@ -476,18 +546,18 @@ function DesktopProductsPage() {
 
         {!error && items.length > 0 && (
           <>
-            <div className="overflow-x-auto">
+            <div className="@container overflow-x-auto">
               <table className={`w-full text-left text-sm transition-opacity ${loading ? 'opacity-60' : ''}`}>
                 <thead className="border-b border-slate-100 text-xs text-slate-500">
                   <tr>
                     <Th className="pl-6">Product</Th>
-                    <Th>Category</Th>
+                    <Th className="hidden @3xl:table-cell">Category</Th>
                     <Th align="right">Price</Th>
-                    <Th align="right" className="hidden lg:table-cell">
+                    <Th align="right" className="hidden @5xl:table-cell">
                       Cost
                     </Th>
                     <Th align="right">Stock</Th>
-                    <Th>Status</Th>
+                    <Th className="hidden @3xl:table-cell">Status</Th>
                     <Th className="pr-6">
                       <span className="sr-only">Actions</span>
                     </Th>
@@ -512,20 +582,38 @@ function DesktopProductsPage() {
                             >
                               {product.name}
                             </button>
-                            <span className="text-xs text-slate-400">{product.sku}</span>
+                            <span className="block truncate text-xs text-slate-400">
+                              {product.sku}
+                              {/* Narrow screens fold the Category and Status columns into this line. */}
+                              <span className="@3xl:hidden">
+                                {product.categoryName && ` · ${product.categoryName}`}
+                                {!product.isActive && ' · Inactive'}
+                              </span>
+                            </span>
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 py-3 text-slate-600">{product.categoryName}</td>
+                      <td className="hidden px-3 py-3 text-slate-600 @3xl:table-cell">{product.categoryName}</td>
                       <td className="px-3 py-3 text-right font-medium tabular-nums">{money(product.sellingPrice)}</td>
-                      <td className="hidden px-3 py-3 text-right tabular-nums text-slate-500 lg:table-cell">{money(product.costPrice)}</td>
+                      <td className="hidden px-3 py-3 text-right tabular-nums text-slate-500 @5xl:table-cell">{money(product.costPrice)}</td>
                       <td className="px-3 py-3 text-right">
-                        <span className={`tabular-nums ${product.stockQuantity <= 0 ? 'font-medium text-rose-600' : ''}`}>{product.stockQuantity}</span>
-                        {product.stockStatus !== 'In Stock' && (
-                          <span className={`block text-xs ${stockTextClass(product.stockStatus)}`}>{product.stockStatus}</span>
-                        )}
+                        {(() => {
+                          const stock = stockSummary(product)
+                          return (
+                            <>
+                              <span className={`tabular-nums ${stock.tone === 'bad' ? 'font-medium text-rose-600' : stock.value === '—' ? 'text-slate-400' : ''}`}>
+                                {stock.value}
+                              </span>
+                              {stock.detail && (
+                                <span className={`block whitespace-nowrap text-xs ${stock.tone ? stockTextClass(product.stockStatus) : 'text-slate-400'}`}>
+                                  {stock.detail}
+                                </span>
+                              )}
+                            </>
+                          )
+                        })()}
                       </td>
-                      <td className="px-3 py-3">
+                      <td className="hidden px-3 py-3 @3xl:table-cell">
                         <StatusCell active={product.isActive} />
                       </td>
                       <td className="py-3 pl-3 pr-6">
@@ -573,6 +661,11 @@ function DesktopProductsPage() {
                       </TextButton>
                     )}
                 <div className="flex-1" />
+                {canManage && view.isActive && (
+                  <TextButton tone="accent" onClick={() => setLabelsFor(view)} className="h-12">
+                    Print labels
+                  </TextButton>
+                )}
                 {canManage && (
                   <PrimaryButton onClick={() => navigate(`/products/edit/${view.id}`)} className="h-12 flex-none px-8">
                     Edit product
@@ -605,26 +698,53 @@ function DesktopProductsPage() {
                   <p className="text-sm text-[#1F5E3B]">Price</p>
                   <p className="mt-0.5 text-2xl font-bold tabular-nums">{money(view.sellingPrice)}</p>
                   <p className="text-xs text-slate-500">
-                    Cost {money(view.costPrice)}
+                    {view.costSource === 'recipe' ? 'Ingredient cost' : 'Cost'} {money(view.costPrice)}
                     {view.sellingPrice > 0 && ` · ${Math.round(((view.sellingPrice - view.costPrice) / view.sellingPrice) * 100)}% margin`}
                   </p>
                 </div>
                 <div className="rounded-2xl bg-[#F6F8F7] px-4 py-3">
-                  <p className="text-sm text-slate-500">Stock</p>
-                  <p className={`mt-0.5 text-2xl font-bold tabular-nums ${view.stockQuantity <= 0 ? 'text-rose-600' : ''}`}>{view.stockQuantity}</p>
+                  <p className="text-sm text-slate-500">
+                    {view.inventoryMode === 'recipe' ? 'Can make' : view.inventoryMode === 'batch' ? 'Servings ready' : 'Stock'}
+                  </p>
+                  <p className={`mt-0.5 text-2xl font-bold tabular-nums ${stockSummary(view).tone === 'bad' ? 'text-rose-600' : ''}`}>
+                    {stockSummary(view).value}
+                  </p>
                   <p className={`text-xs ${stockTextClass(view.stockStatus)}`}>
-                    {view.stockStatus === 'In Stock' ? `Low-stock alert at ${view.reorderLevel}` : view.stockStatus}
+                    {view.inventoryMode === 'none'
+                      ? 'Stock isn’t tracked'
+                      : view.inventoryMode === 'recipe'
+                      ? view.stockStatus === 'In Stock'
+                        ? 'From the ingredients on hand'
+                        : view.stockStatus === 'Low Stock'
+                        ? 'An ingredient is running low'
+                        : 'An ingredient has run out'
+                      : view.stockStatus === 'In Stock'
+                      ? `Low-stock alert at ${view.reorderLevel}`
+                      : view.stockStatus}
                   </p>
                 </div>
               </div>
 
-              {canAdjustStock && (
-                <TextButton tone="accent" onClick={() => navigate('/inventory')} className="-ml-4 h-10">
-                  Update stock in Inventory →
+              {view.inventoryMode === 'batch' && can('inventory.produce') ? (
+                <TextButton tone="accent" onClick={() => navigate(`/ingredients?tab=batches&product=${view.id}`)} className="-ml-4 h-10">
+                  Record a batch →
                 </TextButton>
+              ) : view.inventoryMode === 'recipe' && canAdjustStock ? (
+                <TextButton tone="accent" onClick={() => navigate('/ingredients')} className="-ml-4 h-10">
+                  See ingredients →
+                </TextButton>
+              ) : (
+                canAdjustStock &&
+                view.inventoryMode !== 'none' && (
+                  <TextButton tone="accent" onClick={() => navigate('/inventory')} className="-ml-4 h-10">
+                    Update stock in Inventory →
+                  </TextButton>
+                )
               )}
 
               <DetailList>
+                <DetailRow label="Barcode" value={view.barcode} />
+                <DetailRow label="Unit" value={view.unit} />
                 <DetailRow label="Category" value={view.categoryName} />
                 <DetailRow label="Supplier" value={view.supplierName} />
                 <DetailRow label="Description" value={view.description} />
@@ -652,7 +772,7 @@ function DesktopProductsPage() {
               <PrimaryButton
                 type="submit"
                 form={FORM_ID}
-                disabled={busy || processingImage || checkingImageLink || (editing !== null && !isDirty)}
+                disabled={busy || processingImage || checkingImageLink || !trackingReady || (editing !== null && !isDirty)}
                 className="h-12 flex-none px-8"
               >
                 {busy ? 'Saving…' : editing ? (isDirty ? 'Save changes' : 'No changes') : 'Add product'}
@@ -782,12 +902,33 @@ function DesktopProductsPage() {
                   autoCapitalize="words"
                 />
                 <TextField
-                  label="SKU / barcode"
+                  label="SKU"
                   value={form.sku}
                   onChange={(sku) => setForm({ ...form, sku })}
                   error={fieldError('sku')}
-                  placeholder="Type or scan"
+                  placeholder="e.g. BEV-001"
+                  autoCapitalize="characters"
                   autoComplete="off"
+                  trailing={
+                    !form.sku.trim() ? (
+                      <GenerateCodeButton label="Generate SKU" onGenerate={productApi.suggestSku} onCode={(sku) => setForm((f) => ({ ...f, sku }))} />
+                    ) : undefined
+                  }
+                />
+                <TextField
+                  label="Barcode"
+                  optional
+                  value={form.barcode ?? ''}
+                  onChange={(barcode) => setForm({ ...form, barcode })}
+                  placeholder="Scan or type"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  hint={form.barcode?.trim() ? undefined : 'No barcode on the package? Generate one and print labels.'}
+                  trailing={
+                    !form.barcode?.trim() ? (
+                      <GenerateCodeButton label="Generate barcode" onGenerate={productApi.suggestBarcode} onCode={(barcode) => setForm((f) => ({ ...f, barcode }))} />
+                    ) : undefined
+                  }
                   onKeyDown={(e) => {
                     // Barcode scanners end with Enter — move on instead of submitting a half-filled form.
                     if (e.key === 'Enter') {
@@ -796,6 +937,14 @@ function DesktopProductsPage() {
                       fields[fields.indexOf(e.currentTarget) + 1]?.focus()
                     }
                   }}
+                />
+                <TextField
+                  label="Unit"
+                  optional
+                  value={form.unit ?? ''}
+                  onChange={(unit) => setForm({ ...form, unit })}
+                  placeholder="pcs, kg, box…"
+                  autoComplete="off"
                 />
                 <PickerField
                   label="Category"
@@ -838,56 +987,81 @@ function DesktopProductsPage() {
                   error={fieldError('sellingPrice')}
                   placeholder="0.00"
                 />
-                <TextField
-                  label="Cost"
-                  optional
-                  amount
-                  prefix={settings.currencySymbol}
-                  value={form.costPrice || ''}
-                  onChange={setNumber('costPrice')}
-                  error={fieldError('costPrice')}
-                  placeholder="0.00"
-                />
+                {recipeCost !== null ? (
+                  <div>
+                    <p className="text-sm font-medium">Cost</p>
+                    <p className="mt-1.5 flex h-12 items-center rounded-2xl bg-[#F6F8F7] px-4 tabular-nums text-slate-600">{money(recipeCost)}</p>
+                    <p className="mt-1.5 text-xs text-slate-500">Worked out from the ingredients below.</p>
+                  </div>
+                ) : (
+                  <TextField
+                    label="Cost"
+                    optional
+                    amount
+                    prefix={settings.currencySymbol}
+                    value={form.costPrice || ''}
+                    onChange={setNumber('costPrice')}
+                    error={fieldError('costPrice')}
+                    placeholder="0.00"
+                  />
+                )}
               </div>
-              {margin !== null && form.costPrice > 0 && (
+              {recipeCost === null && margin !== null && form.costPrice > 0 && (
                 <p className={`-mt-2 text-sm ${margin < 0 ? 'text-rose-600' : margin < 0.15 ? 'text-amber-700' : 'text-[#1F5E3B]'}`}>
                   {margin < 0
                     ? `Selling below cost — you lose ${money(form.costPrice - form.sellingPrice)} per sale.`
                     : `${Math.round(margin * 100)}% margin · ${money(form.sellingPrice - form.costPrice)} profit per sale`}
                 </p>
               )}
+            </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                {editing ? (
-                  <div>
-                    <p className="text-sm font-medium">Stock</p>
-                    <p className="mt-1.5 flex h-12 items-center rounded-2xl bg-[#F6F8F7] px-4 tabular-nums text-slate-500">{form.stockQuantity}</p>
-                    <p className="mt-1.5 text-xs text-slate-500">Change stock from Inventory so it’s recorded.</p>
+            {/* Full width below info and pricing: the recipe builder needs the room. */}
+            <div className="space-y-4 md:col-span-2">
+              <InventoryTrackingSection
+                draft={tracking}
+                onChange={setTracking}
+                foodService={foodService}
+                ingredients={ingredients.data ?? []}
+                modifierGroups={modifierGroups.data ?? []}
+                sellingPrice={form.sellingPrice}
+                money={money}
+                showErrors={showErrors}
+                keptStock={editing && (editing.inventoryMode === 'direct' || editing.inventoryMode === 'batch') ? editing.stockQuantity : undefined}
+                canManageIngredients={canAdjustStock}
+                stockFields={
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {editing && (editing.inventoryMode === 'direct' || editing.inventoryMode === 'batch') ? (
+                      <div>
+                        <p className="text-sm font-medium">{tracking.inventoryMode === 'batch' ? 'Servings ready' : 'Stock'}</p>
+                        <p className="mt-1.5 flex h-12 items-center rounded-2xl bg-white px-4 tabular-nums text-slate-500">{form.stockQuantity}</p>
+                        <p className="mt-1.5 text-xs text-slate-500">Change stock from Inventory so it’s recorded.</p>
+                      </div>
+                    ) : (
+                      <TextField
+                        label={tracking.inventoryMode === 'batch' ? 'Servings ready now' : 'Starting stock'}
+                        type="number"
+                        inputMode="numeric"
+                        min={0}
+                        step={1}
+                        value={form.stockQuantity || ''}
+                        onChange={setNumber('stockQuantity')}
+                        error={fieldError('stockQuantity')}
+                        placeholder="0"
+                      />
+                    )}
+                    <TextField
+                      label="Low-stock alert at"
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      step={1}
+                      value={form.reorderLevel}
+                      onChange={setNumber('reorderLevel')}
+                      error={fieldError('reorderLevel')}
+                    />
                   </div>
-                ) : (
-                  <TextField
-                    label="Starting stock"
-                    type="number"
-                    inputMode="numeric"
-                    min={0}
-                    step={1}
-                    value={form.stockQuantity || ''}
-                    onChange={setNumber('stockQuantity')}
-                    error={fieldError('stockQuantity')}
-                    placeholder="0"
-                  />
-                )}
-                <TextField
-                  label="Low-stock alert at"
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  step={1}
-                  value={form.reorderLevel}
-                  onChange={setNumber('reorderLevel')}
-                  error={fieldError('reorderLevel')}
-                />
-              </div>
+                }
+              />
 
               <TextAreaField
                 label="Description"
@@ -921,6 +1095,8 @@ function DesktopProductsPage() {
         />
       )}
 
+      {labelsFor && <PrintLabelsDialog product={labelsFor} onClose={() => setLabelsFor(null)} />}
+
       {deactivate && (
         <ConfirmDialog
           title={`Deactivate ${deactivate.name}?`}
@@ -930,6 +1106,15 @@ function DesktopProductsPage() {
           busy={busy}
           onCancel={() => setDeactivate(null)}
           onConfirm={() => void confirmDeactivate()}
+        />
+      )}
+      {importingImages && (
+        <ImageImportDialog onClose={() => setImportingImages(false)} onImported={() => void reload()} />
+      )}
+      {importing && (
+        <ProductImportDialog
+          onClose={() => setImporting(false)}
+          onImported={() => void Promise.all([reload(), counts.reload()])}
         />
       )}
     </DesktopPage>

@@ -2,6 +2,7 @@ import type { Supplier } from '../types'
 import { querySQL, executeSQL } from '../database/sqlite'
 import { runTransaction } from '../database/tx'
 import { auditStatement } from '../services/audit'
+import { requirePermission } from '../services/authz'
 import { ApiError } from '../utils/errors'
 
 export type SupplierPayload = {
@@ -21,6 +22,18 @@ export type SuppliedProduct = {
   costPrice: number
   stockQuantity: number
   isActive: boolean
+  /** Unit cost on the latest delivery from this supplier, and on the one before it. */
+  lastCost: number | null
+  previousCost: number | null
+  lastReceivedDate: string | null
+}
+
+export type SupplierSummary = {
+  totalPurchases: number
+  deliveries: number
+  lastDeliveryDate: string | null
+  openOrders: number
+  openOrdersValue: number
 }
 
 type SupplierRow = {
@@ -82,20 +95,60 @@ export const supplierApi = {
     return toSupplier(row)
   },
 
-  /** Products whose default supplier is this one (set on the product form or when receiving stock). */
+  /**
+   * Products bought from this supplier: those set to it on the product form, plus anything ever
+   * received from it, with the last two delivery costs so price changes stand out.
+   */
   products: async (id: number): Promise<SuppliedProduct[]> => {
+    const lastCostSql = (offset: number) => `(SELECT i.unit_cost FROM stock_receipt_items i JOIN stock_receipts r ON r.id = i.receipt_id
+        WHERE i.product_id = p.id AND r.supplier_id = ? ORDER BY r.received_date DESC, r.id DESC LIMIT 1 OFFSET ${offset})`
     const result = await querySQL(
-      `SELECT id, name, sku, cost_price AS costPrice, stock_quantity AS stockQuantity, is_active AS isActive
-       FROM products WHERE supplier_id = ? ORDER BY is_active DESC, name ASC`,
-      [id],
+      `SELECT p.id, p.name, p.sku, p.cost_price AS costPrice, p.stock_quantity AS stockQuantity, p.is_active AS isActive,
+              ${lastCostSql(0)} AS lastCost,
+              ${lastCostSql(1)} AS previousCost,
+              (SELECT MAX(r.received_date) FROM stock_receipt_items i JOIN stock_receipts r ON r.id = i.receipt_id
+                WHERE i.product_id = p.id AND r.supplier_id = ?) AS lastReceivedDate
+       FROM products p
+       WHERE p.supplier_id = ?
+          OR p.id IN (SELECT i.product_id FROM stock_receipt_items i JOIN stock_receipts r ON r.id = i.receipt_id WHERE r.supplier_id = ?)
+       ORDER BY p.is_active DESC, p.name ASC`,
+      [id, id, id, id, id],
     )
     return ((result.values ?? []) as (Omit<SuppliedProduct, 'isActive'> & { isActive: number })[]).map((row) => ({
       ...row,
       isActive: Boolean(row.isActive),
+      lastCost: row.lastCost ?? null,
+      previousCost: row.previousCost ?? null,
+      lastReceivedDate: row.lastReceivedDate ?? null,
     }))
   },
 
+  /** Money spent with this supplier and what's still on order. */
+  summary: async (id: number): Promise<SupplierSummary> => {
+    const [received, orders] = await Promise.all([
+      querySQL(
+        `SELECT COALESCE(SUM(total_cost), 0) AS total, COUNT(*) AS count, MAX(received_date) AS last FROM stock_receipts WHERE supplier_id = ?`,
+        [id],
+      ),
+      querySQL(
+        `SELECT COUNT(*) AS count, COALESCE(SUM(total_cost), 0) AS value FROM purchase_orders WHERE supplier_id = ? AND status IN (0, 1, 2)`,
+        [id],
+      ),
+    ])
+    const r = (received.values?.[0] ?? {}) as { total?: number; count?: number; last?: string | null }
+    const o = (orders.values?.[0] ?? {}) as { count?: number; value?: number }
+    return {
+      totalPurchases: r.total ?? 0,
+      deliveries: r.count ?? 0,
+      lastDeliveryDate: r.last ?? null,
+      openOrders: o.count ?? 0,
+      openOrdersValue: o.value ?? 0,
+    }
+  },
+
   create: async (payload: SupplierPayload): Promise<Supplier> => {
+    await requirePermission('suppliers.manage')
+    if (!payload.companyName.trim()) throw new ApiError('Enter the supplier name.', 400)
     const result = await executeSQL(
       `INSERT INTO suppliers (supplier_code, company_name, contact_person, phone, email, address, notes, is_active)
        VALUES ('', ?, ?, ?, ?, ?, ?, ?)`,
@@ -120,6 +173,8 @@ export const supplierApi = {
   },
 
   update: async (id: number, payload: SupplierPayload): Promise<Supplier> => {
+    await requirePermission('suppliers.manage')
+    if (!payload.companyName.trim()) throw new ApiError('Enter the supplier name.', 400)
     await runTransaction([
       {
         statement: `UPDATE suppliers SET company_name = ?, contact_person = ?, phone = ?, email = ?, address = ?, notes = ?, is_active = ? WHERE id = ?`,
@@ -140,6 +195,7 @@ export const supplierApi = {
   },
 
   deactivate: async (id: number): Promise<void> => {
+    await requirePermission('suppliers.manage')
     const supplier = await supplierApi.get(id)
     await runTransaction([
       { statement: `UPDATE suppliers SET is_active = 0 WHERE id = ?`, values: [id] },

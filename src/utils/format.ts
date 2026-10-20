@@ -83,3 +83,18 @@ export function formatDuration(start: string | null | undefined, end?: string | 
   const hours = Math.floor(minutes / 60)
   return hours ? `${hours}h ${minutes % 60}m` : `${minutes}m`
 }
+
+/** "Just now", "12 min ago", "3 h ago", "Yesterday, 4:10 PM", then the full date — for activity feeds. */
+export function formatRelativeTime(value: string | null | undefined, now: Date = new Date()): string {
+  const date = parseDateValue(value)
+  if (!date) return ''
+
+  const minutes = Math.floor((now.getTime() - date.getTime()) / 60_000)
+  if (minutes < 1) return 'Just now'
+  if (minutes < 60) return `${minutes} min ago`
+
+  const day = formatDayLabel(value, now)
+  if (day === 'Today') return `${Math.floor(minutes / 60)} h ago`
+  if (day === 'Yesterday') return `Yesterday, ${formatTime(value)}`
+  return formatDateTime(value)
+}

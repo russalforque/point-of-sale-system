@@ -210,6 +210,27 @@ export class ReceiptBuilder {
     return this.finish(true)
   }
 
+  /**
+   * Prints a scannable barcode with its digits underneath (GS k). Valid EAN-13 codes use the
+   * EAN-13 symbology; anything else (letters, other lengths) is printed as Code 128.
+   */
+  barcode(code: string, options: { height?: number; moduleWidth?: 2 | 3 } = {}): this {
+    const data = sanitizeForPrinter(code).replace(/[^\x20-\x7e]/g, '').slice(0, 40)
+    if (!data) return this
+    this.bytes.push(GS, 0x48, 0x02) // digits below
+    this.bytes.push(GS, 0x68, Math.max(40, Math.min(160, options.height ?? 72))) // height in dots
+    this.bytes.push(GS, 0x77, options.moduleWidth ?? 2) // bar width
+    if (/^\d{13}$/.test(data)) {
+      this.bytes.push(GS, 0x6b, 67, 13, ...textToBytes(data))
+    } else {
+      const payload = textToBytes(`{B${data}`)
+      this.bytes.push(GS, 0x6b, 73, payload.length, ...payload)
+    }
+    this.bytes.push(LF)
+    this.previewLines.push({ text: `||||| ${data} |||||`, ...this.state })
+    return this
+  }
+
   /** Appends a raw command (e.g. the cash-drawer kick sequence) into the same byte stream. */
   raw(command: number[] | Uint8Array): this {
     this.bytes.push(...Array.from(command))

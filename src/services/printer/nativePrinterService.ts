@@ -1,7 +1,7 @@
 import { buildDrawerKickCommand } from './cashDrawer'
 import { logPrinterError, PrinterError, type PrinterErrorCode } from './errors'
 import { SellixPrinter, type NativeBluetoothDevice } from './nativePrinter'
-import { buildReceipt, buildTestReceipt } from './receiptFormatter'
+import { buildProductLabels, buildReceipt, buildTestReceipt, type ProductLabel } from './receiptFormatter'
 import type {
   DiscoveredPrinter,
   PrinterAvailability,
@@ -338,6 +338,11 @@ export class NativePrinterService implements PrinterService {
       connectionType: this.connectedPrinter?.type ?? config.connectionType,
       printerName: this.connectedPrinter?.name ?? config.deviceName ?? undefined,
     })
+    await this.runJob(bytes)
+  }
+
+  async printLabels(labels: { label: ProductLabel; copies: number }[], settings: StoreSetting, config: PrinterConfig): Promise<void> {
+    const { bytes } = buildProductLabels(labels, settings, config.paperWidth, { cut: config.autoCut })
     await this.runJob(bytes)
   }
 

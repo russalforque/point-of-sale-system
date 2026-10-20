@@ -5,6 +5,7 @@ import { getStoredUser } from '../utils/session'
 import { ApiError } from '../utils/errors'
 import { APPROVER_ROLES, ROLE_LABELS, type Role } from '../utils/permissions'
 import { auditStatement } from '../services/audit'
+import { requirePermission } from '../services/authz'
 import { hashPin, PIN_PATTERN } from './authApi'
 
 export type UserAccount = {
@@ -94,6 +95,7 @@ export const userApi = {
   },
 
   create: async (payload: UserPayload): Promise<UserAccount> => {
+    await requirePermission('users.manage')
     if (!payload.password) {
       throw new ApiError('Password is required for a new account.', 400)
     }
@@ -129,6 +131,7 @@ export const userApi = {
   },
 
   update: async (id: number, payload: UserPayload): Promise<UserAccount> => {
+    await requirePermission('users.manage')
     const current = getStoredUser()
     if (current && Number(current.id) === id && current.role === 'admin' && payload.role !== 'admin') {
       throw new ApiError('You cannot remove your own admin role.', 400)
@@ -171,6 +174,7 @@ export const userApi = {
   },
 
   deactivate: async (id: number): Promise<void> => {
+    await requirePermission('users.manage')
     const current = getStoredUser()
     if (current && Number(current.id) === id) {
       throw new ApiError('You cannot deactivate your own account.', 400)

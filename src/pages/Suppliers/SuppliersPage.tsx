@@ -232,14 +232,13 @@ function DesktopSuppliersPage() {
         )}
 
         {filtered.length > 0 && (
-          <div className="overflow-x-auto">
+          <div className="@container overflow-x-auto">
             <table className={`w-full text-left text-sm transition-opacity ${loading ? 'opacity-60' : ''}`}>
               <thead className="border-b border-slate-100 text-xs text-slate-500">
                 <tr>
                   <Th className="pl-6">Supplier</Th>
-                  <Th>Contact person</Th>
-                  <Th>Phone</Th>
-                  <Th className="hidden lg:table-cell">Email</Th>
+                  <Th>Contact</Th>
+                  <Th className="hidden @4xl:table-cell">Email</Th>
                   <Th>Status</Th>
                   <Th className="pr-6">
                     <span className="sr-only">Actions</span>
@@ -269,9 +268,17 @@ function DesktopSuppliersPage() {
                         </div>
                       </div>
                     </td>
-                    <td className={`px-3 py-3 ${supplier.contactPerson ? '' : 'text-slate-300'}`}>{supplier.contactPerson || 'Not added'}</td>
-                    <td className={`px-3 py-3 tabular-nums ${supplier.phone ? '' : 'text-slate-300'}`}>{supplier.phone || 'Not added'}</td>
-                    <td className={`hidden max-w-60 truncate px-3 py-3 lg:table-cell ${supplier.email ? 'text-slate-600' : 'text-slate-300'}`}>
+                    <td className="px-3 py-3">
+                      {supplier.contactPerson || supplier.phone ? (
+                        <>
+                          <span className="block max-w-48 truncate">{supplier.contactPerson || 'No contact name'}</span>
+                          {supplier.phone && <span className="block whitespace-nowrap text-xs tabular-nums text-slate-500">{supplier.phone}</span>}
+                        </>
+                      ) : (
+                        <span className="text-slate-300">Not added</span>
+                      )}
+                    </td>
+                    <td className={`hidden max-w-60 truncate px-3 py-3 @4xl:table-cell ${supplier.email ? 'text-slate-600' : 'text-slate-300'}`}>
                       {supplier.email || 'Not added'}
                     </td>
                     <td className="px-3 py-3">

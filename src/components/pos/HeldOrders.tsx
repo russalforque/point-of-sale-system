@@ -10,7 +10,18 @@ import { useAsync } from '../../hooks/useAsync'
 import type { Customer, HeldOrder } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
 import { formatMoney, formatTime, formatDayLabel } from '../../utils/format'
-import { calculateTotals, DEFAULT_ORDER_TYPE, isOrderType, orderTypeLabel, type CartLine } from '../../utils/pos'
+import { checkoutTotals } from '../../services/checkout'
+import { modifierApi } from '../../api/modifierApi'
+import {
+  DEFAULT_ORDER_TYPE,
+  isOrderType,
+  lineKey,
+  lineQty,
+  orderTypeLabel,
+  unitPrice,
+  type CartLine,
+  type CartModifier,
+} from '../../utils/pos'
 import { ConfirmDialog, Modal } from '../ui/Modal'
 import { EmptyState, ErrorState, Spinner } from '../ui/States'
 
@@ -40,7 +51,8 @@ export function useHeldOrders() {
   /** Parks the current cart. Returns false when there was nothing to hold or saving failed. */
   async function holdCurrent(label: string, customerName: string | null): Promise<boolean> {
     if (checkout.cart.length === 0) return false
-    const totals = calculateTotals(checkout.cart, checkout.discount, settings.taxRate)
+    // Points aren't reserved while an order waits; they're chosen again at payment.
+    const totals = checkoutTotals({ ...checkout, redeemPoints: 0 }, settings)
     try {
       await heldOrdersApi.hold({
         label,
@@ -48,13 +60,18 @@ export function useHeldOrders() {
         customerName,
         orderType: checkout.orderType,
         discount: totals.discount,
+        discountType: totals.manualDiscount > 0 ? checkout.discountType : null,
+        discountReference: checkout.discountReference,
         subtotal: totals.subtotal,
         total: totals.total,
         lines: checkout.cart.map((line) => ({
           productId: line.product.id,
           name: line.product.name,
           quantity: line.quantity,
-          unitPrice: line.product.sellingPrice,
+          unitPrice: unitPrice(line),
+          ...(line.modifiers.length
+            ? { modifierIds: line.modifiers.map((modifier) => modifier.id), modifierNames: line.modifiers.map((modifier) => modifier.name) }
+            : {}),
         })),
       })
       clearCheckout()
@@ -72,6 +89,9 @@ export function useHeldOrders() {
    */
   async function resume(order: HeldOrder): Promise<{ customer: Customer | null } | null> {
     const products = await Promise.all(order.lines.map((line) => productApi.get(line.productId).catch(() => null)))
+    // Options are re-read too: their prices may have changed, or they may have been turned off.
+    const modifierIds = Array.from(new Set(order.lines.flatMap((line) => line.modifierIds ?? [])))
+    const current = new Map((await modifierApi.byIds(modifierIds).catch(() => [])).map((modifier) => [modifier.id, modifier]))
 
     const cart: CartLine[] = []
     const notes: string[] = []
@@ -81,14 +101,26 @@ export function useHeldOrders() {
         notes.push(`${line.name} is no longer sold`)
         return
       }
-      const quantity = Math.min(line.quantity, product.stockQuantity)
+      const modifiers: CartModifier[] = []
+      for (const id of line.modifierIds ?? []) {
+        const modifier = current.get(id)
+        if (modifier) modifiers.push({ id, groupId: modifier.groupId, groupName: modifier.groupName, name: modifier.name, priceDelta: modifier.priceDelta })
+      }
+      if (modifiers.length !== (line.modifierIds ?? []).length) {
+        notes.push(`${product.name}: an option is no longer offered, add it again`)
+        return
+      }
+      const available =
+        settings.allowNegativeStock || product.availableQuantity === null ? Infinity : product.availableQuantity - lineQty(cart, product.id)
+      const quantity = Math.min(line.quantity, available)
       if (quantity <= 0) {
         notes.push(`${product.name} is out of stock`)
         return
       }
       if (quantity < line.quantity) notes.push(`only ${quantity} ${product.name} left`)
-      if (product.sellingPrice !== line.unitPrice) notes.push(`${product.name} price is now ${formatMoney(product.sellingPrice, settings.currencySymbol)}`)
-      cart.push({ product, quantity })
+      const resumed: CartLine = { key: lineKey(product.id, modifiers), product, quantity, modifiers }
+      if (unitPrice(resumed) !== line.unitPrice) notes.push(`${product.name} price is now ${formatMoney(unitPrice(resumed), settings.currencySymbol)}`)
+      cart.push(resumed)
     })
 
     if (cart.length === 0) {
@@ -102,7 +134,10 @@ export function useHeldOrders() {
       ...checkout,
       cart,
       customerId: customer?.id ?? null,
-      discount: order.discount,
+      discount: order.discountType === 'senior_pwd' ? 0 : order.discount,
+      discountType: order.discountType === 'senior_pwd' ? 'senior_pwd' : 'manual',
+      discountReference: order.discountReference ?? '',
+      redeemPoints: 0,
       orderType: isOrderType(order.orderType) ? order.orderType : DEFAULT_ORDER_TYPE,
     })
 
@@ -278,7 +313,9 @@ export function HeldOrdersDialog({
         <ul className="space-y-2">
           {orders.map((order) => {
             const busy = busyId === order.id
-            const names = order.lines.map((line) => `${line.quantity}× ${line.name}`).join(', ')
+            const names = order.lines
+              .map((line) => `${line.quantity}× ${line.name}${line.modifierNames?.length ? ` (${line.modifierNames.join(', ')})` : ''}`)
+              .join(', ')
             return (
               <li key={order.id} className="rounded-2xl bg-[#F6F8F7] p-4">
                 <div className="flex items-start justify-between gap-3">

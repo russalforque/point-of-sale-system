@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
-import { adjustmentsApi, calculateRefund, MIN_REASON_LENGTH, returnableQuantity } from '../../api/adjustmentsApi'
+import { adjustmentsApi, calculateRefund, canRestock, MIN_REASON_LENGTH, refundMethodsFor, returnableQuantity } from '../../api/adjustmentsApi'
+import { modifierSummary } from '../../utils/pos'
 import { salesApi } from '../../api/salesApi'
 import { shiftApi } from '../../api/shiftApi'
 import { useApproval } from '../../components/auth/ApprovalDialog'
@@ -19,7 +20,6 @@ import { CASH_METHOD } from '../../services/payments'
 import type { PaymentMethod, Refund, Sale } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
 import { formatDateTime, formatMoney } from '../../utils/format'
-import { PAYMENT_OPTIONS } from '../../utils/pos'
 
 const REFUND_REASONS = ['Damaged item', 'Wrong item', 'Changed mind', 'Expired']
 const VOID_REASONS = ['Wrong items rung up', 'Customer cancelled', 'Duplicate sale', 'Payment failed']
@@ -138,8 +138,10 @@ function SaleAdjustments({ sale, onChanged, onClose }: { sale: Sale; onChanged: 
   const refunds = useAsync(() => adjustmentsApi.refundsForSale(sale.id), [sale.id, sale.refundedAmount, sale.status])
   const activeShift = useAsync(() => shiftApi.getActive().catch(() => null), [])
 
+  // Charged sales can be refunded back to the customer's account; others pay out money.
+  const refundOptions = refundMethodsFor(sale)
   const defaultMethod: PaymentMethod =
-    sale.payments.length === 1 && PAYMENT_OPTIONS.some((option) => option.value === sale.payments[0]!.method)
+    sale.payments.length === 1 && refundOptions.some((option) => option.value === sale.payments[0]!.method)
       ? (sale.payments[0]!.method as PaymentMethod)
       : CASH_METHOD
 
@@ -156,9 +158,11 @@ function SaleAdjustments({ sale, onChanged, onClose }: { sale: Sale; onChanged: 
   const canReturn = sale.status === 'Completed' && !fullyRefunded
   const canVoid = sale.status === 'Completed' && sale.refundStatus === 'None'
 
-  const picked = Object.entries(selection)
-    .map(([productId, quantity]) => ({ productId: Number(productId), quantity }))
+  // Selection is keyed by sale line: the same drink can be on two lines with different options.
+  const picked = sale.items
+    .map((item) => ({ saleItemId: item.id, productId: item.productId, quantity: selection[item.id] ?? 0 }))
     .filter((entry) => entry.quantity > 0)
+  const pickedMadeToOrder = sale.items.some((item) => (selection[item.id] ?? 0) > 0 && !canRestock(item))
 
   const refund = useMemo(() => {
     try {
@@ -172,7 +176,7 @@ function SaleAdjustments({ sale, onChanged, onClose }: { sale: Sale; onChanged: 
   const pickedCount = picked.reduce((sum, entry) => sum + entry.quantity, 0)
 
   function selectAll() {
-    setSelection(Object.fromEntries(sale.items.map((item) => [item.productId, returnableQuantity(item)])))
+    setSelection(Object.fromEntries(sale.items.map((item) => [item.id, returnableQuantity(item)])))
   }
 
   async function submitRefund() {
@@ -181,7 +185,7 @@ function SaleAdjustments({ sale, onChanged, onClose }: { sale: Sale; onChanged: 
       setReasonError('Enter a reason for the return.')
       return
     }
-    const methodName = PAYMENT_OPTIONS.find((option) => option.value === method)?.label ?? 'Other'
+    const methodName = refundOptions.find((option) => option.value === method)?.label ?? 'Other'
     const approver = await approval.request({
       permission: 'sales.refund',
       title: `Refund ${money(refund.amount)}?`,
@@ -257,9 +261,10 @@ function SaleAdjustments({ sale, onChanged, onClose }: { sale: Sale; onChanged: 
             {sale.items.map((item) => {
               const returnable = returnableQuantity(item)
               return (
-                <li key={item.productId} className="flex items-center gap-3 border-b border-slate-100 py-3 last:border-b-0">
+                <li key={item.id} className="flex items-center gap-3 border-b border-slate-100 py-3 last:border-b-0">
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-[15px]">{item.productName}</p>
+                    {item.modifiers.length > 0 && <p className="truncate text-xs text-slate-500">{modifierSummary(item.modifiers)}</p>}
                     <p className="text-xs tabular-nums text-slate-500">
                       {item.quantity} × {money(item.unitPrice)}
                       {item.refundedQuantity > 0 && <span className="text-amber-700"> · {item.refundedQuantity} returned</span>}
@@ -268,10 +273,10 @@ function SaleAdjustments({ sale, onChanged, onClose }: { sale: Sale; onChanged: 
                   {canReturn && returnable > 0 ? (
                     <QuantityStepper
                       label={`${item.productName} to return`}
-                      value={selection[item.productId] ?? 0}
+                      value={selection[item.id] ?? 0}
                       max={returnable}
                       disabled={busy}
-                      onChange={(value) => setSelection((prev) => ({ ...prev, [item.productId]: value }))}
+                      onChange={(value) => setSelection((prev) => ({ ...prev, [item.id]: value }))}
                     />
                   ) : (
                     <span className="text-sm tabular-nums text-slate-500">{money(item.lineTotal)}</span>
@@ -310,8 +315,12 @@ function SaleAdjustments({ sale, onChanged, onClose }: { sale: Sale; onChanged: 
 
               <div>
                 <p className="text-sm font-medium">Refund by</p>
-                <div role="radiogroup" aria-label="Refund method" className="mt-1.5 grid grid-cols-4 gap-1 rounded-2xl bg-[#F1F4F3] p-1">
-                  {PAYMENT_OPTIONS.map((option) => (
+                <div
+                  role="radiogroup"
+                  aria-label="Refund method"
+                  className={`mt-1.5 grid gap-1 rounded-2xl bg-[#F1F4F3] p-1 ${refundOptions.length > 4 ? 'grid-cols-3' : 'grid-cols-4'}`}
+                >
+                  {refundOptions.map((option) => (
                     <button
                       key={option.value}
                       type="button"
@@ -334,7 +343,13 @@ function SaleAdjustments({ sale, onChanged, onClose }: { sale: Sale; onChanged: 
 
               <SwitchRow
                 label="Return items to stock"
-                description={restock ? 'Stock goes back up.' : 'For damaged or expired goods.'}
+                description={
+                  restock
+                    ? pickedMadeToOrder
+                      ? 'Stock goes back up. Made-to-order drinks and food aren’t restocked: their ingredients were used.'
+                      : 'Stock goes back up.'
+                    : 'For damaged or expired goods.'
+                }
                 checked={restock}
                 disabled={busy}
                 onChange={setRestock}

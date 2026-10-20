@@ -28,6 +28,15 @@ export const AUDIT_ACTIONS = {
   user: 'User management',
   backup: 'Backup',
   restore: 'Restore',
+  credit: 'Customer credit',
+  expense: 'Expense',
+  purchase_order: 'Purchase order',
+  customer: 'Customer change',
+  ingredient: 'Ingredient change',
+  waste: 'Waste',
+  batch: 'Batch made',
+  modifier: 'Modifier change',
+  recipe: 'Recipe change',
 } as const
 
 export type AuditAction = keyof typeof AUDIT_ACTIONS

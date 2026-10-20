@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Barcode,
@@ -18,13 +18,15 @@ import { customerApi } from '../api/customerApi'
 import { productApi } from '../api/productApi'
 import { salesApi } from '../api/salesApi'
 
-import { AmountInput } from '../components/ui/AmountInput'
+import { DiscountControl } from '../components/pos/DiscountControl'
 import { Modal } from '../components/ui/Modal'
 import { Pagination } from '../components/ui/Pagination'
 import { HeldOrdersDialog, HoldOrderDialog, useHeldOrders } from '../components/pos/HeldOrders'
 import { OrderTypeSelector } from '../components/pos/OrderTypeSelector'
 import { PaymentModal } from '../components/pos/PaymentModal'
+import { QtyField } from '../components/pos/QtyField'
 import { EmptyState, ErrorState, Spinner } from '../components/ui/States'
+import { SafeImage } from '../components/ui/DesktopKit'
 
 import { useAuth } from '../context/AuthContext'
 import { useCheckout } from '../context/CheckoutContext'
@@ -33,40 +35,33 @@ import { useToast } from '../context/ToastContext'
 import { useAsync } from '../hooks/useAsync'
 import { useDebounced } from '../hooks/useDebounced'
 import { useDismissOnBack } from '../hooks/useDismissOnBack'
+import { useIsMobile } from '../hooks/useIsMobile'
 import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
 
 import { printerErrorMessage } from '../services/printer'
 import type { Customer, Product, Sale } from '../types'
 import { getErrorMessage } from '../utils/errors'
 import { formatDateTime, formatMoney } from '../utils/format'
-import { addToCart, calculateTotals, canSell, DEFAULT_ORDER_TYPE, setLineQty } from '../utils/pos'
+import { checkoutTotals } from '../services/checkout'
+import {
+  addToCart,
+  canSell,
+  DEFAULT_ORDER_TYPE,
+  lineKey,
+  lineMax,
+  lineQty,
+  lineTotal,
+  modifierSummary,
+  REGISTER_GRID_LIMIT,
+  setLineQty,
+  unitPrice,
+  type CartLine,
+  type CartModifier,
+} from '../utils/pos'
+import { ModifierPicker } from '../components/pos/ModifierPicker'
 
 // 📱 Mobile Sales Import
 import MobileSales from './mobile/MobileSales'
-
-/* =============================================================
-   MOBILE DETECTION HOOK
-============================================================= */
-
-function useIsMobile(breakpoint = 768) {
-  const [isMobile, setIsMobile] = useState<boolean>(() => {
-    if (typeof window !== 'undefined') {
-      return window.innerWidth < breakpoint
-    }
-    return false
-  })
-
-  useEffect(() => {
-    const mql = window.matchMedia(`(max-width: ${breakpoint - 1}px)`)
-    const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches)
-
-    setIsMobile(mql.matches)
-    mql.addEventListener('change', onChange)
-    return () => mql.removeEventListener('change', onChange)
-  }, [breakpoint])
-
-  return isMobile
-}
 
 /* =============================================================
    MAIN EXPORT: AUTO-SWITCHER
@@ -108,14 +103,16 @@ function DesktopSales() {
   const [customerSearch, setCustomerSearch] = useState('')
   const [pickedCustomer, setPickedCustomer] = useState<Customer | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
-  const [lastAddedId, setLastAddedId] = useState<number | null>(null)
+  const [lastAddedKey, setLastAddedKey] = useState<string | null>(null)
   const [lookingUp, setLookingUp] = useState(false)
+  /** Product whose options (size, milk…) are being chosen before it is added. */
+  const [pickerProduct, setPickerProduct] = useState<Product | null>(null)
+  const allowOversell = settings.allowNegativeStock
 
   const searchRef = useRef<HTMLInputElement | null>(null)
 
   const cart = checkout.cart
   const customerId = checkout.customerId
-  const discount = checkout.discount
   const money = (value: number) => formatMoney(value, settings.currencySymbol)
 
   const q = useDebounced(search)
@@ -127,15 +124,13 @@ function DesktopSales() {
       productApi.catalog({
         search: q || undefined,
         categoryId: categoryId ? Number(categoryId) : undefined,
+        limit: REGISTER_GRID_LIMIT,
       }),
     [q, categoryId],
   )
   const customers = useAsync(() => customerApi.lookup(cq || undefined), [cq])
 
-  const totals = useMemo(
-    () => calculateTotals(cart, discount, settings.taxRate),
-    [cart, discount, settings.taxRate],
-  )
+  const totals = useMemo(() => checkoutTotals(checkout, settings), [checkout, settings])
 
   const itemCount = cart.reduce((sum, line) => sum + line.quantity, 0)
   const taxPercent = Math.round(settings.taxRate * 10000) / 100
@@ -153,27 +148,39 @@ function DesktopSales() {
   ------------------------------------------------------------------ */
 
   function add(product: Product) {
-    if (product.stockQuantity <= 0) {
-      notify('This item is out of stock.', 'error')
+    if (!canSell(product, cart, 1, allowOversell)) {
+      notify(
+        (product.availableQuantity ?? 0) <= 0
+          ? 'This item is out of stock.'
+          : `Only ${product.availableQuantity} of ${product.name} ${product.inventoryMode === 'recipe' ? 'can be made' : 'in stock'}.`,
+        'error',
+      )
       return
     }
-
-    if (!canSell(product, cart)) {
-      notify(`Only ${product.stockQuantity} of ${product.name} in stock.`, 'error')
+    // Drinks with sizes, milks or add-ons: choose them first.
+    if (product.modifierGroupCount > 0) {
+      setPickerProduct(product)
       return
     }
-
-    setCheckout({ ...checkout, cart: addToCart(cart, product) })
-    setLastAddedId(product.id)
+    setCheckout({ ...checkout, cart: addToCart(cart, product, { allowOversell }) })
+    setLastAddedKey(lineKey(product.id))
   }
 
-  function changeQty(product: Product, quantity: number) {
-    setCheckout({ ...checkout, cart: setLineQty(cart, product.id, quantity) })
+  function addWithOptions(product: Product, modifiers: CartModifier[], quantity: number) {
+    setCheckout({ ...checkout, cart: addToCart(cart, product, { modifiers, quantity, allowOversell }) })
+    setLastAddedKey(lineKey(product.id, modifiers))
+    setPickerProduct(null)
   }
+
+  function changeQty(line: CartLine, quantity: number) {
+    setCheckout({ ...checkout, cart: setLineQty(cart, line.key, quantity, allowOversell) })
+  }
+
 
   function selectCustomer(customer: Customer | null) {
     setPickedCustomer(customer)
-    setCheckout({ ...checkout, customerId: customer?.id ?? null })
+    // Points belong to a customer: switching customer drops any redemption.
+    setCheckout({ ...checkout, customerId: customer?.id ?? null, redeemPoints: 0 })
     setIsPickingCustomer(false)
     setCustomerSearch('')
   }
@@ -185,7 +192,15 @@ function DesktopSales() {
       setConfirmClear(true)
       return
     }
-    setCheckout({ ...checkout, cart: [], discount: 0, orderType: DEFAULT_ORDER_TYPE })
+    setCheckout({
+      ...checkout,
+      cart: [],
+      discount: 0,
+      discountType: 'manual',
+      discountReference: '',
+      redeemPoints: 0,
+      orderType: DEFAULT_ORDER_TYPE,
+    })
     setConfirmClear(false)
     notify('Order cleared.')
   }
@@ -212,9 +227,10 @@ function DesktopSales() {
 
     setLookingUp(true)
     try {
-      const results = await productApi.catalog({ search: term })
-      const exact = results.find((product) => product.sku.toLowerCase() === term.toLowerCase())
-      const match = exact ?? (results.length === 1 ? results[0] : undefined)
+      // A scanned barcode or typed SKU adds that product straight away.
+      const byCode = await productApi.findByCode(term)
+      const results = byCode ? [byCode] : await productApi.catalog({ search: term })
+      const match = byCode ?? (results.length === 1 ? results[0] : undefined)
 
       if (match) {
         add(match)
@@ -236,7 +252,7 @@ function DesktopSales() {
 
   // "/" jumps to search from anywhere on the register.
   useEffect(() => {
-    if (isPaymentOpen || showHistory || showHold || showHeld) return
+    if (isPaymentOpen || showHistory || showHold || showHeld || pickerProduct) return
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === '/' && !isTypingTarget(event.target)) {
         event.preventDefault()
@@ -245,7 +261,7 @@ function DesktopSales() {
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [isPaymentOpen, showHistory, showHold, showHeld])
+  }, [isPaymentOpen, showHistory, showHold, showHeld, pickerProduct])
 
   // Auto-cancel the pending "clear order" confirmation.
   useEffect(() => {
@@ -256,11 +272,11 @@ function DesktopSales() {
 
   // Briefly highlight the line that was just added and keep it in view.
   useEffect(() => {
-    if (lastAddedId == null) return
-    document.getElementById(`cart-line-${lastAddedId}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-    const id = window.setTimeout(() => setLastAddedId(null), 1200)
+    if (lastAddedKey == null) return
+    document.getElementById(`cart-line-${lastAddedKey}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    const id = window.setTimeout(() => setLastAddedKey(null), 1200)
     return () => window.clearTimeout(id)
-  }, [lastAddedId, cart])
+  }, [lastAddedKey, cart])
 
   /* ------------------------------------------------------------------
      RENDER
@@ -271,6 +287,8 @@ function DesktopSales() {
     ...(categories.data ?? []).map((category) => ({ id: String(category.id), name: category.name })),
   ]
   const products = catalog.data ?? []
+  // Stores without product photos get compact text tiles: twice as many items per screen.
+  const catalogHasImages = products.some((product) => product.imageUrl)
 
   return (
     <div className="flex h-dvh min-h-0 flex-col bg-[#F6F8F7] pt-[env(safe-area-inset-top,0px)] text-[#091413] antialiased">
@@ -320,7 +338,7 @@ function DesktopSales() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={(e) => void handleSearchKeyDown(e)}
-                placeholder="Search products or scan a barcode"
+                placeholder="Search or scan a barcode"
                 className="h-12 w-full rounded-2xl border-0 bg-[#F3F5F4] pl-11 pr-12 text-[15px] placeholder:text-slate-400 outline-none transition focus:bg-white focus:ring-2 focus:ring-[#1F5E3B] [&::-webkit-search-cancel-button]:hidden"
               />
               {search ? (
@@ -353,7 +371,7 @@ function DesktopSales() {
                     role="tab"
                     aria-selected={active}
                     onClick={() => setCategoryId(option.id)}
-                    className={`h-9 shrink-0 rounded-full px-4 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] ${
+                    className={`h-9 shrink-0 rounded-full px-4 text-sm font-medium transition pointer-coarse:h-11 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] ${
                       active ? 'bg-[#1F5E3B] text-white' : 'bg-[#F3F5F4] text-slate-600 hover:bg-[#E9EEEB]'
                     }`}
                   >
@@ -388,7 +406,7 @@ function DesktopSales() {
 
             {products.length > 0 && (
               <div
-                className={`grid grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))] gap-3 transition-opacity ${
+                className={`grid auto-rows-fr grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))] gap-3 transition-opacity ${
                   catalog.loading ? 'opacity-60' : ''
                 }`}
               >
@@ -396,13 +414,20 @@ function DesktopSales() {
                   <CatalogProductCard
                     key={product.id}
                     product={product}
+                    showImage={catalogHasImages}
                     price={money(product.sellingPrice)}
-                    qtyInCart={cart.find((line) => line.product.id === product.id)?.quantity ?? 0}
-                    canAddMore={canSell(product, cart)}
+                    qtyInCart={lineQty(cart, product.id)}
+                    canAddMore={canSell(product, cart, 1, allowOversell)}
+                    allowOversell={allowOversell}
                     onAdd={() => add(product)}
                   />
                 ))}
               </div>
+            )}
+            {products.length >= REGISTER_GRID_LIMIT && (
+              <p className="mt-4 text-center text-sm text-slate-500">
+                Showing the first {REGISTER_GRID_LIMIT} products. Search, scan or pick a category to find the rest.
+              </p>
             )}
           </div>
         </main>
@@ -435,7 +460,7 @@ function DesktopSales() {
                       confirmClear ? 'bg-rose-600 text-white' : 'text-rose-600 hover:bg-rose-50'
                     }`}
                   >
-                    {confirmClear ? 'Click to confirm' : 'Clear'}
+                    {confirmClear ? 'Tap again to clear' : 'Clear'}
                   </button>
                 </div>
               )}
@@ -460,8 +485,14 @@ function DesktopSales() {
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm">{selectedCustomer?.fullName ?? 'Walk-in customer'}</span>
-                  {selectedCustomer && (
-                    <span className="block text-xs text-[#1F5E3B]">{selectedCustomer.loyaltyPoints} loyalty pts</span>
+                  {selectedCustomer && (settings.loyaltyEnabled || selectedCustomer.creditBalance > 0.004) && (
+                    <span className="block truncate text-xs text-[#1F5E3B]">
+                      {settings.loyaltyEnabled && `${selectedCustomer.loyaltyPoints} pts`}
+                      {settings.loyaltyEnabled && selectedCustomer.creditBalance > 0.004 && ' · '}
+                      {selectedCustomer.creditBalance > 0.004 && (
+                        <span className="text-amber-700">owes {money(selectedCustomer.creditBalance)}</span>
+                      )}
+                    </span>
                   )}
                 </span>
                 <span className="text-sm font-medium text-[#1F5E3B]">{isPickingCustomer ? 'Done' : 'Change'}</span>
@@ -491,7 +522,7 @@ function DesktopSales() {
                       <CustomerOption
                         key={customer.id}
                         name={customer.fullName}
-                        detail={`${customer.loyaltyPoints} pts`}
+                        detail={settings.loyaltyEnabled ? `${customer.loyaltyPoints} pts` : customer.phone ?? undefined}
                         selected={customer.id === customerId}
                         onSelect={() => selectCustomer(customer)}
                       />
@@ -512,45 +543,57 @@ function DesktopSales() {
             ) : (
               <ul>
                 {cart.map((line) => {
-                  const canIncrease = canSell(line.product, cart)
+                  const max = lineMax(cart, line, allowOversell)
+                  const canIncrease = line.quantity + 1 <= max
                   const willRemove = line.quantity <= 1
                   return (
                     <li
-                      key={line.product.id}
-                      id={`cart-line-${line.product.id}`}
+                      key={line.key}
+                      id={`cart-line-${line.key}`}
                       className={`-mx-2 flex items-center gap-2 rounded-xl border-b border-slate-100 px-2 py-2.5 transition-colors duration-500 last:border-b-0 ${
-                        lastAddedId === line.product.id ? 'bg-[#E6F1EA]' : ''
+                        lastAddedKey === line.key ? 'bg-[#E6F1EA]' : ''
                       }`}
                     >
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm" title={line.product.name}>
                           {line.product.name}
                         </p>
+                        {line.modifiers.length > 0 && (
+                          <p className="truncate text-xs text-[#1F5E3B]" title={modifierSummary(line.modifiers)}>
+                            {modifierSummary(line.modifiers)}
+                          </p>
+                        )}
                         <p className="text-xs tabular-nums text-slate-500">
-                          {money(line.product.sellingPrice * line.quantity)}
-                          {line.quantity > 1 && <span className="text-slate-400"> · {money(line.product.sellingPrice)} each</span>}
+                          {money(lineTotal(line))}
+                          {line.quantity > 1 && <span className="text-slate-400"> · {money(unitPrice(line))} each</span>}
                         </p>
                       </div>
 
-                      <div className="flex h-10 shrink-0 items-center rounded-xl bg-[#E6F1EA] text-[#1F5E3B]">
+                      <div className="flex h-10 shrink-0 items-center rounded-xl bg-[#E6F1EA] text-[#1F5E3B] pointer-coarse:h-11">
                         <button
                           type="button"
-                          onClick={() => changeQty(line.product, line.quantity - 1)}
+                          onClick={() => changeQty(line, line.quantity - 1)}
                           aria-label={willRemove ? `Remove ${line.product.name}` : `Decrease ${line.product.name}`}
-                          className="flex h-10 w-10 items-center justify-center rounded-xl hover:bg-[#D3E6DB]"
+                          className={`flex h-full w-10 items-center justify-center rounded-xl pointer-coarse:w-11 ${
+                            willRemove ? 'text-rose-600 hover:bg-rose-50' : 'hover:bg-[#D3E6DB]'
+                          }`}
                         >
                           {willRemove ? <Trash2 size={13} /> : <Minus size={11} />}
                         </button>
-                        <span aria-live="polite" className="min-w-7 text-center text-sm font-semibold tabular-nums">
-                          {line.quantity}
-                        </span>
+                        <QtyField
+                          value={line.quantity}
+                          max={max}
+                          productName={line.product.name}
+                          onCommit={(quantity) => changeQty(line, quantity)}
+                          className="text-sm"
+                        />
                         <button
                           type="button"
-                          onClick={() => changeQty(line.product, line.quantity + 1)}
+                          onClick={() => changeQty(line, line.quantity + 1)}
                           disabled={!canIncrease}
                           aria-label={`Increase ${line.product.name}`}
                           title={canIncrease ? undefined : 'No more in stock'}
-                          className="flex h-10 w-10 items-center justify-center rounded-xl hover:bg-[#D3E6DB] disabled:cursor-not-allowed disabled:opacity-30"
+                          className="flex h-full w-10 items-center justify-center rounded-xl hover:bg-[#D3E6DB] disabled:cursor-not-allowed disabled:opacity-30 pointer-coarse:w-11"
                         >
                           <Plus size={11} />
                         </button>
@@ -566,26 +609,15 @@ function DesktopSales() {
           <div className="shrink-0 border-t border-slate-100 p-4">
             <dl className="space-y-1.5 text-sm">
               <TotalRow label="Subtotal" value={money(totals.subtotal)} />
-              <div className="flex items-center justify-between gap-3 text-slate-500">
-                <dt>
-                  <label htmlFor="register-discount">Discount</label>
-                </dt>
-                <dd className="flex items-center gap-1.5">
-                  <span className="text-slate-400">{settings.currencySymbol}</span>
-                  <AmountInput
-                    id="register-discount"
-                    value={discount || ''}
-                    placeholder="0.00"
-                    disabled={cart.length === 0}
-                    onChange={(value) =>
-                      setCheckout({ ...checkout, discount: Math.max(0, Number(value) || 0) })
-                    }
-                    className="h-9 w-24 rounded-lg border-0 bg-[#F3F5F4] px-2.5 text-right text-sm tabular-nums text-[#091413] outline-none focus:bg-white focus:ring-2 focus:ring-[#1F5E3B] disabled:opacity-50"
-                  />
-                </dd>
-              </div>
-              {discount > totals.subtotal && cart.length > 0 && (
-                <p className="text-right text-xs text-amber-700">Capped at the subtotal ({money(totals.subtotal)}).</p>
+              <DiscountControl
+                checkout={checkout}
+                onChange={(patch) => setCheckout({ ...checkout, ...patch })}
+                totals={totals}
+                settings={settings}
+                disabled={cart.length === 0}
+              />
+              {totals.loyaltyDiscount > 0 && (
+                <TotalRow label={`Points (${checkout.redeemPoints})`} value={`−${money(totals.loyaltyDiscount)}`} />
               )}
               <TotalRow label={`Tax (${taxPercent}%)`} value={money(totals.tax)} />
             </dl>
@@ -609,6 +641,21 @@ function DesktopSales() {
       </div>
 
       {isPaymentOpen && <PaymentModal onClose={() => setIsPaymentOpen(false)} />}
+
+      {pickerProduct && (
+        <ModifierPicker
+          product={pickerProduct}
+          money={money}
+          variant="modal"
+          maxQuantity={
+            allowOversell || pickerProduct.availableQuantity === null
+              ? Infinity
+              : Math.max(pickerProduct.availableQuantity - lineQty(cart, pickerProduct.id), 0)
+          }
+          onAdd={(modifiers, quantity) => addWithOptions(pickerProduct, modifiers, quantity)}
+          onClose={() => setPickerProduct(null)}
+        />
+      )}
 
       {showHistory && <OrderHistoryModal onClose={() => setShowHistory(false)} />}
 
@@ -718,12 +765,15 @@ function OrderHistoryModal({ onClose }: { onClose: () => void }) {
           <ul className="mt-4 rounded-2xl px-4 ring-1 ring-slate-100">
             {selectedOrder.items.map((item) => (
               <li
-                key={item.productId}
+                key={item.id}
                 className="flex items-baseline justify-between gap-3 border-b border-slate-100 py-3 text-sm last:border-b-0"
               >
-                <span className="min-w-0 truncate">
-                  {item.productName}
-                  <span className="text-slate-400"> × {item.quantity}</span>
+                <span className="min-w-0">
+                  <span className="block truncate">
+                    {item.productName}
+                    <span className="text-slate-400"> × {item.quantity}</span>
+                  </span>
+                  {item.modifiers.length > 0 && <span className="block truncate text-xs text-slate-500">{modifierSummary(item.modifiers)}</span>}
                 </span>
                 <span className="shrink-0 tabular-nums">{money(item.lineTotal)}</span>
               </li>
@@ -827,7 +877,14 @@ function OrderHistoryModal({ onClose }: { onClose: () => void }) {
                       </span>
                       <span className="text-sm font-medium tabular-nums">{money(order.total)}</span>
                       <span className="flex w-5 justify-end text-slate-300">
-                        {openingOrderId === order.id ? <Spinner /> : <ChevronRight size={12} />}
+                        {openingOrderId === order.id ? (
+                          <span
+                            aria-label="Opening order"
+                            className="h-4 w-4 animate-spin rounded-full border-2 border-[#E6F1EA] border-t-[#1F5E3B]"
+                          />
+                        ) : (
+                          <ChevronRight size={12} />
+                        )}
                       </span>
                     </button>
                   </li>
@@ -856,16 +913,23 @@ function CatalogProductCard({
   price,
   qtyInCart,
   canAddMore,
+  allowOversell,
+  showImage,
   onAdd,
 }: {
   product: Product
+  /** False when no product in the list has a photo: skip the placeholder so more items fit. */
+  showImage: boolean
   price: string
   qtyInCart: number
   canAddMore: boolean
+  /** Store sells even when stock runs out: never disable the card. */
+  allowOversell: boolean
   onAdd: () => void
 }) {
-  const outOfStock = product.stockQuantity <= 0
-  const lowStock = !outOfStock && product.stockStatus === 'Low Stock'
+  const available = product.availableQuantity
+  const outOfStock = available !== null && available <= 0 && !allowOversell
+  const lowStock = available !== null && available > 0 && product.stockStatus === 'Low Stock'
   const allInOrder = !outOfStock && qtyInCart > 0 && !canAddMore
   const initial = <span className="text-2xl font-semibold text-slate-300">{product.name.slice(0, 1).toUpperCase()}</span>
 
@@ -875,25 +939,31 @@ function CatalogProductCard({
       disabled={outOfStock}
       onClick={onAdd}
       aria-label={`Add ${product.name}, ${price}${qtyInCart > 0 ? `, ${qtyInCart} in order` : ''}`}
-      className={`group flex min-w-0 flex-col overflow-hidden rounded-2xl bg-white text-left transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] ${
+      className={`group relative flex min-w-0 flex-col overflow-hidden rounded-2xl bg-white text-left transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] ${
         qtyInCart > 0 ? 'ring-2 ring-[#1F5E3B]' : 'ring-1 ring-slate-100 hover:ring-slate-300'
       }`}
     >
-      <span className="relative flex aspect-4/3 w-full items-center justify-center overflow-hidden bg-[#F3F5F4]">
-        {product.imageUrl ? (
-          <SafeImage src={product.imageUrl} className="h-full w-full object-cover" fallback={initial} />
-        ) : (
-          initial
-        )}
-        {qtyInCart > 0 && (
-          <span className="absolute right-2 top-2 flex h-7 min-w-7 items-center justify-center rounded-full bg-[#1F5E3B] px-2 text-sm font-semibold tabular-nums text-white">
-            {qtyInCart}
+      {showImage && (
+        // Fixed 4:3 box: the photo is positioned inside it, so a tall or odd-sized photo can never stretch the card.
+        <span className="relative block aspect-4/3 w-full shrink-0 overflow-hidden bg-[#F3F5F4]">
+          <span className="absolute inset-0 flex items-center justify-center">
+            {product.imageUrl ? (
+              <SafeImage src={product.imageUrl} className="h-full w-full object-cover" fallback={initial} />
+            ) : (
+              initial
+            )}
           </span>
-        )}
-      </span>
+        </span>
+      )}
+      {qtyInCart > 0 && (
+        <span className="absolute right-2 top-2 flex h-7 min-w-7 items-center justify-center rounded-full bg-[#1F5E3B] px-2 text-sm font-semibold tabular-nums text-white">
+          {qtyInCart}
+        </span>
+      )}
 
-      <span className="flex flex-1 flex-col px-3 pb-3 pt-2">
-        <span className="line-clamp-2 text-sm leading-5">{product.name}</span>
+      <span className={`flex flex-1 flex-col px-3 pb-3 pt-2 ${showImage ? '' : 'min-h-24 pt-3'}`}>
+        {/* Always two lines tall, so one-line names don't make shorter cards. */}
+        <span className={`line-clamp-2 min-h-10 leading-5 ${showImage ? 'text-sm' : 'pr-8 text-[15px] font-medium'}`}>{product.name}</span>
         <span className="mt-auto flex items-baseline justify-between gap-2 pt-1.5">
           <span className="text-[15px] font-semibold tabular-nums">{price}</span>
           {outOfStock ? (
@@ -901,7 +971,9 @@ function CatalogProductCard({
           ) : allInOrder ? (
             <span className="text-xs text-amber-700">All in order</span>
           ) : lowStock ? (
-            <span className="text-xs text-amber-700">{product.stockQuantity} left</span>
+            <span className="text-xs text-amber-700">{available} left</span>
+          ) : product.modifierGroupCount > 0 ? (
+            <span className="text-xs text-slate-400">Options</span>
           ) : null}
         </span>
       </span>
@@ -943,13 +1015,6 @@ function TotalRow({ label, value }: { label: string; value: string }) {
       <dd className="tabular-nums">{value}</dd>
     </div>
   )
-}
-
-/** Image that swaps to `fallback` when it can't load (e.g. a linked photo while offline). */
-function SafeImage({ src, className, fallback }: { src: string; className: string; fallback: ReactNode }) {
-  const [failedSrc, setFailedSrc] = useState<string | null>(null)
-  if (failedSrc === src) return <>{fallback}</>
-  return <img src={src} alt="" loading="lazy" className={className} onError={() => setFailedSrc(src)} />
 }
 
 function PrinterIcon({ size = 14 }: { size?: number }) {

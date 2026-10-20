@@ -8,8 +8,12 @@ import {
   faClipboardCheck,
   faClipboardList,
   faClock,
+  faFileInvoiceDollar,
+  faJarWheat,
+  faSliders,
   faGear,
   faHouse,
+  faMoneyBillWave,
   faPrint,
   faRightFromBracket,
   faRotateLeft,
@@ -27,10 +31,20 @@ import { NavLink } from 'react-router-dom'
 
 import sellixMark from '../../assets/sellix-logo.png'
 import { useAuth } from '../../context/AuthContext'
+import { useSettings } from '../../context/SettingsContext'
 import { ROLE_LABELS, type Permission, type Role } from '../../utils/permissions'
 import { ConfirmDialog } from '../ui/Modal'
 
-type NavItem = { to: string; label: string; icon: typeof faHouse; permission?: Permission }
+type NavItem = {
+  to: string
+  label: string
+  icon: typeof faHouse
+  permission?: Permission
+  /** Shown to any of these instead of a single permission. */
+  anyOf?: Permission[]
+  /** Only with Settings → Recipes, ingredients & options turned on. */
+  foodService?: boolean
+}
 type NavGroup = { title?: string; items: NavItem[] }
 
 // Ordered by how often a cashier or manager needs each page. Every route here exists in App.tsx.
@@ -42,15 +56,25 @@ const groups: NavGroup[] = [
       { to: '/shift', label: 'My Shift', icon: faClock, permission: 'sales.process' },
       { to: '/returns', label: 'Returns & Voids', icon: faRotateLeft, permission: 'sales.process' },
       { to: '/reports', label: 'Reports', icon: faChartLine, permission: 'reports.view' },
+      { to: '/expenses', label: 'Expenses', icon: faMoneyBillWave, permission: 'expenses.manage' },
     ],
   },
   {
     title: 'Stock',
     items: [
       { to: '/inventory', label: 'Inventory', icon: faBoxesStacked, permission: 'inventory.manage' },
+      {
+        to: '/ingredients',
+        label: 'Ingredients',
+        icon: faJarWheat,
+        anyOf: ['inventory.manage', 'inventory.count', 'inventory.waste', 'inventory.produce'],
+        foodService: true,
+      },
       { to: '/stock-count', label: 'Stock Count', icon: faClipboardCheck, permission: 'inventory.count' },
+      { to: '/purchase-orders', label: 'Purchase Orders', icon: faFileInvoiceDollar, permission: 'purchasing.manage' },
       { to: '/receive-stock', label: 'Receive Stock', icon: faTruckRampBox, permission: 'inventory.receive' },
       { to: '/products', label: 'Products', icon: faBox, permission: 'products.view' },
+      { to: '/modifiers', label: 'Options', icon: faSliders, permission: 'products.manage', foodService: true },
       { to: '/categories', label: 'Categories', icon: faTags, permission: 'categories.manage' },
       { to: '/suppliers', label: 'Suppliers', icon: faTruck, permission: 'suppliers.manage' },
     ],
@@ -86,6 +110,7 @@ const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible
  */
 export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const { user, logout, can } = useAuth()
+  const { settings } = useSettings()
   const [peeking, setPeeking] = useState(false)
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
@@ -95,7 +120,14 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const overlaying = collapsed && peeking
 
   const visibleGroups = groups
-    .map((group) => ({ ...group, items: group.items.filter((item) => !item.permission || can(item.permission)) }))
+    .map((group) => ({
+      ...group,
+      items: group.items.filter(
+        (item) =>
+          (!item.foodService || settings.foodServiceEnabled) &&
+          (item.anyOf ? item.anyOf.some(can) : !item.permission || can(item.permission)),
+      ),
+    }))
     .filter((group) => group.items.length > 0)
 
   const initials =

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { ButtonHTMLAttributes, KeyboardEvent, ReactNode } from 'react'
 
 import { ChevronDown, Search, X } from './Icons'
@@ -145,6 +145,23 @@ export function DesktopSelect({
     if (open) listRef.current?.querySelector<HTMLElement>(`[data-index="${highlight}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [open, highlight])
 
+  // The list is often wider than the trigger. It lines up with the trigger's left edge; when
+  // that would run off the page (trigger near the right edge, e.g. a portrait tablet with the
+  // sidebar expanded) it lines up with the trigger's right edge instead. Measured before paint.
+  const [listShift, setListShift] = useState(0)
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    const list = listRef.current
+    if (!open || !root || !list) return
+    const gutter = 16
+    const bounds = root.closest('main')?.getBoundingClientRect() ?? { left: 0, right: window.innerWidth }
+    const trigger = root.getBoundingClientRect()
+    const width = list.offsetWidth
+    const fitsRight = trigger.left + width <= bounds.right - gutter
+    const left = Math.max(bounds.left + gutter, fitsRight ? trigger.left : trigger.right - width)
+    setListShift(Math.round(left - trigger.left))
+  }, [open])
+
   function openList() {
     setHighlight(Math.max(0, selectedIndex))
     setOpen(true)
@@ -250,7 +267,8 @@ export function DesktopSelect({
           id={listId}
           role="listbox"
           aria-label={label}
-          className="absolute left-0 top-full z-40 mt-2 max-h-80 w-max min-w-full max-w-80 overflow-y-auto rounded-2xl bg-white p-1.5 shadow-[0_12px_32px_rgba(9,20,19,0.12)] ring-1 ring-slate-100"
+          style={{ left: listShift }}
+          className="absolute top-full z-40 mt-2 max-h-80 w-max min-w-full max-w-[min(20rem,calc(100vw-2rem))] overflow-y-auto rounded-2xl bg-white p-1.5 shadow-[0_12px_32px_rgba(9,20,19,0.12)] ring-1 ring-slate-100"
         >
           {options.map((option, index) => {
             const isSelected = option.value === value
@@ -300,7 +318,7 @@ export function FilterSummary({ shown, total, noun, onClear }: { shown: number; 
       <button
         type="button"
         onClick={onClear}
-        className="h-9 rounded-full px-2 font-medium text-[#1F5E3B] hover:bg-[#E6F1EA] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+        className="h-9 rounded-full px-2 font-medium text-[#1F5E3B] hover:bg-[#E6F1EA] pointer-coarse:h-11 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
       >
         Clear filters
       </button>
@@ -332,7 +350,7 @@ export function FilterPills<T extends string>({
             role="tab"
             aria-selected={active}
             onClick={() => onChange(option.key)}
-            className={`inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] ${
+            className={`inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-sm font-medium transition pointer-coarse:h-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] ${
               active ? 'bg-[#1F5E3B] text-white' : 'text-slate-600 hover:text-[#091413]'
             }`}
           >
@@ -447,7 +465,7 @@ export function EmptyRow({
   )
 }
 
-/** Row action revealed on hover / keyboard focus; never triggers the row click. */
+/** Row action revealed on hover / keyboard focus (always shown on touch screens, which have no hover); never triggers the row click. */
 export function HoverAction({ label, ariaLabel, onClick }: { label: string; ariaLabel: string; onClick: () => void }) {
   return (
     <button
@@ -457,7 +475,7 @@ export function HoverAction({ label, ariaLabel, onClick }: { label: string; aria
         onClick()
       }}
       aria-label={ariaLabel}
-      className="h-9 rounded-full px-3 text-sm font-medium text-[#1F5E3B] opacity-0 transition hover:bg-[#F2F8F4] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] group-hover:opacity-100"
+      className="h-9 rounded-full px-3 text-sm font-medium text-[#1F5E3B] opacity-0 pointer-coarse:h-11 pointer-coarse:opacity-100 [@media(hover:none)]:opacity-100 transition hover:bg-[#F2F8F4] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] group-hover:opacity-100"
     >
       {label}
     </button>
@@ -481,4 +499,106 @@ export function SafeImage({
   const [failedSrc, setFailedSrc] = useState<string | null>(null)
   if (failedSrc === src) return <>{fallback}</>
   return <img src={src} alt="" loading="lazy" className={className} onError={() => setFailedSrc(src)} />
+}
+
+export type ActionMenuItem = {
+  label: string
+  /** One-line explanation under the label, for actions people use rarely. */
+  description?: string
+  onSelect: () => void
+}
+
+/**
+ * Overflow menu for secondary page actions (progressive disclosure), so a page header keeps
+ * one obvious primary button. Opens below the trigger, right-aligned; Esc / outside tap closes;
+ * ↑/↓ move between items.
+ */
+export function ActionMenu({ label, items }: { label: string; items: ActionMenuItem[] }) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const menuId = useId()
+
+  useEffect(() => {
+    if (!open) return
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('touchstart', handlePointerDown)
+    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('touchstart', handlePointerDown)
+    }
+  }, [open])
+
+  function close() {
+    setOpen(false)
+    buttonRef.current?.focus()
+  }
+
+  function handleMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const entries = Array.from(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])
+    const index = entries.indexOf(document.activeElement as HTMLElement)
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      close()
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      const step = event.key === 'ArrowDown' ? 1 : -1
+      entries[(index + step + entries.length) % entries.length]?.focus()
+    } else if (event.key === 'Tab') {
+      setOpen(false)
+    }
+  }
+
+  if (items.length === 0) return null
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        onClick={() => setOpen((value) => !value)}
+        className={`inline-flex h-11 items-center gap-2 rounded-full px-4 text-sm font-medium ring-1 transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] ${
+          open ? 'bg-[#F3F5F4] ring-slate-300' : 'bg-white ring-slate-200 hover:bg-slate-50'
+        }`}
+      >
+        {label}
+        <ChevronDown size={12} className={`text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div
+          ref={menuRef}
+          id={menuId}
+          role="menu"
+          aria-label={label}
+          onKeyDown={handleMenuKeyDown}
+          className="absolute right-0 top-full z-40 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-2xl bg-white p-1.5 shadow-[0_12px_32px_rgba(9,20,19,0.12)] ring-1 ring-slate-100"
+        >
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false)
+                item.onSelect()
+              }}
+              className="flex min-h-11 w-full flex-col justify-center rounded-xl px-3 py-2 text-left outline-none transition hover:bg-[#F3F5F4] focus-visible:bg-[#F3F5F4]"
+            >
+              <span className="text-sm font-medium text-[#091413]">{item.label}</span>
+              {item.description && <span className="mt-0.5 text-xs leading-4 text-slate-500">{item.description}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }

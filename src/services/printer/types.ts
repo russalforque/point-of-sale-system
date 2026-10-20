@@ -1,4 +1,5 @@
 import type { Sale, StoreSetting } from '../../types'
+import type { ProductLabel } from './receiptFormatter'
 
 export type PrinterConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -77,5 +78,7 @@ export interface PrinterService {
   onStatusChange(listener: PrinterStatusListener): () => void
   printReceipt(sale: Sale, settings: StoreSetting, config: PrinterConfig): Promise<void>
   testPrint(settings: StoreSetting, config: PrinterConfig): Promise<void>
+  /** Price labels with barcodes (see buildProductLabels). */
+  printLabels(labels: { label: ProductLabel; copies: number }[], settings: StoreSetting, config: PrinterConfig): Promise<void>
   openCashDrawer(config: PrinterConfig): Promise<void>
 }

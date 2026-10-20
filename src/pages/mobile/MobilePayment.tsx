@@ -18,12 +18,15 @@ import type { PaymentMethod, Sale } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
 import { formatMoney } from '../../utils/format'
 import { getPrinterConfig } from '../../utils/printerConfig'
+import { checkoutTotals } from '../../services/checkout'
 import {
   buildPaymentBreakdown,
-  calculateTotals,
   getPaymentReceived,
+  lineTotal,
+  modifierSummary,
   orderTypeLabel,
   PAYMENT_OPTIONS,
+  saleItems,
 } from '../../utils/pos'
 
 const CASH_PAYMENT_METHOD: PaymentMethod = 0
@@ -92,10 +95,7 @@ export function MobilePayment() {
     }
   }, [isMounted, receipt, checkout.cart.length, navigate])
 
-  const totals = useMemo(
-    () => calculateTotals(checkout.cart, checkout.discount, settings.taxRate),
-    [checkout.cart, checkout.discount, settings.taxRate],
-  )
+  const totals = useMemo(() => checkoutTotals(checkout, settings), [checkout, settings])
 
   const isCash = method === CASH_PAYMENT_METHOD
   const cashValue = Number(cash) || 0
@@ -146,15 +146,15 @@ export function MobilePayment() {
     try {
       const sale = await salesApi.create({
         customerId: checkout.customerId,
-        discount: totals.discount,
+        discount: totals.manualDiscount,
+        discountType: checkout.discountType,
+        discountReference: checkout.discountReference,
+        redeemPoints: totals.loyaltyDiscount > 0 ? checkout.redeemPoints : 0,
         orderType: checkout.orderType,
         paymentMethod: method,
         amountReceived: isCash ? cashValue : getPaymentReceived(buildPaymentBreakdown(method, 0)),
         reference: isCash ? undefined : paymentReference.trim() || undefined,
-        items: checkout.cart.map((line) => ({
-          productId: line.product.id,
-          quantity: line.quantity,
-        })),
+        items: saleItems(checkout.cart),
       })
 
       setReceipt(sale)
@@ -298,7 +298,7 @@ export function MobilePayment() {
                 <ul>
                   {receipt.items.map((item) => (
                     <li
-                      key={item.productId}
+                      key={item.id}
                       className="flex items-baseline justify-between gap-3 border-b border-slate-100 py-2.5 text-sm last:border-b-0"
                     >
                       <span className="min-w-0 truncate">
@@ -430,15 +430,18 @@ export function MobilePayment() {
               <ul className="max-h-48 overflow-y-auto overscroll-contain">
                 {checkout.cart.map((line) => (
                   <li
-                    key={line.product.id}
+                    key={line.key}
                     className="flex items-baseline justify-between gap-3 border-b border-slate-200/60 py-2.5 text-sm last:border-b-0"
                   >
-                    <span className="min-w-0 truncate">
-                      {line.product.name}
-                      <span className="text-slate-400"> × {line.quantity}</span>
+                    <span className="min-w-0">
+                      <span className="block truncate">
+                        {line.product.name}
+                        <span className="text-slate-400"> × {line.quantity}</span>
+                      </span>
+                      {line.modifiers.length > 0 && <span className="block truncate text-xs text-slate-500">{modifierSummary(line.modifiers)}</span>}
                     </span>
                     <span className="shrink-0 tabular-nums">
-                      {money(line.product.sellingPrice * line.quantity)}
+                      {money(lineTotal(line))}
                     </span>
                   </li>
                 ))}

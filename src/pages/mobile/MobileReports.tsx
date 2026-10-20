@@ -9,7 +9,9 @@ import {
   XAxis,
 } from 'recharts'
 
+import { reportsApi, type BusinessReport } from '../../api/reportsApi'
 import { salesApi } from '../../api/salesApi'
+import { BusinessReportPanel } from '../../components/reports/BusinessReport'
 
 import { ChevronRight, Search, X } from '../../components/ui/Icons'
 import { ExportOptions } from '../../components/reports/ExportOptions'
@@ -28,13 +30,13 @@ import { formatMoney } from '../../utils/format'
 import { exportReport, toTransactionRow, type ExportFormat } from '../../utils/reportExport'
 import { PAYMENT_OPTIONS } from '../../utils/pos'
 
-type DateRangeFilter = 'today' | 'yesterday' | '7days' | '30days' | 'all'
+type DateRangeFilter = 'today' | 'yesterday' | 'week' | 'month' | 'all'
 
 const RANGES: { value: DateRangeFilter; label: string; previousLabel: string }[] = [
   { value: 'today', label: 'Today', previousLabel: 'yesterday' },
   { value: 'yesterday', label: 'Yesterday', previousLabel: 'the day before' },
-  { value: '7days', label: '7 days', previousLabel: 'previous 7 days' },
-  { value: '30days', label: '30 days', previousLabel: 'previous 30 days' },
+  { value: 'week', label: 'This week', previousLabel: 'same days last week' },
+  { value: 'month', label: 'This month', previousLabel: 'same days last month' },
   { value: 'all', label: 'All time', previousLabel: '' },
 ]
 
@@ -57,22 +59,22 @@ function addDays(date: Date, days: number) {
   return next
 }
 
-/** Current period bounds plus the equally long period right before it (for comparison). */
+/** Current period bounds plus the matching earlier period (for comparison). Weeks start on Monday. */
 function rangeBounds(filter: DateRangeFilter, now = new Date()) {
   if (filter === 'all') return null
 
   const today = startOfDay(now)
-  const [start, end] =
-    filter === 'today'
-      ? [today, addDays(today, 1)]
-      : filter === 'yesterday'
-      ? [addDays(today, -1), today]
-      : filter === '7days'
-      ? [addDays(today, -6), addDays(today, 1)]
-      : [addDays(today, -29), addDays(today, 1)]
-
-  const length = end.getTime() - start.getTime()
-  return { start, end, prevStart: new Date(start.getTime() - length), prevEnd: start }
+  const tomorrow = addDays(today, 1)
+  if (filter === 'today') return { start: today, end: tomorrow, prevStart: addDays(today, -1), prevEnd: today }
+  if (filter === 'yesterday') return { start: addDays(today, -1), end: today, prevStart: addDays(today, -2), prevEnd: addDays(today, -1) }
+  if (filter === 'week') {
+    const start = addDays(today, -((today.getDay() + 6) % 7))
+    return { start, end: tomorrow, prevStart: addDays(start, -7), prevEnd: addDays(tomorrow, -7) }
+  }
+  const start = new Date(today.getFullYear(), today.getMonth(), 1)
+  const prevStart = new Date(today.getFullYear(), today.getMonth() - 1, 1)
+  const lastOfPrev = new Date(today.getFullYear(), today.getMonth(), 0).getDate()
+  return { start, end: tomorrow, prevStart, prevEnd: addDays(prevStart, Math.min(today.getDate(), lastOfPrev)) }
 }
 
 function inRange(sale: Sale, start: Date, end: Date) {
@@ -125,7 +127,9 @@ export function MobileReports() {
   const [error, setError] = useState<string | null>(null)
   const [loadedAt, setLoadedAt] = useState<Date | null>(null)
 
-  const [rangeFilter, setRangeFilter] = useState<DateRangeFilter>('7days')
+  const [rangeFilter, setRangeFilter] = useState<DateRangeFilter>('week')
+  const [business, setBusiness] = useState<BusinessReport | null>(null)
+  const [businessError, setBusinessError] = useState<string | null>(null)
   const [methodFilter, setMethodFilter] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [visibleCount, setVisibleCount] = useState(PAGE_STEP)
@@ -142,25 +146,23 @@ export function MobileReports() {
 
   const money = (value: number) => formatMoney(value, settings.currencySymbol)
 
+  /** The selected period and the one it's compared with, loaded in bulk; profit figures come from SQLite. */
   async function loadSales() {
+    const window = rangeBounds(rangeFilter)
     try {
       setLoading(true)
       setError(null)
+      setBusinessError(null)
 
-      const firstResponse = await salesApi.list({ page: 1, pageSize: 100 })
-      const firstItems = Array.isArray(firstResponse?.items) ? firstResponse.items : []
-      const totalPages = Number(firstResponse?.totalPages) || 1
-
-      const remaining =
-        totalPages > 1
-          ? await Promise.all(
-              Array.from({ length: totalPages - 1 }, (_, index) =>
-                salesApi.list({ page: index + 2, pageSize: 100 }),
-              ),
-            )
-          : []
-
-      setSales([...firstItems, ...remaining.flatMap((response) => response?.items ?? [])])
+      const [loaded, report] = await Promise.all([
+        salesApi.listInRange({ from: window?.prevStart.toISOString(), to: window?.end.toISOString() }),
+        reportsApi.business({ start: window?.start ?? null, end: window?.end ?? null }).catch((err: unknown) => {
+          setBusinessError(getErrorMessage(err))
+          return null
+        }),
+      ])
+      setSales(loaded)
+      if (report) setBusiness(report)
       setLoadedAt(new Date())
     } catch (err) {
       const message = getErrorMessage(err)
@@ -174,7 +176,7 @@ export function MobileReports() {
   useEffect(() => {
     void loadSales()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [rangeFilter])
 
   // Collapse the list back when the question being asked changes.
   useEffect(() => {
@@ -527,6 +529,17 @@ export function MobileReports() {
               </dl>
             </section>
 
+            {/* PROFIT & LOSS — discounts, refunds, costs, expenses and stock, from SQLite */}
+            <div className="mt-6">
+              <BusinessReportPanel
+                report={business}
+                loading={loading}
+                error={businessError}
+                onRetry={() => void loadSales()}
+                money={money}
+              />
+            </div>
+
             {/* TREND */}
             <Section title="Trend">
               {hasChartData ? (
@@ -634,22 +647,6 @@ export function MobileReports() {
                     </li>
                   ))}
                 </ul>
-              </Section>
-            )}
-
-            {/* ADJUSTMENTS */}
-            {(summary.discount > 0 || summary.tax > 0 || summary.voided > 0 || summary.refunded > 0) && (
-              <Section title="Adjustments">
-                <dl className="divide-y divide-slate-100">
-                  <DetailRow label="Discounts given" value={money(summary.discount)} />
-                  <DetailRow label="Tax collected" value={money(summary.tax)} />
-                  {summary.voided > 0 && (
-                    <DetailRow label="Voided sales" value={`${summary.voided} (not counted)`} />
-                  )}
-                  {summary.refunded > 0 && (
-                    <DetailRow label="Refunds" value={`−${money(summary.refunded)} · net ${money(summary.revenue - summary.refunded)}`} />
-                  )}
-                </dl>
               </Section>
             )}
 
@@ -940,15 +937,6 @@ function Stat({ label, value }: { label: string; value: string }) {
     <div className="min-w-0 px-3 first:pl-0 last:pr-0">
       <dt className="text-sm text-slate-500">{label}</dt>
       <dd className="mt-1 truncate text-lg font-semibold tabular-nums">{value}</dd>
-    </div>
-  )
-}
-
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex min-h-12 items-center justify-between gap-3">
-      <dt className="text-[15px] text-slate-600">{label}</dt>
-      <dd className="text-[15px] tabular-nums">{value}</dd>
     </div>
   )
 }

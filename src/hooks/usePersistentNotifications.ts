@@ -116,5 +116,13 @@ export function usePersistentNotifications<T extends { id: string; read: boolean
     })
   }
 
-  return { notifications, markAsRead, markAllAsRead, dismiss, clearAll }
+  /** Brings dismissed notifications back (undo for dismiss / clear all). */
+  function restore(ids: string[]) {
+    update((previous) => {
+      const dismissed = previous.dismissed.filter((id) => !ids.includes(id))
+      return dismissed.length === previous.dismissed.length ? previous : { ...previous, dismissed }
+    })
+  }
+
+  return { notifications, markAsRead, markAllAsRead, dismiss, clearAll, restore }
 }

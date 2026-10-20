@@ -17,19 +17,7 @@ import { Pagination } from '../../components/ui/Pagination'
 import { useDismissOnBack } from '../../hooks/useDismissOnBack'
 import type { Shift } from '../../types'
 import { formatDayLabel } from '../../utils/format'
-import { STATUS_OPTIONS, ShiftDetails, VarianceTag, shiftTimeLine, useShiftHistory } from '../Shift/shiftHistory'
-
-/** Consecutive shifts that started on the same day (the list is already newest first). */
-function groupByDay(shifts: Shift[]): { day: string; shifts: Shift[] }[] {
-  const groups: { day: string; shifts: Shift[] }[] = []
-  for (const shift of shifts) {
-    const day = formatDayLabel(shift.startedAt)
-    const last = groups[groups.length - 1]
-    if (last && last.day === day) last.shifts.push(shift)
-    else groups.push({ day, shifts: [shift] })
-  }
-  return groups
-}
+import { STATUS_OPTIONS, ShiftDetails, VarianceTag, groupByDay, shiftTimeLine, useShiftHistory } from '../Shift/shiftHistory'
 
 /**
  * Phone layout: a day-grouped list where each row answers "who, when, and did the

@@ -21,6 +21,7 @@ import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
 import { useDebounced } from '../../hooks/useDebounced'
 import type { InventoryHistory, InventoryItem } from '../../types'
+import { ADJUSTMENT_REASONS, MIN_ADJUSTMENT_REASON } from '../../services/inventoryMovements'
 import { getErrorMessage } from '../../utils/errors'
 import { formatDateTime } from '../../utils/format'
 
@@ -37,11 +38,7 @@ const ADJUST_TYPES: { value: AdjustType; label: string }[] = [
 
 const QUICK_AMOUNTS = [1, 5, 10, 25, 50]
 
-const REASONS: Record<AdjustType, string[]> = {
-  1: ['Delivery', 'Customer return'],
-  2: ['Damaged', 'Expired', 'Lost'],
-  3: ['Stock count'],
-}
+const REASONS = ADJUSTMENT_REASONS
 
 const PAGE_SIZE = 20
 
@@ -171,6 +168,7 @@ export function MobileInventory() {
   const isNoChange = adjust ? projectedStock === adjust.stockQuantity : true
   const removesMoreThanStock = adjust !== null && type === 2 && quantity > adjust.stockQuantity
   const willBeLow = adjust !== null && projectedStock > 0 && projectedStock <= adjust.reorderLevel
+  const hasReason = reason.trim().length >= MIN_ADJUSTMENT_REASON
 
   const saveLabel = busy
     ? 'Saving…'
@@ -181,7 +179,7 @@ export function MobileInventory() {
     : `Set count to ${quantity}`
 
   async function submitAdjust() {
-    if (!adjust || busy || isNoChange || quantity < minQuantity) return
+    if (!adjust || busy || isNoChange || quantity < minQuantity || !hasReason) return
 
     setBusy(true)
 
@@ -503,7 +501,7 @@ export function MobileInventory() {
 
             {/* Reason */}
             <label htmlFor="adjust-reason" className="mt-5 block text-sm font-medium">
-              Reason <span className="font-normal text-slate-400">(optional)</span>
+              Reason
             </label>
             <div className="mt-2 flex flex-wrap gap-2">
               {REASONS[type].map((preset) => (
@@ -526,7 +524,7 @@ export function MobileInventory() {
               maxLength={200}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              placeholder="Add a note"
+              placeholder="Or type the reason"
               className="mt-2 h-12 w-full rounded-2xl border-0 bg-[#F3F5F4] px-4 text-[15px] placeholder:text-slate-400 outline-none focus:bg-white focus:ring-2 focus:ring-[#1F5E3B]"
             />
 
@@ -555,10 +553,10 @@ export function MobileInventory() {
             <button
               type="button"
               onClick={() => void submitAdjust()}
-              disabled={busy || isNoChange}
+              disabled={busy || isNoChange || !hasReason}
               className="flex h-14 w-full items-center justify-center rounded-2xl bg-[#1F5E3B] text-[15px] font-semibold text-white transition active:scale-[0.99] disabled:bg-slate-200 disabled:text-slate-400"
             >
-              {isNoChange && !busy ? 'No change to save' : saveLabel}
+              {isNoChange && !busy ? 'No change to save' : !hasReason && !busy ? 'Choose a reason' : saveLabel}
             </button>
           </div>
         </Sheet>

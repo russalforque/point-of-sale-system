@@ -74,6 +74,14 @@ function printItemRow(b: ReceiptBuilder, name: string, cells: { text: string; wi
   for (const continuation of rest) b.line(continuation)
 }
 
+/** Options chosen for a line ("Large, Oat Milk"), indented under it so the barista sees them. */
+function printModifiers(b: ReceiptBuilder, item: Sale['items'][number]) {
+  if (!item.modifiers?.length) return
+  for (const line of wrapText(sanitizeForPrinter(item.modifiers.map((modifier) => modifier.name).join(', ')), b.columns - 4)) {
+    b.line(`  + ${line}`)
+  }
+}
+
 function printItems(b: ReceiptBuilder, sale: Sale, paperWidth: PrinterPaperWidth) {
   if (paperWidth === 80) {
     b.bold(true)
@@ -89,6 +97,7 @@ function printItems(b: ReceiptBuilder, sale: Sale, paperWidth: PrinterPaperWidth
         { text: money(item.unitPrice), width: 9 },
         { text: money(item.lineTotal), width: 10 },
       ])
+      printModifiers(b, item)
     }
     return
   }
@@ -98,6 +107,7 @@ function printItems(b: ReceiptBuilder, sale: Sale, paperWidth: PrinterPaperWidth
   b.bold(true).row('Item', 'Amount').bold(false)
   for (const item of sale.items) {
     printWrapped(b, item.productName)
+    printModifiers(b, item)
     b.row(`  ${item.quantity} x ${money(item.unitPrice)}`, money(item.lineTotal))
   }
 }
@@ -133,7 +143,14 @@ export function buildReceipt(
   b.divider()
 
   b.row('Subtotal', money(sale.subtotal))
-  if (sale.discount > 0) b.row('Discount', `-${money(sale.discount)}`)
+  const manualDiscount = Math.round((sale.discount - (sale.loyaltyDiscount ?? 0)) * 100) / 100
+  if (manualDiscount > 0) {
+    b.row(sale.discountType === 'senior_pwd' ? 'Senior/PWD disc.' : 'Discount', `-${money(manualDiscount)}`)
+    if (sale.discountType === 'senior_pwd' && sale.discountReference) {
+      printWrapped(b, `  ID: ${sale.discountReference}`)
+    }
+  }
+  if ((sale.loyaltyDiscount ?? 0) > 0) b.row(`Points (${sale.pointsRedeemed})`, `-${money(sale.loyaltyDiscount)}`)
   b.row('Tax', money(sale.tax))
   b.divider('=')
   b.bold(true).tall(true).row('TOTAL', money(sale.total)).tall(false).bold(false)
@@ -147,6 +164,17 @@ export function buildReceipt(
   if (sale.amountReceived != null) b.row('Amount received', money(sale.amountReceived))
   if (sale.change != null) b.row('Change', money(sale.change))
   if (sale.refundedAmount > 0) b.row('Refunded', `-${money(sale.refundedAmount)}`)
+  if ((sale.pointsEarned ?? 0) > 0) b.row('Points earned', String(sale.pointsEarned))
+
+  // A charged sale is signed for: the customer agrees they owe this amount.
+  const charged = (sale.payments ?? []).filter((payment) => payment.method === 4).reduce((sum, payment) => sum + payment.amount, 0)
+  if (charged > 0) {
+    b.feed(1)
+    b.row('Charged to account', money(charged))
+    b.feed(2)
+    b.line('_'.repeat(Math.min(b.columns, 24)))
+    b.line('Customer signature')
+  }
 
   b.feed(1)
   b.align('center')
@@ -193,6 +221,41 @@ export function buildTestReceipt(
   b.line('If this looks right,')
   b.line('your printer is ready.')
 
+  b.finish(options.cut ?? false)
+
+  return { bytes: b.toBytes(), text: b.toText(), preview: b.toPreview(), columns: b.columns }
+}
+
+/** A shelf / price label for one product. */
+export type ProductLabel = { name: string; price: number; code: string; sku: string; unit?: string | null }
+
+/**
+ * Price labels on the receipt printer: store name, product, price and a scannable barcode,
+ * `copies` of each, separated by a cut line. Uses the barcode when set, otherwise the SKU.
+ */
+export function buildProductLabels(
+  labels: { label: ProductLabel; copies: number }[],
+  settings: StoreSetting,
+  paperWidth: PrinterPaperWidth = 58,
+  options: ReceiptOptions = {},
+): FormattedReceipt {
+  const b = new ReceiptBuilder(paperWidth)
+  // Thermal fonts rarely have a peso sign; the price prints like every receipt amount.
+
+  b.init()
+  labels.forEach(({ label, copies }) => {
+    for (let copy = 0; copy < Math.max(1, Math.min(copies, 100)); copy += 1) {
+      b.align('center')
+      if (settings.storeName?.trim()) b.line(settings.storeName.trim().slice(0, b.columns))
+      b.bold(true)
+      printWrapped(b, label.name)
+      b.bold(false)
+      b.bold(true).tall(true).line(`${money(label.price)}${label.unit ? ` / ${label.unit}` : ''}`).tall(false).bold(false)
+      b.barcode(label.code || label.sku)
+      if (label.code && label.code !== label.sku) b.line(`SKU ${label.sku}`)
+      b.align('left').divider('- ')
+    }
+  })
   b.finish(options.cut ?? false)
 
   return { bytes: b.toBytes(), text: b.toText(), preview: b.toPreview(), columns: b.columns }

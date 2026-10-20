@@ -1,5 +1,6 @@
 import type { DashboardData } from '../types'
 import { querySQL } from '../database/sqlite'
+import { ingredientApi } from './ingredientApi'
 import { methodLabel, tendersLabel } from '../services/payments'
 
 // created_at is stored as a UTC ISO string, but "today" must follow the device's own
@@ -36,7 +37,7 @@ export const dashboardApi = {
     const totalProducts = (productCountResult.values?.[0]?.count as number | undefined) ?? 0
 
     const lowStockResult = await querySQL(
-      `SELECT COUNT(*) AS count FROM products WHERE is_active = 1 AND stock_quantity <= reorder_level`,
+      `SELECT COUNT(*) AS count FROM products WHERE is_active = 1 AND inventory_mode IN ('direct', 'batch') AND stock_quantity <= reorder_level`,
     )
     const lowStockCount = (lowStockResult.values?.[0]?.count as number | undefined) ?? 0
 
@@ -82,7 +83,7 @@ export const dashboardApi = {
     const lowStockRows = await querySQL(
       `SELECT id, sku, name, stock_quantity AS stockQuantity, reorder_level AS reorderLevel
        FROM products
-       WHERE is_active = 1 AND stock_quantity <= reorder_level
+       WHERE is_active = 1 AND inventory_mode IN ('direct', 'batch') AND stock_quantity <= reorder_level
        ORDER BY stock_quantity ASC
        LIMIT 10`,
     )
@@ -122,6 +123,8 @@ export const dashboardApi = {
       salesOverview,
       recentTransactions,
       lowStockProducts,
+      // Recipe and untracked products have no stock of their own; their ingredients are listed instead.
+      lowStockIngredients: await ingredientApi.lowStock(10),
       topSellingProducts,
     }
   },

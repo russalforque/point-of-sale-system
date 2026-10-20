@@ -1,12 +1,13 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import { productApi } from '../../api/productApi'
+import { purchaseOrderApi } from '../../api/purchaseOrderApi'
 import { stockApi } from '../../api/stockApi'
 import { supplierApi } from '../../api/supplierApi'
 import { AmountInput } from '../../components/ui/AmountInput'
 import { Search, Trash2 } from '../../components/ui/Icons'
-import { PickerField, SwitchRow, TextField } from '../../components/ui/MobileKit'
+import { DateField, PickerField, SwitchRow, TextField } from '../../components/ui/MobileKit'
 import { Modal } from '../../components/ui/Modal'
 import { Pagination } from '../../components/ui/Pagination'
 import { EmptyState, ErrorState, Spinner } from '../../components/ui/States'
@@ -15,7 +16,7 @@ import { useSettings } from '../../context/SettingsContext'
 import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
 import { useDebounced } from '../../hooks/useDebounced'
-import type { Product } from '../../types'
+import type { Product, PurchaseOrder } from '../../types'
 import { roundMoney, sumMoney } from '../../utils/amount'
 import { getErrorMessage } from '../../utils/errors'
 import { formatDate, formatDateTime, formatMoney } from '../../utils/format'
@@ -76,7 +77,7 @@ export function ReceiveStockPage() {
 function ReceiveForm({ onSaved }: { onSaved: (receiptId: number) => void }) {
   const { notify } = useToast()
   const { settings } = useSettings()
-  const [params] = useSearchParams()
+  const [params, setParams] = useSearchParams()
   const money = (value: number) => formatMoney(value, settings.currencySymbol)
 
   const suppliers = useAsync(() => supplierApi.list({ isActive: true }), [])
@@ -89,9 +90,56 @@ function ReceiveForm({ onSaved }: { onSaved: (receiptId: number) => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Receiving against a purchase order: what's still outstanding is filled in; the supplier is fixed.
+  const poId = Number(params.get('po')) || null
+  const [po, setPo] = useState<PurchaseOrder | null>(null)
+  const [poError, setPoError] = useState<string | null>(null)
+  const remainingFor = (productId: number) => {
+    const item = po?.items.find((entry) => entry.productId === productId)
+    return item ? Math.max(item.quantityOrdered - item.quantityReceived, 0) : undefined
+  }
+
+  useEffect(() => {
+    if (!poId) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const order = await purchaseOrderApi.get(poId)
+        if (order.status !== 'Ordered' && order.status !== 'Partially received') {
+          throw new Error(`${order.poNumber} isn’t waiting for a delivery (${order.status.toLowerCase()}).`)
+        }
+        const outstanding = order.items.filter((item) => item.quantityReceived < item.quantityOrdered)
+        const products = await Promise.all(outstanding.map((item) => productApi.get(item.productId)))
+        if (cancelled) return
+        setPo(order)
+        setSupplierId(String(order.supplierId))
+        setLines(
+          outstanding.map((item, index) => ({
+            product: products[index]!,
+            quantity: item.quantityOrdered - item.quantityReceived,
+            unitCost: String(item.unitCost),
+          })),
+        )
+        setPoError(null)
+      } catch (err) {
+        if (!cancelled) setPoError(getErrorMessage(err))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [poId])
+
+  function stopUsingPo() {
+    setPo(null)
+    setLines([])
+    setPoError(null)
+    setParams({}, { replace: true })
+  }
+
   const [search, setSearch] = useState('')
   const q = useDebounced(search)
-  const results = useAsync(() => (q.trim() ? productApi.catalog({ search: q.trim() }) : Promise.resolve([])), [q])
+  const results = useAsync(() => (q.trim() ? productApi.catalog({ search: q.trim(), stockedOnly: true }) : Promise.resolve([])), [q])
 
   const totals = useMemo(() => {
     const units = lines.reduce((sum, line) => sum + line.quantity, 0)
@@ -133,12 +181,14 @@ function ReceiveForm({ onSaved }: { onSaved: (receiptId: number) => void }) {
         receivedDate,
         notes,
         updateCostPrices: updateCosts,
+        purchaseOrderId: po?.id ?? null,
         items: lines.map((line) => ({ productId: line.product.id, quantity: line.quantity, unitCost: Number(line.unitCost) || 0 })),
       })
-      notify(`${receipt.receiptNumber}: ${totals.units} units added to stock.`)
+      notify(`${receipt.receiptNumber}: ${totals.units} units added to stock${po ? ` for ${po.poNumber}` : ''}.`)
       setLines([])
       setReference('')
       setNotes('')
+      if (po) stopUsingPo()
       onSaved(receipt.id)
     } catch (err) {
       setError(getErrorMessage(err))
@@ -157,7 +207,26 @@ function ReceiveForm({ onSaved }: { onSaved: (receiptId: number) => void }) {
   return (
     <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
       <div className="min-w-0 space-y-4">
+        {poError && (
+          <div role="alert" className="flex items-center justify-between gap-3 rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            <span>{poError}</span>
+            <button type="button" onClick={stopUsingPo} className="h-10 shrink-0 rounded-full px-3 font-medium">
+              Dismiss
+            </button>
+          </div>
+        )}
+        {po && (
+          <div className="flex items-center justify-between gap-3 rounded-2xl bg-[#F2F8F4] px-4 py-3 text-sm text-[#1F5E3B]">
+            <span>
+              Receiving <span className="font-semibold">{po.poNumber}</span> from {po.supplierName}. Set each quantity to what actually arrived.
+            </span>
+            <button type="button" onClick={stopUsingPo} disabled={busy} className="h-10 shrink-0 rounded-full px-3 font-medium active:bg-white">
+              Not from this order
+            </button>
+          </div>
+        )}
         <Panel title="Products">
+          {!po && (
           <div className="relative">
             <Search size={16} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
@@ -169,7 +238,8 @@ function ReceiveForm({ onSaved }: { onSaved: (receiptId: number) => void }) {
               className="h-12 w-full rounded-2xl border-0 bg-[#F3F5F4] pl-11 pr-4 text-[15px] placeholder:text-slate-400 outline-none focus:bg-white focus:ring-2 focus:ring-[#1F5E3B] [&::-webkit-search-cancel-button]:hidden"
             />
           </div>
-          {q.trim() && (
+          )}
+          {!po && q.trim() && (
             <ul className="mt-2 max-h-64 overflow-y-auto rounded-2xl ring-1 ring-slate-100">
               {results.loading && <li className="px-4 py-3 text-sm text-slate-400">Searching…</li>}
               {!results.loading && matches.length === 0 && <li className="px-4 py-3 text-sm text-slate-500">No product matches “{q}”.</li>}
@@ -224,8 +294,10 @@ function ReceiveForm({ onSaved }: { onSaved: (receiptId: number) => void }) {
                         label={`${line.product.name} quantity`}
                         value={line.quantity}
                         min={1}
+                        max={remainingFor(line.product.id)}
                         onChange={(quantity) => updateLine(line.product.id, { quantity })}
                       />
+                      {po && <span className="text-xs text-slate-500">of {remainingFor(line.product.id)} due</span>}
                       <label className="flex h-11 items-center gap-1.5 rounded-xl bg-[#F3F5F4] px-3 text-sm text-slate-500 focus-within:ring-2 focus-within:ring-[#1F5E3B]">
                         Cost {settings.currencySymbol}
                         <AmountInput
@@ -248,16 +320,23 @@ function ReceiveForm({ onSaved }: { onSaved: (receiptId: number) => void }) {
       <div className="space-y-4">
         <Panel title="Delivery details">
           <div className="space-y-4">
-            <PickerField
-              label="Supplier"
-              optional
-              value={supplierId}
-              onChange={setSupplierId}
-              options={supplierOptions}
-              noneLabel="No supplier"
-              placeholder="Choose supplier"
-              emptyText="No active suppliers yet. Add one under Suppliers."
-            />
+            {po ? (
+              <div>
+                <p className="text-sm font-medium">Supplier</p>
+                <p className="mt-1.5 flex h-12 items-center rounded-2xl bg-[#F6F8F7] px-4 text-[15px]">{po.supplierName}</p>
+              </div>
+            ) : (
+              <PickerField
+                label="Supplier"
+                optional
+                value={supplierId}
+                onChange={setSupplierId}
+                options={supplierOptions}
+                noneLabel="No supplier"
+                placeholder="Choose supplier"
+                emptyText="No active suppliers yet. Add one under Suppliers."
+              />
+            )}
             <TextField
               label="Reference no."
               optional
@@ -266,13 +345,7 @@ function ReceiveForm({ onSaved }: { onSaved: (receiptId: number) => void }) {
               placeholder="Delivery receipt / invoice no."
               autoCapitalize="characters"
             />
-            <TextField
-              label="Date received"
-              type="date"
-              value={receivedDate}
-              max={todayKey()}
-              onChange={setReceivedDate}
-            />
+            <DateField label="Date received" value={receivedDate} max={todayKey()} onChange={setReceivedDate} />
             <TextField label="Notes" optional value={notes} onChange={setNotes} placeholder="e.g. 2 boxes damaged, returned" />
             <SwitchRow
               label="Update cost prices"
@@ -351,6 +424,7 @@ function ReceiptHistory({ onOpen }: { onOpen: (id: number) => void }) {
                 </p>
                 <p className="truncate text-xs text-slate-500">
                   {formatDate(receipt.receivedDate)}
+                  {receipt.purchaseOrderNumber && ` · ${receipt.purchaseOrderNumber}`}
                   {receipt.reference && ` · ref ${receipt.reference}`} · {receipt.createdBy}
                 </p>
               </div>

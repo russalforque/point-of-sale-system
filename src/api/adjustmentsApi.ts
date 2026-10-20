@@ -4,27 +4,32 @@ import { idByNumber, nextDocumentNumber, runTransaction, type SqlStatement } fro
 import { salesApi } from './salesApi'
 import { settingsApi } from './settingsApi'
 import { auditStatement } from '../services/audit'
-import { stockChangeStatements } from '../services/inventoryMovements'
+import { assertApprover, currentActor, type Approver } from '../services/authz'
+import { CHARGE_METHOD, CREDIT_ENTRY_TYPE, creditEntryStatements } from '../services/credit'
+import { ingredientChangeStatements, stockChangeStatements } from '../services/inventoryMovements'
+import { tracksProductStock } from '../services/recipes'
+import { pointsChangeStatement } from '../services/loyalty'
 import { methodLabel } from '../services/payments'
 import { roundMoney, sumMoney } from '../utils/amount'
 import { ApiError } from '../utils/errors'
 import { formatMoney } from '../utils/format'
-import { getStoredUser } from '../utils/session'
 import { PAYMENT_OPTIONS } from '../utils/pos'
-import { hasPermission, type Permission, type Role } from '../utils/permissions'
 
 /**
  * Returns, refunds and voids. The original sale row is never deleted or rewritten beyond its
  * status/void columns, so history and reports can always show what really happened.
  */
 
-export type Approver = { id: string | number; fullName: string }
+export type { Approver }
 
 export const MIN_REASON_LENGTH = 3
 
+/** A line to return. `saleItemId` picks the exact line; older callers that only send the product still work. */
+export type RefundSelection = { saleItemId?: number; productId: number; quantity: number }
+
 export type RefundPayload = {
   saleId: number
-  items: { productId: number; quantity: number }[]
+  items: RefundSelection[]
   reason: string
   method: PaymentMethod
   /** Put the returned units back on the shelf (off for damaged / expired goods). */
@@ -58,30 +63,44 @@ function requireReason(reason: string): string {
   return trimmed
 }
 
-function actorName(): string {
-  const user = getStoredUser()
-  if (!user) throw new ApiError('Not signed in.', 401)
-  return user.fullName
+async function openShiftId(employeeId: number): Promise<number | null> {
+  const result = await querySQL(`SELECT id FROM shifts WHERE employee_id = ? AND status = 0 LIMIT 1`, [employeeId])
+  return (result.values?.[0]?.id as number | undefined) ?? null
+}
+
+/** Part of a sale that was charged to the customer's account. */
+function chargedAmount(sale: Sale): number {
+  return sumMoney(sale.payments.filter((payment) => payment.method === CHARGE_METHOD).map((payment) => payment.amount))
 }
 
 /**
- * The UI collects the approval (own permission or a manager PIN); the service still re-checks
- * that the approver is an active account whose role allows the action.
+ * Share of `points` that belongs to a refund of `amount`, worked out cumulatively over all the
+ * sale's refunds so a series of partial returns ends at exactly `points` when everything is back.
  */
-async function assertApprover(approver: Approver, permission: Permission): Promise<string> {
-  const result = await querySQL(`SELECT full_name, role, is_active FROM users WHERE id = ? LIMIT 1`, [Number(approver.id)])
-  const row = result.values?.[0] as { full_name: string; role: Role; is_active: number } | undefined
-  if (!row || !row.is_active || !hasPermission(row.role, permission)) {
-    throw new ApiError('This needs approval from a manager or admin.', 403)
-  }
-  return row.full_name
+function pointsShare(points: number, sale: Sale, amount: number, returnsEverything: boolean): number {
+  if (points <= 0 || sale.total <= 0) return 0
+  const before = Math.round((points * sale.refundedAmount) / sale.total)
+  const after = returnsEverything ? points : Math.min(points, Math.round((points * (sale.refundedAmount + amount)) / sale.total))
+  return Math.max(0, after - before)
 }
 
-async function openShiftId(): Promise<number | null> {
-  const user = getStoredUser()
-  if (!user) return null
-  const result = await querySQL(`SELECT id FROM shifts WHERE employee_id = ? AND status = 0 LIMIT 1`, [Number(user.id)])
-  return (result.values?.[0]?.id as number | undefined) ?? null
+/** Refund payout methods for a sale: the money tenders, plus back to the account for charged sales. */
+export function refundMethodsFor(sale: Sale): { value: PaymentMethod; label: string }[] {
+  const options = [...PAYMENT_OPTIONS]
+  if (sale.customerId && chargedAmount(sale) > 0) options.push({ value: CHARGE_METHOD as PaymentMethod, label: 'Back to account' })
+  return options
+}
+
+/**
+ * Whether returned units of a line can go back on the shelf. Made-to-order (recipe) drinks and
+ * untracked items can't: their ingredients were already used.
+ */
+export function canRestock(item: Sale['items'][number]): boolean {
+  return tracksProductStock(item.stockMode ?? 'direct')
+}
+
+function findLine(sale: Sale, entry: RefundSelection): Sale['items'][number] | undefined {
+  return entry.saleItemId ? sale.items.find((item) => item.id === entry.saleItemId) : sale.items.find((item) => item.productId === entry.productId)
 }
 
 /** Units of each line that can still be returned. */
@@ -99,11 +118,11 @@ export function refundLineAmount(sale: Sale, unitPrice: number, quantity: number
 }
 
 /** Amount and per-line split for a return, with the final return absorbing any rounding remainder. */
-export function calculateRefund(sale: Sale, selection: { productId: number; quantity: number }[]) {
+export function calculateRefund(sale: Sale, selection: RefundSelection[]) {
   const lines = selection
     .filter((entry) => entry.quantity > 0)
     .map((entry) => {
-      const item = sale.items.find((candidate) => candidate.productId === entry.productId)
+      const item = findLine(sale, entry)
       if (!item) throw new ApiError('That item is not on this receipt.', 400)
       if (!Number.isInteger(entry.quantity) || entry.quantity > returnableQuantity(item)) {
         throw new ApiError(`Only ${returnableQuantity(item)} of ${item.productName} can still be returned.`, 400)
@@ -113,7 +132,7 @@ export function calculateRefund(sale: Sale, selection: { productId: number; quan
 
   const remainingValue = roundMoney(sale.total - sale.refundedAmount)
   const returnsEverything = sale.items.every((item) => {
-    const line = lines.find((entry) => entry.item.productId === item.productId)
+    const line = lines.find((entry) => entry.item.id === item.id)
     return returnableQuantity(item) === (line?.quantity ?? 0)
   })
 
@@ -130,7 +149,7 @@ export function calculateRefund(sale: Sale, selection: { productId: number; quan
 
 async function refundItems(refundId: number): Promise<RefundItem[]> {
   const result = await querySQL(
-    `SELECT ri.product_id AS productId, p.name AS productName, ri.quantity AS quantity,
+    `SELECT ri.sale_item_id AS saleItemId, ri.product_id AS productId, p.name AS productName, ri.quantity AS quantity,
             ri.unit_price AS unitPrice, ri.amount AS amount
      FROM refund_items ri LEFT JOIN products p ON p.id = ri.product_id
      WHERE ri.refund_id = ? ORDER BY ri.id`,
@@ -189,24 +208,37 @@ export const adjustmentsApi = {
 
   refund: async (payload: RefundPayload): Promise<Refund> => {
     const reason = requireReason(payload.reason)
-    if (!PAYMENT_OPTIONS.some((option) => option.value === payload.method)) {
-      throw new ApiError('Choose how the refund is paid out.', 400)
-    }
 
     // Always work from the latest saved state so two returns can't both refund the same units.
     const sale = await salesApi.get(payload.saleId)
     if (sale.status === 'Voided') throw new ApiError('This sale was voided and can’t be refunded.', 400)
     if (sale.status !== 'Completed') throw new ApiError('Only completed sales can be refunded.', 400)
+    if (!refundMethodsFor(sale).some((option) => option.value === payload.method)) {
+      throw new ApiError('Choose how the refund is paid out.', 400)
+    }
 
     const { lines, amount, returnsEverything } = calculateRefund(sale, payload.items)
     if (lines.length === 0) throw new ApiError('Select at least one item to return.', 400)
+    if (new Set(lines.map((line) => line.item.id)).size !== lines.length) throw new ApiError('Each item can only be listed once.', 400)
 
     const settings = await settingsApi.get()
     const money = (value: number) => formatMoney(value, settings.currencySymbol)
-    const processedBy = actorName()
+    const actor = await currentActor()
+    const processedBy = actor.fullName
     const approvedBy = await assertApprover(payload.approvedBy, 'sales.refund')
-    const shiftId = await openShiftId()
+    const shiftId = await openShiftId(actor.id)
     const now = new Date().toISOString()
+
+    if (payload.method === CHARGE_METHOD) {
+      const alreadyBack = await querySQL(
+        `SELECT COALESCE(SUM(amount), 0) AS total FROM refunds WHERE sale_id = ? AND method = ?`,
+        [sale.id, CHARGE_METHOD],
+      )
+      const returnedToAccount = (alreadyBack.values?.[0]?.total as number | undefined) ?? 0
+      if (roundMoney(returnedToAccount + amount) > chargedAmount(sale) + 0.005) {
+        throw new ApiError(`Only ${money(roundMoney(chargedAmount(sale) - returnedToAccount))} of this sale was charged to the account.`, 400)
+      }
+    }
     const refundNumber = await nextDocumentNumber('refunds', 'RF')
     const refundIdSql = `(SELECT id FROM refunds WHERE refund_number = ?)`
 
@@ -220,10 +252,10 @@ export const adjustmentsApi = {
 
     for (const line of lines) {
       statements.push({
-        statement: `INSERT INTO refund_items (refund_id, product_id, quantity, unit_price, amount) VALUES (${refundIdSql}, ?, ?, ?, ?)`,
-        values: [refundNumber, line.item.productId, line.quantity, line.item.unitPrice, line.amount],
+        statement: `INSERT INTO refund_items (refund_id, product_id, quantity, unit_price, amount, sale_item_id) VALUES (${refundIdSql}, ?, ?, ?, ?, ?)`,
+        values: [refundNumber, line.item.productId, line.quantity, line.item.unitPrice, line.amount, line.item.id],
       })
-      if (payload.restock) {
+      if (payload.restock && canRestock(line.item)) {
         statements.push(
           ...stockChangeStatements({
             productId: line.item.productId,
@@ -236,20 +268,51 @@ export const adjustmentsApi = {
       }
     }
 
+    if (payload.method === CHARGE_METHOD && sale.customerId && amount > 0) {
+      statements.push(
+        ...creditEntryStatements({
+          entryNumber: await nextDocumentNumber('customer_credit_entries', 'CR'),
+          customerId: sale.customerId,
+          type: CREDIT_ENTRY_TYPE.REVERSAL,
+          amount,
+          saleId: sale.id,
+          method: CHARGE_METHOD,
+          reference: refundNumber,
+          notes: reason,
+          shiftId,
+          createdBy: processedBy,
+          at: now,
+        }),
+      )
+    }
+
+    // Points earned on the returned share come off the balance; points spent on it go back.
+    const earnedBack = pointsShare(sale.pointsEarned, sale, amount, returnsEverything)
+    const redeemedBack = pointsShare(sale.pointsRedeemed, sale, amount, returnsEverything)
+    if (sale.customerId && (earnedBack > 0 || redeemedBack > 0)) {
+      statements.push(pointsChangeStatement(sale.customerId, redeemedBack - earnedBack))
+    }
+
     const entity = { type: 'sale', id: sale.invoiceNumber }
     const approval = approvedBy !== processedBy ? ` · approved by ${approvedBy}` : ''
-    const itemSummary = lines.map((line) => `${line.quantity}× ${line.item.productName}`).join(', ')
+    const itemSummary = lines
+      .map((line) => `${line.quantity}× ${line.item.productName}${line.item.modifiers.length ? ` (${line.item.modifiers.map((modifier) => modifier.name).join(', ')})` : ''}`)
+      .join(', ')
+    const restocked = payload.restock && lines.some((line) => canRestock(line.item))
+    const notRestocked = payload.restock ? lines.filter((line) => !canRestock(line.item)) : []
+    const pointsNote = earnedBack || redeemedBack ? ` · points −${earnedBack} earned, +${redeemedBack} returned` : ''
     statements.push(
       auditStatement(
         'refund',
-        `${refundNumber}: ${money(amount)} ${methodLabel(payload.method)} refund on ${sale.invoiceNumber}${returnsEverything ? ' (full)' : ' (partial)'} · ${reason}${approval}`,
+        `${refundNumber}: ${money(amount)} ${methodLabel(payload.method)} refund on ${sale.invoiceNumber}${returnsEverything ? ' (full)' : ' (partial)'} · ${reason}${approval}${pointsNote}`,
         entity,
         undefined,
         now,
       ),
       auditStatement(
         'return',
-        `${refundNumber}: ${itemSummary} ${payload.restock ? 'returned to stock' : 'not restocked'}`,
+        `${refundNumber}: ${itemSummary} ${restocked ? 'returned to stock' : 'not restocked'}` +
+          (notRestocked.length && restocked ? ` (made-to-order items not restocked)` : ''),
         entity,
         undefined,
         now,
@@ -274,7 +337,8 @@ export const adjustmentsApi = {
     }
 
     const settings = await settingsApi.get()
-    const voidedBy = actorName()
+    const actor = await currentActor()
+    const voidedBy = actor.fullName
     const approvedBy = await assertApprover(payload.approvedBy, 'sales.void')
     const now = new Date().toISOString()
 
@@ -285,7 +349,9 @@ export const adjustmentsApi = {
         values: [now, voidedBy, reason, approvedBy, sale.id],
       },
     ]
+    // Products that count their own stock get their units back (sales before v6 were all direct stock).
     for (const item of sale.items) {
+      if (!canRestock(item)) continue
       statements.push(
         ...stockChangeStatements({
           productId: item.productId,
@@ -296,6 +362,50 @@ export const adjustmentsApi = {
         }),
       )
     }
+    // Ingredients come back exactly as the sale took them, recipes and options included.
+    const used = await querySQL(
+      `SELECT inventory_item_id, SUM(quantity) AS quantity FROM stock_movements
+       WHERE reference_type = 'sale' AND reference_id = ? AND type = 'sale' GROUP BY inventory_item_id`,
+      [sale.invoiceNumber],
+    )
+    for (const row of (used.values ?? []) as { inventory_item_id: number; quantity: number }[]) {
+      if (row.quantity >= 0) continue
+      statements.push(
+        ...ingredientChangeStatements({
+          inventoryItemId: row.inventory_item_id,
+          delta: -row.quantity,
+          type: 'void',
+          reason: `Void ${sale.invoiceNumber}`,
+          referenceType: 'void',
+          referenceId: sale.invoiceNumber,
+          user: actor,
+          at: now,
+        }),
+      )
+    }
+    // A voided sale leaves nothing behind: the charge comes off the account and points are undone.
+    const charged = chargedAmount(sale)
+    if (sale.customerId && charged > 0) {
+      statements.push(
+        ...creditEntryStatements({
+          entryNumber: await nextDocumentNumber('customer_credit_entries', 'CR'),
+          customerId: sale.customerId,
+          type: CREDIT_ENTRY_TYPE.REVERSAL,
+          amount: charged,
+          saleId: sale.id,
+          method: CHARGE_METHOD,
+          reference: `Void ${sale.invoiceNumber}`,
+          notes: reason,
+          shiftId: await openShiftId(actor.id),
+          createdBy: voidedBy,
+          at: now,
+        }),
+      )
+    }
+    if (sale.customerId && (sale.pointsEarned > 0 || sale.pointsRedeemed > 0)) {
+      statements.push(pointsChangeStatement(sale.customerId, sale.pointsRedeemed - sale.pointsEarned))
+    }
+
     const approval = approvedBy !== voidedBy ? ` · approved by ${approvedBy}` : ''
     statements.push(
       auditStatement(

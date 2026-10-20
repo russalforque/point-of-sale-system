@@ -4,6 +4,19 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { categoryApi } from '../../api/categoryApi'
 import { productApi, type ProductPayload } from '../../api/productApi'
 import { supplierApi } from '../../api/supplierApi'
+import { ingredientApi } from '../../api/ingredientApi'
+import { modifierApi } from '../../api/modifierApi'
+import {
+  draftCost,
+  emptyTracking,
+  hasTrackingErrors,
+  InventoryTrackingSection,
+  trackingErrors,
+  trackingFromProduct,
+  trackingPayload,
+  type TrackingDraft,
+} from '../../components/products/InventoryTrackingSection'
+import { stockSummary } from '../../utils/productStock'
 
 import {
   AddButton,
@@ -29,6 +42,11 @@ import {
   useEscapeKey,
 } from '../../components/ui/MobileKit'
 import { ConfirmDialog } from '../../components/ui/Modal'
+import { ProductImportDialog } from '../../components/products/ProductImportDialog'
+import { ImageImportDialog } from '../../components/products/ImageImportDialog'
+import { GenerateCodeButton } from '../../components/products/GenerateCodeButton'
+import { PrintLabelsDialog } from '../../components/products/PrintLabelsDialog'
+import { Modal } from '../../components/ui/Modal'
 import { Pagination } from '../../components/ui/Pagination'
 
 import { useAuth } from '../../context/AuthContext'
@@ -49,6 +67,8 @@ const PAGE_SIZE = 20
 
 const emptyForm = (): ProductPayload => ({
   sku: '',
+  barcode: '',
+  unit: '',
   name: '',
   description: '',
   categoryId: 0,
@@ -64,6 +84,8 @@ const emptyForm = (): ProductPayload => ({
 function toForm(product: Product): ProductPayload {
   return {
     sku: product.sku,
+    barcode: product.barcode ?? '',
+    unit: product.unit ?? '',
     name: product.name,
     description: product.description ?? '',
     categoryId: product.categoryId,
@@ -80,7 +102,7 @@ function toForm(product: Product): ProductPayload {
 function validate(form: ProductPayload, isNew: boolean): FormErrors {
   const errors: FormErrors = {}
   if (!form.name.trim()) errors.name = 'Enter a product name.'
-  if (!form.sku.trim()) errors.sku = 'Enter a SKU or scan the barcode.'
+  if (!form.sku.trim()) errors.sku = 'Enter a SKU.'
   if (!form.categoryId) errors.categoryId = 'Choose a category.'
   if (!(form.sellingPrice > 0)) errors.sellingPrice = 'Enter the selling price.'
   if (form.costPrice < 0) errors.costPrice = 'Cost can’t be negative.'
@@ -118,6 +140,10 @@ export function MobileProducts() {
   const [initialForm, setInitialForm] = useState<ProductPayload>(emptyForm())
   const [showErrors, setShowErrors] = useState(false)
   const [deactivate, setDeactivate] = useState<Product | null>(null)
+  const [labelsFor, setLabelsFor] = useState<Product | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [importingImages, setImportingImages] = useState(false)
+  const [importMenu, setImportMenu] = useState(false)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [processingImage, setProcessingImage] = useState(false)
   const [showImageLink, setShowImageLink] = useState(false)
@@ -126,6 +152,11 @@ export function MobileProducts() {
   const [checkingImageLink, setCheckingImageLink] = useState(false)
   const [busy, setBusy] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  // How the product uses stock (mode, recipe, batch size, options). Loaded with the product when editing.
+  const [tracking, setTracking] = useState<TrackingDraft>(emptyTracking())
+  const [initialTracking, setInitialTracking] = useState<TrackingDraft>(emptyTracking())
+  const [trackingReady, setTrackingReady] = useState(true)
+  const foodService = settings.foodServiceEnabled
 
   // Start every add / edit with the image-link field closed and empty.
   useEffect(() => {
@@ -140,6 +171,9 @@ export function MobileProducts() {
 
   const categories = useAsync(() => categoryApi.list(), [])
   const suppliers = useAsync(() => supplierApi.list(), [])
+  // Only cafés and kitchens (Settings → Recipes, ingredients & options) need these on the form.
+  const ingredients = useAsync(() => (foodService && open ? ingredientApi.all() : Promise.resolve([])), [foodService, open])
+  const modifierGroups = useAsync(() => (foodService && open ? modifierApi.list() : Promise.resolve([])), [foodService, open])
 
   const { data, loading, error, reload } = useAsync(
     () =>
@@ -164,9 +198,10 @@ export function MobileProducts() {
   }, [q, categoryFilter])
 
   const items = data?.items ?? []
-  const errors = validate(form, !editing)
-  const isValid = Object.keys(errors).length === 0
-  const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm)
+  const recipeCost = draftCost(tracking)
+  const errors = validate({ ...form, costPrice: recipeCost ?? form.costPrice }, !editing)
+  const isValid = Object.keys(errors).length === 0 && !hasTrackingErrors(trackingErrors(tracking))
+  const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm) || JSON.stringify(tracking) !== JSON.stringify(initialTracking)
   const hasFilters = Boolean(q || categoryId || stock)
   const margin = form.sellingPrice > 0 ? (form.sellingPrice - form.costPrice) / form.sellingPrice : null
   const fieldError = (key: keyof FormErrors) => (showErrors ? errors[key] : undefined)
@@ -183,6 +218,19 @@ export function MobileProducts() {
     setEditing(product)
     setForm(toForm(product))
     setInitialForm(toForm(product))
+    const loading = trackingFromProduct(product, { lines: [], modifierGroupIds: [] })
+    setTracking(loading)
+    setInitialTracking(loading)
+    setTrackingReady(false)
+    void productApi
+      .recipe(product.id)
+      .then((recipe) => {
+        const loaded = trackingFromProduct(product, recipe)
+        setTracking(loaded)
+        setInitialTracking(loaded)
+      })
+      .catch((err) => notify(getErrorMessage(err), 'error'))
+      .finally(() => setTrackingReady(true))
     setShowErrors(false)
     setOpen(true)
     setView(null)
@@ -201,6 +249,9 @@ export function MobileProducts() {
       setEditing(null)
       setForm(next)
       setInitialForm(next)
+      setTracking(emptyTracking())
+      setInitialTracking(emptyTracking())
+      setTrackingReady(true)
       setShowErrors(false)
       setOpen(true)
       setView(null)
@@ -310,14 +361,19 @@ export function MobileProducts() {
 
   async function save() {
     setShowErrors(true)
-    if (!isValid || busy) return
+    if (!isValid || busy || !trackingReady) return
 
     setBusy(true)
     try {
       const payload: ProductPayload = {
         ...form,
+        ...trackingPayload(tracking, foodService),
+        // Recipe-costed products: the cost comes from the ingredients.
+        costPrice: recipeCost ?? form.costPrice,
         name: form.name.trim(),
         sku: form.sku.trim(),
+        barcode: form.barcode?.trim() || null,
+        unit: form.unit?.trim() || null,
         description: form.description?.trim(),
         supplierId: form.supplierId || null,
         imageUrl: form.imageUrl || undefined,
@@ -325,8 +381,10 @@ export function MobileProducts() {
       const saved = editing ? await productApi.update(editing.id, payload) : await productApi.create(payload)
       notify(editing ? 'Changes saved.' : `${saved.name} added.`)
       setInitialForm(form)
+      setInitialTracking(tracking)
       await Promise.all([reload(), counts.reload()])
-      navigate(`/products/${saved.id}`, { replace: true })
+      // A new product goes back to the list (the "added" toast confirms it); an edit returns to its details.
+      navigate(editing ? `/products/${saved.id}` : '/products', { replace: true })
     } catch (err) {
       notify(getErrorMessage(err), 'error')
     } finally {
@@ -386,7 +444,20 @@ export function MobileProducts() {
               : `${counts.data.all} products`
             : 'Catalog and prices'
         }
-        action={canManage ? <AddButton onClick={() => navigate('/products/create')} /> : undefined}
+        action={
+          canManage ? (
+            <div className="flex shrink-0 items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setImportMenu(true)}
+                className="inline-flex h-11 items-center rounded-full bg-[#F3F5F4] px-4 text-sm font-medium text-[#091413] transition active:scale-95"
+              >
+                Import
+              </button>
+              <AddButton onClick={() => navigate('/products/create')} />
+            </div>
+          ) : undefined
+        }
       >
         <SearchField value={search} onChange={setSearch} placeholder="Product name or SKU" label="Search products" />
 
@@ -459,7 +530,17 @@ export function MobileProducts() {
                       <p className="text-[15px] font-medium tabular-nums">{money(product.sellingPrice)}</p>
                       {product.isActive ? (
                         <p className={`text-xs tabular-nums ${stockTone(product.stockStatus)}`}>
-                          {product.stockQuantity <= 0 ? 'Out of stock' : `${product.stockQuantity} in stock`}
+                          {product.inventoryMode === 'none'
+                            ? 'Not tracked'
+                            : product.inventoryMode === 'recipe'
+                            ? product.availableQuantity === null
+                              ? 'Recipe'
+                              : product.availableQuantity <= 0
+                              ? 'Out of ingredients'
+                              : `can make ${product.availableQuantity}`
+                            : product.stockQuantity <= 0
+                            ? 'Out of stock'
+                            : `${product.stockQuantity} ${product.inventoryMode === 'batch' ? 'servings' : 'in stock'}`}
                         </p>
                       ) : (
                         <p className="text-xs text-slate-400">Inactive</p>
@@ -501,33 +582,59 @@ export function MobileProducts() {
                 <p className="text-sm text-[#1F5E3B]">Price</p>
                 <p className="mt-0.5 text-2xl font-bold tabular-nums">{money(view.sellingPrice)}</p>
                 <p className="text-xs text-slate-500">
-                  Cost {money(view.costPrice)}
+                  {view.costSource === 'recipe' ? 'Ingredients' : 'Cost'} {money(view.costPrice)}
                   {view.sellingPrice > 0 &&
                     ` · ${Math.round(((view.sellingPrice - view.costPrice) / view.sellingPrice) * 100)}% margin`}
                 </p>
               </div>
               <div className="rounded-2xl bg-[#F6F8F7] px-4 py-3">
-                <p className="text-sm text-slate-500">Stock</p>
-                <p className={`mt-0.5 text-2xl font-bold tabular-nums ${view.stockQuantity <= 0 ? 'text-rose-600' : ''}`}>
-                  {view.stockQuantity}
+                <p className="text-sm text-slate-500">
+                  {view.inventoryMode === 'recipe' ? 'Can make' : view.inventoryMode === 'batch' ? 'Servings' : 'Stock'}
+                </p>
+                <p className={`mt-0.5 text-2xl font-bold tabular-nums ${stockSummary(view).tone === 'bad' ? 'text-rose-600' : ''}`}>
+                  {stockSummary(view).value}
                 </p>
                 <p className={`text-xs ${stockTone(view.stockStatus)}`}>
-                  {view.stockStatus === 'In Stock' ? `Low at ${view.reorderLevel}` : view.stockStatus}
+                  {view.inventoryMode === 'none'
+                    ? 'Not tracked'
+                    : view.inventoryMode === 'recipe'
+                    ? stockSummary(view).detail
+                    : view.stockStatus === 'In Stock'
+                    ? `Low at ${view.reorderLevel}`
+                    : view.stockStatus}
                 </p>
               </div>
             </div>
 
-            {canAdjustStock && (
-              <TextButton tone="accent" onClick={() => navigate('/inventory')} className="-ml-4 h-11">
-                Update stock in Inventory →
+            {view.inventoryMode === 'batch' && can('inventory.produce') ? (
+              <TextButton tone="accent" onClick={() => navigate(`/ingredients?tab=batches&product=${view.id}`)} className="-ml-4 h-11">
+                Record a batch →
               </TextButton>
+            ) : view.inventoryMode === 'recipe' && canAdjustStock ? (
+              <TextButton tone="accent" onClick={() => navigate('/ingredients')} className="-ml-4 h-11">
+                See ingredients →
+              </TextButton>
+            ) : (
+              canAdjustStock &&
+              view.inventoryMode !== 'none' && (
+                <TextButton tone="accent" onClick={() => navigate('/inventory')} className="-ml-4 h-11">
+                  Update stock in Inventory →
+                </TextButton>
+              )
             )}
 
             <DetailList>
+              <DetailRow label="Barcode" value={view.barcode} />
+              <DetailRow label="Unit" value={view.unit} />
               <DetailRow label="Category" value={view.categoryName} />
               <DetailRow label="Supplier" value={view.supplierName} />
               <DetailRow label="Description" value={view.description} />
             </DetailList>
+            {canManage && view.isActive && (
+              <TextButton tone="accent" onClick={() => setLabelsFor(view)} className="-ml-4 h-11">
+                Print price labels
+              </TextButton>
+            )}
           </SheetBody>
 
           {(canManage || canDelete) && (
@@ -666,14 +773,43 @@ export function MobileProducts() {
               />
 
               <TextField
-                label="SKU / barcode"
+                label="SKU"
                 value={form.sku}
                 onChange={(sku) => setForm({ ...form, sku })}
                 error={fieldError('sku')}
                 placeholder="e.g. BEV-001"
                 autoCapitalize="characters"
                 autoComplete="off"
+                trailing={
+                  !form.sku.trim() ? (
+                    <GenerateCodeButton label="Generate SKU" onGenerate={productApi.suggestSku} onCode={(sku) => setForm((f) => ({ ...f, sku }))} />
+                  ) : undefined
+                }
               />
+
+              <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-3">
+                <TextField
+                  label="Barcode"
+                  optional
+                  value={form.barcode ?? ''}
+                  onChange={(barcode) => setForm({ ...form, barcode })}
+                  placeholder="Scan or type"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  trailing={
+                    !form.barcode?.trim() ? (
+                      <GenerateCodeButton label="Generate barcode" onGenerate={productApi.suggestBarcode} onCode={(barcode) => setForm((f) => ({ ...f, barcode }))} />
+                    ) : undefined
+                  }
+                />
+                <TextField
+                  label="Unit"
+                  value={form.unit ?? ''}
+                  onChange={(unit) => setForm({ ...form, unit })}
+                  placeholder="pcs"
+                  autoComplete="off"
+                />
+              </div>
 
               <PickerField
                 label="Category"
@@ -695,19 +831,26 @@ export function MobileProducts() {
                   error={fieldError('sellingPrice')}
                   placeholder="0.00"
                 />
-                <TextField
-                  label="Cost"
-                  optional
-                  amount
-                  prefix={settings.currencySymbol}
-                  value={form.costPrice || ''}
-                  onChange={setNumber('costPrice')}
-                  error={fieldError('costPrice')}
-                  placeholder="0.00"
-                />
+                {recipeCost !== null ? (
+                  <div>
+                    <p className="text-sm font-medium">Cost</p>
+                    <p className="mt-1.5 flex h-12 items-center rounded-2xl bg-[#F6F8F7] px-4 text-[15px] tabular-nums text-slate-600">{money(recipeCost)}</p>
+                  </div>
+                ) : (
+                  <TextField
+                    label="Cost"
+                    optional
+                    amount
+                    prefix={settings.currencySymbol}
+                    value={form.costPrice || ''}
+                    onChange={setNumber('costPrice')}
+                    error={fieldError('costPrice')}
+                    placeholder="0.00"
+                  />
+                )}
               </div>
 
-              {margin !== null && form.costPrice > 0 && (
+              {recipeCost === null && margin !== null && form.costPrice > 0 && (
                 <p
                   className={`-mt-1 text-sm ${
                     margin < 0 ? 'text-rose-600' : margin < 0.15 ? 'text-amber-700' : 'text-[#1F5E3B]'
@@ -719,42 +862,58 @@ export function MobileProducts() {
                 </p>
               )}
 
-              <div className="grid grid-cols-2 gap-3">
-                {editing ? (
-                  <div>
-                    <p className="text-sm font-medium">Stock</p>
-                    <p className="mt-1.5 flex h-12 items-center rounded-2xl bg-[#F6F8F7] px-4 text-[15px] tabular-nums text-slate-500">
-                      {form.stockQuantity}
-                    </p>
-                  </div>
-                ) : (
-                  <TextField
-                    label="Starting stock"
-                    type="number"
-                    inputMode="numeric"
-                    min={0}
-                    step={1}
-                    value={form.stockQuantity || ''}
-                    onChange={setNumber('stockQuantity')}
-                    error={fieldError('stockQuantity')}
-                    placeholder="0"
-                  />
-                )}
-                <TextField
-                  label="Low-stock alert"
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  step={1}
-                  value={form.reorderLevel}
-                  onChange={setNumber('reorderLevel')}
-                  error={fieldError('reorderLevel')}
-                  placeholder="5"
-                />
-              </div>
-              {editing && (
-                <p className="-mt-2 text-xs text-slate-500">To change stock, use Inventory so the change is recorded.</p>
-              )}
+              <InventoryTrackingSection
+                draft={tracking}
+                onChange={setTracking}
+                foodService={foodService}
+                ingredients={ingredients.data ?? []}
+                modifierGroups={modifierGroups.data ?? []}
+                sellingPrice={form.sellingPrice}
+                money={money}
+                showErrors={showErrors}
+                keptStock={editing && (editing.inventoryMode === 'direct' || editing.inventoryMode === 'batch') ? editing.stockQuantity : undefined}
+                canManageIngredients={canAdjustStock}
+                stockFields={
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      {editing && (editing.inventoryMode === 'direct' || editing.inventoryMode === 'batch') ? (
+                        <div>
+                          <p className="text-sm font-medium">{tracking.inventoryMode === 'batch' ? 'Servings' : 'Stock'}</p>
+                          <p className="mt-1.5 flex h-12 items-center rounded-2xl bg-white px-4 text-[15px] tabular-nums text-slate-500">
+                            {form.stockQuantity}
+                          </p>
+                        </div>
+                      ) : (
+                        <TextField
+                          label={tracking.inventoryMode === 'batch' ? 'Servings now' : 'Starting stock'}
+                          type="number"
+                          inputMode="numeric"
+                          min={0}
+                          step={1}
+                          value={form.stockQuantity || ''}
+                          onChange={setNumber('stockQuantity')}
+                          error={fieldError('stockQuantity')}
+                          placeholder="0"
+                        />
+                      )}
+                      <TextField
+                        label="Low-stock alert"
+                        type="number"
+                        inputMode="numeric"
+                        min={0}
+                        step={1}
+                        value={form.reorderLevel}
+                        onChange={setNumber('reorderLevel')}
+                        error={fieldError('reorderLevel')}
+                        placeholder="5"
+                      />
+                    </div>
+                    {editing && (editing.inventoryMode === 'direct' || editing.inventoryMode === 'batch') && (
+                      <p className="-mt-2 text-xs text-slate-500">To change stock, use Inventory so the change is recorded.</p>
+                    )}
+                  </>
+                }
+              />
 
               <PickerField
                 label="Supplier"
@@ -794,7 +953,7 @@ export function MobileProducts() {
             </SheetBody>
 
             <SheetFooter>
-              <PrimaryButton type="submit" disabled={busy || processingImage || checkingImageLink || (editing !== null && !isDirty)}>
+              <PrimaryButton type="submit" disabled={busy || processingImage || checkingImageLink || !trackingReady || (editing !== null && !isDirty)}>
                 {busy ? 'Saving…' : editing ? (isDirty ? 'Save changes' : 'No changes') : 'Add product'}
               </PrimaryButton>
             </SheetFooter>
@@ -813,6 +972,8 @@ export function MobileProducts() {
         />
       )}
 
+      {labelsFor && <PrintLabelsDialog product={labelsFor} onClose={() => setLabelsFor(null)} />}
+
       {deactivate && (
         <ConfirmDialog
           title={`Deactivate ${deactivate.name}?`}
@@ -822,6 +983,39 @@ export function MobileProducts() {
           busy={busy}
           onCancel={() => setDeactivate(null)}
           onConfirm={() => void confirmDeactivate()}
+        />
+      )}
+
+      {importMenu && (
+        <Modal title="Import" onClose={() => setImportMenu(false)} size="sm">
+          <div className="space-y-2">
+            {[
+              { label: 'Products from a spreadsheet', hint: 'Excel (.xlsx) or CSV', open: () => setImporting(true) },
+              { label: 'Product photos', hint: 'Images or a ZIP, named by SKU or barcode', open: () => setImportingImages(true) },
+            ].map((option) => (
+              <button
+                key={option.label}
+                type="button"
+                onClick={() => {
+                  setImportMenu(false)
+                  option.open()
+                }}
+                className="flex min-h-16 w-full flex-col justify-center rounded-2xl bg-[#F6F8F7] px-4 py-3 text-left active:bg-[#EDF1EF]"
+              >
+                <span className="text-[15px] font-medium">{option.label}</span>
+                <span className="text-sm text-slate-500">{option.hint}</span>
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
+      {importingImages && (
+        <ImageImportDialog onClose={() => setImportingImages(false)} onImported={() => void reload()} />
+      )}
+      {importing && (
+        <ProductImportDialog
+          onClose={() => setImporting(false)}
+          onImported={() => void Promise.all([reload(), counts.reload()])}
         />
       )}
     </div>

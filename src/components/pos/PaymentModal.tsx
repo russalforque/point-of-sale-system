@@ -7,11 +7,16 @@ import {
   type ReactNode,
 } from 'react'
 
+import { customerApi } from '../../api/customerApi'
 import { salesApi } from '../../api/salesApi'
+import { useApproval } from '../auth/ApprovalDialog'
+import { useAuth } from '../../context/AuthContext'
 import { useCheckout } from '../../context/CheckoutContext'
 import { useSettings } from '../../context/SettingsContext'
 import { useToast } from '../../context/ToastContext'
+import { useAsync } from '../../hooks/useAsync'
 import { useDismissOnBack } from '../../hooks/useDismissOnBack'
+import { useMediaQuery } from '../../hooks/useMediaQuery'
 import { useReceiptPrinter } from '../../hooks/useReceiptPrinter'
 import { OrderTypeSelector } from './OrderTypeSelector'
 import { ReceiptPreview } from './ReceiptPreview'
@@ -23,11 +28,18 @@ import { getPrinterConfig } from '../../utils/printerConfig'
 import {
   buildPaymentBreakdown,
   calculateChange,
-  calculateTotals,
+  CHARGE_OPTION,
+  cartStockKey,
+  lineTotal,
+  modifierSummary,
   PAYMENT_OPTIONS,
+  saleItems,
   type CartLine,
-  type CartTotals,
 } from '../../utils/pos'
+import { StockShortageNotice } from './StockShortageNotice'
+import { checkoutTotals, type CheckoutTotals } from '../../services/checkout'
+import { CHARGE_METHOD, dueDateFrom } from '../../services/credit'
+import { loyaltyActive, maxRedeemablePoints, pointsValue } from '../../services/loyalty'
 import {
   maxTenderAmount,
   methodLabel as tenderMethodLabel,
@@ -35,13 +47,21 @@ import {
   tenderedTotal,
   type Tender,
 } from '../../services/payments'
-import { roundMoney } from '../../utils/amount'
+import { roundMoney, sumMoney } from '../../utils/amount'
+import { formatDate } from '../../utils/format'
 import { Modal } from '../ui/Modal'
 
 const CASH_PAYMENT_METHOD: PaymentMethod = 0
 
 /** Philippine peso bills used to suggest "round up" cash amounts. */
 const BILL_DENOMINATIONS = [20, 50, 100, 200, 500, 1000]
+
+/**
+ * Landscape tablets and desktops: payment info on the left, amount entry + keypad on the right.
+ * Portrait tablets and phones stack. Width alone can't tell a 1024×768 landscape tablet from
+ * a portrait 800×1280 one, so orientation (width vs. height) decides.
+ */
+const WIDE_LAYOUT_QUERY = '(orientation: landscape) and (min-width: 720px)'
 
 /** Keypad entry cap (~₱9,999,999.99). */
 const MAX_CASH_DIGITS = 9
@@ -60,6 +80,8 @@ function methodInstruction(value: PaymentMethod): string {
       return 'Charge the card on your terminal, then enter the approval code.'
     case 2:
       return 'Have the customer pay via GCash, then enter the reference number.'
+    case 4:
+      return 'The customer pays later. The amount is added to their account balance.'
     default:
       return 'Collect the payment (bank transfer, QR Ph, etc.), then enter its reference.'
   }
@@ -73,6 +95,8 @@ function MethodIcon({ value, size = 18 }: { value: PaymentMethod; size?: number 
       return <CardIcon size={size} />
     case 2:
       return <WalletIcon size={size} />
+    case 4:
+      return <LedgerIcon size={size} />
     default:
       return <MoreIcon size={size} />
   }
@@ -94,6 +118,9 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
     openDrawer,
   } = useReceiptPrinter()
 
+  const { can } = useAuth()
+  const approval = useApproval()
+  const [approving, setApproving] = useState(false)
   const [busy, setBusy] = useState(false)
   const [receipt, setReceipt] = useState<Sale | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -109,16 +136,43 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
   const [tenders, setTenders] = useState<Tender[]>([])
 
   // Back closes the modal instead of leaving the register — and is ignored mid-payment.
-  const { close } = useDismissOnBack('paymentModalOpen', onClose, busy)
+  const locked = busy || approving
+  const { close } = useDismissOnBack('paymentModalOpen', onClose, locked)
+  const wide = useMediaQuery(WIDE_LAYOUT_QUERY)
 
   const money = (value: number) => formatMoney(value, settings.currencySymbol)
 
-  const totals = useMemo(
-    () => calculateTotals(checkout.cart, checkout.discount, settings.taxRate),
-    [checkout.cart, checkout.discount, settings.taxRate],
+  const totals = useMemo(() => checkoutTotals(checkout, settings), [checkout, settings])
+
+  // The selected customer's points and credit, fresh from the database.
+  const customerQuery = useAsync(
+    () => (checkout.customerId ? customerApi.get(checkout.customerId) : Promise.resolve(null)),
+    [checkout.customerId],
   )
+  const customer = receipt ? null : customerQuery.data
+
+  // Everything the order uses (ingredients and options included), checked before payment.
+  const stockKey = cartStockKey(checkout.cart)
+  const stockCheck = useAsync(
+    () => (checkout.cart.length ? salesApi.checkStock(saleItems(checkout.cart)) : Promise.resolve({ shortages: [], blocked: false })),
+    [stockKey],
+  )
+  const stockBlocked = !receipt && Boolean(stockCheck.data?.blocked)
+
+  // Charge to account: only with customer credit on and a customer who has a limit.
+  const availableCredit = customer ? Math.max(roundMoney(customer.creditLimit - customer.creditBalance), 0) : 0
+  const canCharge = settings.creditEnabled && Boolean(customer) && (customer?.creditLimit ?? 0) > 0
+  const methodOptions = canCharge ? [...PAYMENT_OPTIONS, CHARGE_OPTION] : PAYMENT_OPTIONS
+  const isCharge = method === CHARGE_METHOD
+  const chargedSoFar = sumMoney(tenders.filter((tender) => tender.method === CHARGE_METHOD).map((tender) => tender.amount))
+
+  // Loyalty: spend points as a discount on this order.
+  const pointsBalance = customer?.loyaltyPoints ?? 0
+  const redeemablePoints = maxRedeemablePoints(pointsBalance, roundMoney(totals.subtotal - totals.manualDiscount), settings)
+  const showPoints = loyaltyActive(settings) && Boolean(customer) && pointsBalance > 0
 
   const isCash = method === CASH_PAYMENT_METHOD
+  const needsReference = !isCash && !isCharge
   const cashValue = cashDigits ? Number(cashDigits) / 100 : 0
   // Non-cash tenders never carry a typed cash amount, matching the previous payload.
   const paymentBreakdown = useMemo(
@@ -130,7 +184,7 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
   const isCashSufficient = cashValue >= totals.total
   const trimmedReference = paymentReference.trim()
 
-  const methodLabel = PAYMENT_OPTIONS.find((opt) => opt.value === method)?.label ?? 'Payment'
+  const methodLabel = methodOptions.find((opt) => opt.value === method)?.label ?? 'Payment'
   const itemCount = checkout.cart.reduce((sum, line) => sum + line.quantity, 0)
   const quickAmounts = useMemo(() => quickCashAmounts(totals.total), [totals.total])
 
@@ -139,33 +193,51 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
   const splitRemaining = tenderRemainingDue(totals.total, tenders)
   const splitChange = Math.max(roundMoney(splitPaid - totals.total), 0)
   // An empty keypad means "whatever is left".
-  const entryAmount = cashDigits ? cashValue : splitRemaining
-  const entryMax = maxTenderAmount(totals.total, tenders, method)
+  const creditLeft = Math.max(roundMoney(availableCredit - chargedSoFar), 0)
+  const tenderMax = maxTenderAmount(totals.total, tenders, method)
+  const entryMax = isCharge ? Math.min(tenderMax ?? creditLeft, creditLeft) : tenderMax
+  const entryAmount = cashDigits ? cashValue : isCharge ? Math.min(splitRemaining, creditLeft) : splitRemaining
   const entryProblem =
     splitRemaining <= 0
       ? null
+      : isCharge && creditLeft <= 0
+      ? 'No credit available'
       : entryAmount <= 0
       ? 'Enter an amount'
       : entryMax !== null && entryAmount > entryMax + 0.001
       ? `${methodLabel} can’t be more than ${money(entryMax)}`
-      : !isCash && !trimmedReference
+      : needsReference && !trimmedReference
       ? `Enter the ${methodLabel} reference`
       : null
 
-  const isFormValid = splitMode
-    ? tenders.length > 0 && splitRemaining === 0
-    : isCash
-    ? isCashSufficient
-    : trimmedReference.length > 0
+  const chargeCovers = isCharge && availableCredit + 0.001 >= totals.total
+  const needsSeniorId = checkout.discountType === 'senior_pwd' && !checkout.discountReference.trim()
+
+  const isFormValid =
+    !needsSeniorId &&
+    !stockBlocked &&
+    (splitMode
+      ? tenders.length > 0 && splitRemaining === 0
+      : isCash
+      ? isCashSufficient
+      : isCharge
+      ? chargeCovers
+      : trimmedReference.length > 0)
 
   const blockedReason = isFormValid
     ? null
+    : stockBlocked
+    ? 'Not enough stock'
+    : needsSeniorId
+    ? 'Enter the Senior/PWD ID on the order'
     : splitMode
     ? `${money(splitRemaining)} left to pay`
     : isCash
     ? cashValue === 0
       ? 'Enter the cash received'
       : `${money(remainingDue)} short`
+    : isCharge
+    ? `Only ${money(availableCredit)} credit available`
     : `Enter the ${methodLabel} reference number`
 
   /* ------------------------------------------------------------------
@@ -202,6 +274,20 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
     setErrorMessage(null)
   }
 
+  /** Points change the amount due, so any payment already entered starts over. */
+  function toggleRedeem() {
+    const using = checkout.redeemPoints > 0
+    setCheckout({ ...checkout, redeemPoints: using ? 0 : redeemablePoints })
+    setTenders([])
+    setCashDigits('')
+    setErrorMessage(null)
+  }
+
+  // Charge is no longer offered (customer removed, limit changed): fall back to cash.
+  useEffect(() => {
+    if (method === CHARGE_METHOD && !canCharge && !customerQuery.loading) setMethod(CASH_PAYMENT_METHOD)
+  }, [method, canCharge, customerQuery.loading])
+
   function toggleSplit() {
     setSplitMode((on) => !on)
     setTenders([])
@@ -216,7 +302,7 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
       setErrorMessage(entryProblem)
       return
     }
-    setTenders((prev) => [...prev, { method, amount: entryAmount, reference: isCash ? null : trimmedReference }])
+    setTenders((prev) => [...prev, { method, amount: entryAmount, reference: needsReference ? trimmedReference : null }])
     setCashDigits('')
     setPaymentReference('')
     setErrorMessage(null)
@@ -232,8 +318,12 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
   ------------------------------------------------------------------ */
 
   async function completeSale() {
-    if (busy) return
+    if (busy || approving) return
 
+    if (needsSeniorId) {
+      setErrorMessage('Enter the Senior Citizen / PWD ID number on the order before charging.')
+      return
+    }
     if (splitMode) {
       if (!isFormValid) {
         setErrorMessage(`${money(splitRemaining)} is still left to pay.`)
@@ -242,15 +332,33 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
     } else if (isCash && !isCashSufficient) {
       setErrorMessage(`Amount received is short by ${money(remainingDue)}.`)
       return
-    } else if (!isCash && !trimmedReference) {
+    } else if (isCharge && !chargeCovers) {
+      setErrorMessage(`Only ${money(availableCredit)} of credit is available. Split the payment or choose another method.`)
+      return
+    } else if (needsReference && !trimmedReference) {
       setErrorMessage('Enter a payment reference or approval code.')
       return
+    }
+
+    // A discount above the store limit needs a manager or admin; ask for their PIN right here.
+    let discountApprovedBy: { id: number; fullName: string } | null = null
+    if (totals.overLimit && !can('sales.discount')) {
+      setApproving(true)
+      const approver = await approval.request({
+        permission: 'sales.discount',
+        title: `${Math.round(totals.discountPercent)}% discount`,
+        message: `${money(totals.manualDiscount)} off is above the ${settings.maxDiscountPercent}% limit for cashiers. A manager or admin must approve it.`,
+        confirmLabel: 'Approve discount',
+      })
+      setApproving(false)
+      if (!approver) return
+      discountApprovedBy = { id: approver.id, fullName: approver.fullName }
     }
 
     // A single non-cash tender is always for the full amount due; cash may be over-tendered (change).
     const payments: Tender[] = splitMode
       ? tenders
-      : [{ method, amount: isCash ? cashValue : totals.total, reference: isCash ? null : trimmedReference }]
+      : [{ method, amount: isCash ? cashValue : totals.total, reference: needsReference ? trimmedReference : null }]
     const paidWithCash = payments.some((tender) => tender.method === CASH_PAYMENT_METHOD)
 
     setErrorMessage(null)
@@ -259,13 +367,14 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
     try {
       const sale = await salesApi.create({
         customerId: checkout.customerId,
-        discount: totals.discount,
+        discount: totals.manualDiscount,
+        discountType: checkout.discountType,
+        discountReference: checkout.discountReference,
+        discountApprovedBy,
+        redeemPoints: totals.loyaltyDiscount > 0 ? checkout.redeemPoints : 0,
         orderType: checkout.orderType,
         payments,
-        items: checkout.cart.map((line) => ({
-          productId: line.product.id,
-          quantity: line.quantity,
-        })),
+        items: saleItems(checkout.cart),
       })
 
       setReceipt(sale)
@@ -347,15 +456,16 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
   ------------------------------------------------------------------ */
 
   // The primary button carries its own "why it's disabled" label, so no extra hint row
-  // takes height away from the keypad on small phones.
+  // takes height away from the keypad. Cancel sits apart from it and is styled quietly,
+  // so a hurried tap near the edge never completes a sale by accident.
   const paymentFooter = (
-    <div className="flex w-full items-center gap-2">
+    <div className="flex w-full items-center justify-between gap-3">
       {/* Phones already have the header close button and Android back; wider screens keep an explicit Cancel. */}
       <button
         type="button"
         onClick={close}
         disabled={busy}
-        className="hidden h-14 shrink-0 rounded-2xl px-5 text-[15px] font-medium text-slate-600 transition active:bg-slate-100 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] sm:block"
+        className="hidden h-14 shrink-0 rounded-2xl px-6 text-[15px] font-medium text-slate-600 ring-1 ring-slate-200 transition active:bg-slate-100 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] sm:block"
       >
         Cancel
       </button>
@@ -363,7 +473,8 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
         type="button"
         onClick={() => void completeSale()}
         disabled={busy || !isFormValid}
-        className="flex h-14 min-w-0 flex-1 items-center justify-between gap-3 rounded-2xl bg-[#1F5E3B] px-5 text-[15px] font-semibold text-white transition active:scale-[0.99] disabled:bg-slate-100 disabled:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] focus-visible:ring-offset-2"
+        // Fixed width on tablets so it doesn't resize as the label changes; full width on phones.
+        className="flex h-14 w-full min-w-0 items-center justify-between gap-3 rounded-2xl bg-[#1F5E3B] px-5 sm:w-88 sm:flex-none text-base font-semibold text-white shadow-sm transition active:scale-[0.99] disabled:bg-slate-100 disabled:text-slate-500 disabled:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] focus-visible:ring-offset-2"
       >
         {busy ? (
           <span className="flex w-full items-center justify-center gap-2">
@@ -371,7 +482,8 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
             Completing sale…
           </span>
         ) : blockedReason ? (
-          <span aria-live="polite" className="w-full truncate text-center font-medium">
+          <span aria-live="polite" className="flex w-full items-center justify-center gap-2 truncate font-medium">
+            <LockIcon size={15} />
             {blockedReason}
           </span>
         ) : (
@@ -385,7 +497,7 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
   )
 
   const successFooter = (
-    <div className="flex w-full items-center gap-2">
+    <div className="flex w-full items-center justify-between gap-2">
       <button
         type="button"
         onClick={printReceipt}
@@ -399,14 +511,125 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
         type="button"
         autoFocus
         onClick={close}
-        className="h-14 flex-1 rounded-2xl bg-[#1F5E3B] px-5 text-[15px] font-semibold text-white transition active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] focus-visible:ring-offset-2"
+        // Same fixed width as Complete sale on tablets; fills the row next to Print on phones.
+        className="h-14 flex-1 rounded-2xl bg-[#1F5E3B] px-5 text-[15px] font-semibold sm:w-88 sm:flex-none text-white transition active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] focus-visible:ring-offset-2"
       >
         New sale
       </button>
     </div>
   )
 
+  // Received + change (or paid + remaining in a split): under the amount due when stacked,
+  // directly above the keypad in the two-column layout.
+  const tenderSummary = splitMode ? (
+    <SplitSummary money={money} paid={splitPaid} remaining={splitRemaining} change={splitChange} emphasis={wide} />
+  ) : isCash ? (
+    <TenderRow
+      money={money}
+      cashValue={cashValue}
+      isCashSufficient={isCashSufficient}
+      change={change}
+      remainingDue={remainingDue}
+      onClear={handleCashClear}
+      emphasis={wide}
+    />
+  ) : null
+
+  const taxRatePercent = Math.round(settings.taxRate * 10000) / 100
+
+  let entry: ReactNode
+  if (splitMode) {
+    entry =
+      splitRemaining > 0 ? (
+        <SplitEntry
+          money={money}
+          method={method}
+          methodLabel={methodLabel}
+          amount={entryAmount}
+          typed={Boolean(cashDigits)}
+          remaining={isCharge ? Math.min(splitRemaining, creditLeft) : splitRemaining}
+          needsReference={needsReference}
+          reference={paymentReference}
+          problem={entryProblem}
+          onReference={(value) => {
+            setPaymentReference(value)
+            setErrorMessage(null)
+          }}
+          onReferenceKeyDown={handleReferenceKeyDown}
+          onDigit={handleCashDigit}
+          onDoubleZero={handleCashDoubleZero}
+          onBackspace={handleCashBackspace}
+          onQuickSelect={handleCashQuickSelect}
+          onAdd={addTender}
+        />
+      ) : (
+        <p className="flex flex-1 items-center justify-center rounded-2xl bg-[#F2F8F4] px-4 py-6 text-center text-sm font-medium text-[#1F5E3B]">
+          Fully paid — complete the sale below.
+        </p>
+      )
+  } else if (isCash) {
+    entry = (
+      <CashEntry
+        money={money}
+        cashValue={cashValue}
+        quickAmounts={quickAmounts}
+        onDigit={handleCashDigit}
+        onDoubleZero={handleCashDoubleZero}
+        onBackspace={handleCashBackspace}
+        onQuickSelect={handleCashQuickSelect}
+      />
+    )
+  } else if (isCharge && customer) {
+    const balanceAfter = roundMoney(customer.creditBalance + totals.total)
+    entry = (
+      <div className="rounded-2xl bg-[#F6F8F7] p-4">
+        <p className="text-sm text-slate-500">{methodInstruction(method)}</p>
+        <p className="mt-3 text-[15px] font-semibold text-[#091413]">
+          Charge {money(totals.total)} to {customer.fullName}
+        </p>
+        <dl className="mt-3 space-y-1.5 text-sm">
+          <SummaryRow label="Current balance" value={money(customer.creditBalance)} />
+          <SummaryRow label="Balance after this sale" value={money(balanceAfter)} strong />
+          <SummaryRow label="Credit limit" value={money(customer.creditLimit)} />
+          <SummaryRow label="Due" value={formatDate(dueDateFrom(settings.creditDefaultDays))} />
+        </dl>
+        {!chargeCovers && (
+          <p className="mt-3 text-sm font-medium text-amber-700">
+            Only {money(availableCredit)} of credit is left. Use Split payment to charge part of it.
+          </p>
+        )}
+      </div>
+    )
+  } else {
+    entry = (
+      <div>
+        <p className="text-sm text-slate-500">{methodInstruction(method)}</p>
+        <label htmlFor="payment-modal-reference-input" className="mt-3 block text-sm font-medium text-[#091413]">
+          Reference number
+        </label>
+        <input
+          key={method}
+          id="payment-modal-reference-input"
+          type="text"
+          autoFocus
+          autoComplete="off"
+          autoCapitalize="characters"
+          enterKeyHint="done"
+          value={paymentReference}
+          onChange={(e) => {
+            setPaymentReference(e.target.value)
+            setErrorMessage(null)
+          }}
+          onKeyDown={handleReferenceKeyDown}
+          placeholder={method === 1 ? 'Approval code' : 'Reference no.'}
+          className="mt-1.5 h-14 w-full rounded-2xl border-0 bg-[#F3F5F4] px-4 text-lg tracking-wide text-[#091413] placeholder:text-base placeholder:tracking-normal placeholder:text-slate-400 outline-none transition focus:bg-white focus:ring-2 focus:ring-[#1F5E3B]"
+        />
+      </div>
+    )
+  }
+
   return (
+    <>
     <Modal
       title={receipt ? 'Sale complete' : 'Payment'}
       description={
@@ -415,9 +638,20 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
           : `${itemCount} ${itemCount === 1 ? 'item' : 'items'}`
       }
       onClose={close}
-      preventClose={busy}
+      preventClose={locked}
       size="2xl"
       mobileFullScreen
+      dense={!receipt}
+      // Fixed, viewport-derived height: the keypad stretches into whatever is left, so the
+      // dialog fills the screen without scrolling in either orientation.
+      panelClassName={
+        receipt
+          ? undefined
+          : wide
+          ? 'h-[min(calc(100dvh-2rem),44rem)] max-w-5xl'
+          : 'sm:h-[min(calc(100dvh-2rem),58rem)] sm:max-w-3xl'
+      }
+      bodyClassName={receipt ? undefined : 'px-4 py-3 sm:px-5'}
       footer={receipt ? successFooter : paymentFooter}
     >
       {receipt ? (
@@ -429,82 +663,135 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
           printFailed={Boolean(lastPrintError)}
         />
       ) : (
-        <div className="grid gap-3 lg:grid-cols-2 lg:gap-x-6 lg:gap-y-4">
-          {/* TENDER DISPLAY — due, received and change read together, like a register screen */}
-          <section aria-label="Amount due" className="min-w-0 rounded-3xl bg-[#F2F8F4] px-5 py-4 lg:col-span-2">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm font-medium text-[#1F5E3B]">Amount due</p>
-              <button
-                type="button"
-                onClick={() => setShowItems((open) => !open)}
-                aria-expanded={showItems}
-                aria-controls="payment-order-items"
-                className="-my-2.5 -mr-3 inline-flex h-11 shrink-0 items-center gap-1 rounded-full px-3 text-sm text-[#1F5E3B] active:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] lg:hidden"
-              >
-                {showItems ? 'Hide items' : `${itemCount} ${itemCount === 1 ? 'item' : 'items'}`}
-                {totals.discount > 0 && ` · ${money(totals.discount)} off`}
-                <ChevronIcon open={showItems} />
-              </button>
+        <div
+          className={
+            wide
+              ? 'grid h-full grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] grid-rows-[minmax(0,1fr)] gap-5'
+              : 'flex h-full flex-col gap-3 [@media(max-height:700px)]:gap-2'
+          }
+        >
+          {/* PAYMENT INFO — amount due, order type, method (+ the order itself when there is room) */}
+          <div className={`flex min-w-0 flex-col gap-3 [@media(max-height:700px)]:gap-2 ${wide ? 'min-h-0' : 'shrink-0'}`}>
+            <section aria-label="Amount due" className="relative min-w-0 rounded-3xl bg-[#F2F8F4] px-4 py-3 sm:px-5">
+              <div className="flex h-6 items-center justify-between gap-3">
+                <p className="text-sm font-medium text-[#1F5E3B]">Amount due</p>
+                {!wide && (
+                  <button
+                    type="button"
+                    onClick={() => setShowItems((open) => !open)}
+                    aria-expanded={showItems}
+                    aria-controls="payment-order-items"
+                    className="relative z-30 -mr-3 inline-flex h-11 shrink-0 items-center gap-1 rounded-full px-3 text-sm text-[#1F5E3B] active:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+                  >
+                    {showItems ? 'Hide items' : `${itemCount} ${itemCount === 1 ? 'item' : 'items'}`}
+                    {totals.discount > 0 && ` · ${money(totals.discount)} off`}
+                    <ChevronIcon open={showItems} />
+                  </button>
+                )}
+              </div>
+              <p className="mt-1 truncate text-[36px] font-bold leading-none tracking-[-0.03em] tabular-nums text-[#091413] sm:text-[44px] [@media(max-height:700px)]:text-[32px]">
+                {money(totals.total)}
+              </p>
+
+              {!wide && tenderSummary && (
+                <div className="mt-3 border-t border-[#1F5E3B]/10 pt-2.5 [@media(max-height:700px)]:mt-2 [@media(max-height:700px)]:pt-2">
+                  {tenderSummary}
+                </div>
+              )}
+
+              {/* Stacked layouts: the order opens over the controls instead of pushing the keypad off-screen. */}
+              {!wide && showItems && (
+                <>
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    onClick={() => setShowItems(false)}
+                    className="fixed inset-0 z-10 cursor-default"
+                  />
+                  <OrderItems
+                    id="payment-order-items"
+                    className="absolute inset-x-0 top-full z-20 mt-2 bg-white shadow-[0_16px_40px_rgba(15,23,42,0.18)]"
+                    listClassName="max-h-[min(16rem,40dvh)]"
+                    cart={checkout.cart}
+                    totals={totals}
+                    taxRatePercent={taxRatePercent}
+                    money={money}
+                  />
+                </>
+              )}
+            </section>
+
+            <div className={wide ? 'flex flex-col gap-3' : 'grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] [@media(max-height:700px)]:gap-2'}>
+              <div className="flex min-w-0 flex-col">
+                <p className={`h-8 items-center text-xs font-medium uppercase tracking-wide text-slate-500 ${wide ? 'flex' : 'hidden sm:flex'}`}>
+                  Order type
+                </p>
+                <OrderTypeSelector
+                  className="flex-1"
+                  value={checkout.orderType}
+                  disabled={busy}
+                  onChange={(orderType) => setCheckout({ ...checkout, orderType })}
+                />
+              </div>
+
+              <div className="flex min-w-0 flex-col">
+                <div className="flex h-8 items-center justify-between gap-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                    {splitMode ? 'Next payment' : 'Payment method'}
+                  </p>
+                  {totals.total > 0 && (
+                    <button
+                      type="button"
+                      onClick={toggleSplit}
+                      disabled={busy}
+                      aria-pressed={splitMode}
+                      className="-my-1.5 -mr-2 h-11 rounded-full px-3 text-sm font-medium text-[#1F5E3B] active:bg-[#F2F8F4] disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+                    >
+                      {splitMode ? 'Use a single payment' : 'Split payment'}
+                    </button>
+                  )}
+                </div>
+                {(!splitMode || splitRemaining > 0) ? (
+                  <MethodSelector value={method} options={methodOptions} onChange={selectMethod} />
+                ) : (
+                  <p className="flex min-h-15 items-center rounded-2xl bg-[#F1F4F3] px-4 text-sm text-slate-500">
+                    Amount due is covered.
+                  </p>
+                )}
+              </div>
             </div>
-            <p className="mt-1 truncate text-[36px] font-bold leading-none tracking-[-0.03em] tabular-nums text-[#091413] sm:text-[40px]">
-              {money(totals.total)}
-            </p>
 
-            {splitMode ? (
-              <SplitSummary money={money} paid={splitPaid} remaining={splitRemaining} change={splitChange} />
-            ) : isCash && (
-              <TenderRow
-                money={money}
-                cashValue={cashValue}
-                isCashSufficient={isCashSufficient}
-                change={change}
-                remainingDue={remainingDue}
-                onClear={handleCashClear}
-              />
-            )}
-          </section>
-
-          {/* ORDER — items are one tap away on phones, always visible on wide screens */}
-          <section aria-label="Order" className="flex min-w-0 flex-col gap-3">
-            <OrderItems
-              id="payment-order-items"
-              className={`${showItems ? 'block' : 'hidden'} lg:order-2 lg:block`}
-              cart={checkout.cart}
-              totals={totals}
-              taxRatePercent={Math.round(settings.taxRate * 10000) / 100}
-              money={money}
-            />
-
-            <OrderTypeSelector
-              className="lg:order-1"
-              value={checkout.orderType}
-              disabled={busy}
-              onChange={(orderType) => setCheckout({ ...checkout, orderType })}
-            />
-          </section>
-
-          {/* PAYMENT */}
-          <section aria-label="Payment" className="min-w-0">
-            {splitMode && <TenderList tenders={tenders} money={money} disabled={busy} onRemove={removeTender} />}
-
-            {(!splitMode || splitRemaining > 0) && <MethodSelector value={method} onChange={selectMethod} />}
-
-            {totals.total > 0 && (
-              <div className="mt-1 flex justify-end">
+            {showPoints && customer && (
+              <div className="flex min-h-12 items-center justify-between gap-3 rounded-2xl bg-[#F6F8F7] py-1 pl-4 pr-1">
+                <p className="min-w-0 text-sm">
+                  <span className="font-medium">{pointsBalance.toLocaleString()} points</span>
+                  <span className="text-slate-500">
+                    {checkout.redeemPoints > 0
+                      ? ` · using ${checkout.redeemPoints} (−${money(totals.loyaltyDiscount)})`
+                      : ` · worth ${money(pointsValue(pointsBalance, settings))}`}
+                  </span>
+                </p>
                 <button
                   type="button"
-                  onClick={toggleSplit}
-                  disabled={busy}
-                  aria-pressed={splitMode}
-                  className="-mr-2 h-11 rounded-full px-3 text-sm font-medium text-[#1F5E3B] active:bg-[#F2F8F4] disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+                  onClick={toggleRedeem}
+                  disabled={busy || (checkout.redeemPoints === 0 && redeemablePoints === 0)}
+                  aria-pressed={checkout.redeemPoints > 0}
+                  className={`h-11 shrink-0 rounded-xl px-4 text-sm font-semibold transition active:scale-95 disabled:opacity-40 ${
+                    checkout.redeemPoints > 0 ? 'text-slate-600 ring-1 ring-slate-200' : 'bg-[#1F5E3B] text-white'
+                  }`}
                 >
-                  {splitMode ? 'Use a single payment' : 'Split payment'}
+                  {checkout.redeemPoints > 0 ? 'Don’t use' : `Use ${redeemablePoints}`}
                 </button>
               </div>
             )}
 
+            {splitMode && <TenderList tenders={tenders} money={money} disabled={busy} onRemove={removeTender} />}
+
+            {stockCheck.data && <StockShortageNotice shortages={stockCheck.data.shortages} blocked={stockCheck.data.blocked} />}
+
             {errorMessage && (
-              <div role="alert" className="mt-3 flex items-start gap-2.5 rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">
+              <div role="alert" className="flex items-start gap-2.5 rounded-2xl bg-rose-50 px-4 py-2.5 text-sm text-rose-700">
                 <span className="mt-0.5 shrink-0">
                   <WarningIcon size={14} />
                 </span>
@@ -512,68 +799,30 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
               </div>
             )}
 
-            {splitMode ? (
-              splitRemaining > 0 && (
-                <SplitEntry
-                  money={money}
-                  method={method}
-                  methodLabel={methodLabel}
-                  amount={entryAmount}
-                  typed={Boolean(cashDigits)}
-                  remaining={splitRemaining}
-                  reference={paymentReference}
-                  problem={entryProblem}
-                  onReference={(value) => {
-                    setPaymentReference(value)
-                    setErrorMessage(null)
-                  }}
-                  onReferenceKeyDown={handleReferenceKeyDown}
-                  onDigit={handleCashDigit}
-                  onDoubleZero={handleCashDoubleZero}
-                  onBackspace={handleCashBackspace}
-                  onQuickSelect={handleCashQuickSelect}
-                  onAdd={addTender}
-                />
-              )
-            ) : isCash ? (
-              <CashEntry
+            {/* Two-column layout: the order fills the rest of the left side, scrolling only inside itself. */}
+            {wide && (
+              <OrderItems
+                id="payment-order-items"
+                className="flex min-h-24 flex-1 flex-col overflow-hidden"
+                listClassName="min-h-0 flex-1"
+                cart={checkout.cart}
+                totals={totals}
+                taxRatePercent={taxRatePercent}
                 money={money}
-                cashValue={cashValue}
-                quickAmounts={quickAmounts}
-                onDigit={handleCashDigit}
-                onDoubleZero={handleCashDoubleZero}
-                onBackspace={handleCashBackspace}
-                onQuickSelect={handleCashQuickSelect}
               />
-            ) : (
-              <div className="mt-4">
-                <p className="text-sm text-slate-500">{methodInstruction(method)}</p>
-                <label htmlFor="payment-modal-reference-input" className="mt-4 block text-sm font-medium text-[#091413]">
-                  Reference number
-                </label>
-                <input
-                  key={method}
-                  id="payment-modal-reference-input"
-                  type="text"
-                  autoFocus
-                  autoComplete="off"
-                  autoCapitalize="characters"
-                  enterKeyHint="done"
-                  value={paymentReference}
-                  onChange={(e) => {
-                    setPaymentReference(e.target.value)
-                    setErrorMessage(null)
-                  }}
-                  onKeyDown={handleReferenceKeyDown}
-                  placeholder={method === 1 ? 'Approval code' : 'Reference no.'}
-                  className="mt-1.5 h-14 w-full rounded-2xl border-0 bg-[#F3F5F4] px-4 text-lg tracking-wide text-[#091413] placeholder:text-base placeholder:tracking-normal placeholder:text-slate-400 outline-none transition focus:bg-white focus:ring-2 focus:ring-[#1F5E3B]"
-                />
-              </div>
             )}
+          </div>
+
+          {/* AMOUNT ENTRY — received/change display, quick cash and the keypad */}
+          <section aria-label="Amount received" className="flex min-w-0 flex-1 flex-col gap-2">
+            {wide && tenderSummary && <div className="rounded-3xl bg-[#F6F8F7] px-5 py-3">{tenderSummary}</div>}
+            {entry}
           </section>
         </div>
       )}
     </Modal>
+    {approval.dialog}
+    </>
   )
 }
 
@@ -581,17 +830,25 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
    PIECES
 ===================================================================== */
 
-function MethodSelector({ value, onChange }: { value: PaymentMethod; onChange: (value: PaymentMethod) => void }) {
+function MethodSelector({
+  value,
+  options,
+  onChange,
+}: {
+  value: PaymentMethod
+  options: { value: PaymentMethod; label: string }[]
+  onChange: (value: PaymentMethod) => void
+}) {
   const buttonsRef = useRef<(HTMLButtonElement | null)[]>([])
 
   // Radio-group arrow key navigation.
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (!['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp'].includes(event.key)) return
     event.preventDefault()
-    const index = PAYMENT_OPTIONS.findIndex((option) => option.value === value)
+    const index = options.findIndex((option) => option.value === value)
     const step = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1
-    const nextIndex = (index + step + PAYMENT_OPTIONS.length) % PAYMENT_OPTIONS.length
-    const next = PAYMENT_OPTIONS[nextIndex]
+    const nextIndex = (index + step + options.length) % options.length
+    const next = options[nextIndex]
     if (!next) return
     onChange(Number(next.value) as PaymentMethod)
     buttonsRef.current[nextIndex]?.focus()
@@ -602,9 +859,9 @@ function MethodSelector({ value, onChange }: { value: PaymentMethod; onChange: (
       role="radiogroup"
       aria-label="Payment method"
       onKeyDown={handleKeyDown}
-      className="grid grid-cols-4 gap-1 rounded-2xl bg-[#F1F4F3] p-1"
+      className={`grid gap-1 rounded-2xl bg-[#F1F4F3] p-1 ${options.length > 4 ? 'grid-cols-5' : 'grid-cols-4'}`}
     >
-      {PAYMENT_OPTIONS.map((option, index) => {
+      {options.map((option, index) => {
         const selected = value === option.value
         return (
           <button
@@ -631,9 +888,9 @@ function MethodSelector({ value, onChange }: { value: PaymentMethod; onChange: (
 }
 
 /**
- * Cash received + change, shown under the amount due so all three numbers the cashier
- * compares live in one place. Always rendered (with placeholders) so the layout never
- * jumps while the first digits are typed.
+ * Cash received + change — the numbers the cashier compares against the amount due. Sits
+ * under the amount due when stacked, and above the keypad (`emphasis`) in the two-column
+ * layout. Always rendered (with placeholders) so the layout never jumps while typing.
  */
 function TenderRow({
   money,
@@ -642,6 +899,7 @@ function TenderRow({
   change,
   remainingDue,
   onClear,
+  emphasis = false,
 }: {
   money: (value: number) => string
   cashValue: number
@@ -649,12 +907,14 @@ function TenderRow({
   change: number
   remainingDue: number
   onClear: () => void
+  emphasis?: boolean
 }) {
   const hasEntry = cashValue > 0
   const isShort = hasEntry && !isCashSufficient
+  const figure = emphasis ? 'text-[30px] leading-none' : 'text-2xl leading-tight'
 
   return (
-    <div className="mt-4 flex items-end justify-between gap-3 border-t border-[#1F5E3B]/10 pt-3">
+    <div className="flex items-end justify-between gap-3">
       <div className="min-w-0">
         <div className="flex h-5 items-center gap-1">
           <p className="text-sm text-slate-500">Cash received</p>
@@ -671,7 +931,7 @@ function TenderRow({
         </div>
         <p
           aria-live="polite"
-          className={`mt-1 truncate text-2xl font-semibold tabular-nums ${hasEntry ? 'text-[#091413]' : 'text-slate-400'}`}
+          className={`mt-1 truncate font-semibold tabular-nums ${figure} ${hasEntry ? 'text-[#091413]' : 'text-slate-400'}`}
         >
           {money(cashValue)}
         </p>
@@ -682,7 +942,7 @@ function TenderRow({
           {isShort ? 'Short by' : 'Change'}
         </p>
         <p
-          className={`mt-1 text-2xl font-bold tabular-nums ${
+          className={`mt-1 font-bold tabular-nums ${figure} ${
             !hasEntry ? 'text-slate-400' : isShort ? 'text-amber-700' : 'text-[#1F5E3B]'
           }`}
         >
@@ -699,24 +959,27 @@ function SplitSummary({
   paid,
   remaining,
   change,
+  emphasis = false,
 }: {
   money: (value: number) => string
   paid: number
   remaining: number
   change: number
+  emphasis?: boolean
 }) {
   const done = remaining <= 0
+  const figure = emphasis ? 'text-[30px] leading-none' : 'text-2xl leading-tight'
   return (
-    <div className="mt-4 flex items-end justify-between gap-3 border-t border-[#1F5E3B]/10 pt-3" aria-live="polite">
+    <div className="flex items-end justify-between gap-3" aria-live="polite">
       <div className="min-w-0">
-        <p className="text-sm text-slate-500">Paid</p>
-        <p className={`mt-1 truncate text-2xl font-semibold tabular-nums ${paid > 0 ? 'text-[#091413]' : 'text-slate-400'}`}>
+        <p className="h-5 text-sm text-slate-500">Paid</p>
+        <p className={`mt-1 truncate font-semibold tabular-nums ${figure} ${paid > 0 ? 'text-[#091413]' : 'text-slate-400'}`}>
           {money(paid)}
         </p>
       </div>
       <div className="shrink-0 text-right">
-        <p className={`text-sm ${done ? 'text-[#1F5E3B]' : 'font-medium text-amber-700'}`}>{done ? 'Change' : 'Remaining'}</p>
-        <p className={`mt-1 text-2xl font-bold tabular-nums ${done ? 'text-[#1F5E3B]' : 'text-amber-700'}`}>
+        <p className={`h-5 text-sm ${done ? 'text-[#1F5E3B]' : 'font-medium text-amber-700'}`}>{done ? 'Change' : 'Remaining'}</p>
+        <p className={`mt-1 font-bold tabular-nums ${figure} ${done ? 'text-[#1F5E3B]' : 'text-amber-700'}`}>
           {money(done ? change : remaining)}
         </p>
       </div>
@@ -737,15 +1000,15 @@ function TenderList({
 }) {
   if (tenders.length === 0) {
     return (
-      <p className="mb-3 rounded-2xl bg-[#F6F8F7] px-4 py-3 text-sm text-slate-500">
+      <p className="rounded-2xl bg-[#F6F8F7] px-4 py-2.5 text-sm text-slate-500">
         Add each payment until the amount due is covered.
       </p>
     )
   }
   return (
-    <ul className="mb-3 rounded-2xl ring-1 ring-slate-100" aria-label="Payments added">
+    <ul className="max-h-36 shrink-0 overflow-y-auto overscroll-contain rounded-2xl ring-1 ring-slate-100" aria-label="Payments added">
       {tenders.map((tender, index) => (
-        <li key={index} className="flex items-center gap-3 border-b border-slate-100 py-1 pl-4 pr-1 last:border-b-0">
+        <li key={index} className="flex items-center gap-3 border-b border-slate-100 py-0.5 pl-4 pr-1 last:border-b-0">
           <span className="text-[#1F5E3B]">
             <MethodIcon value={tender.method} size={16} />
           </span>
@@ -780,6 +1043,7 @@ function SplitEntry({
   amount,
   typed,
   remaining,
+  needsReference,
   reference,
   problem,
   onReference,
@@ -796,6 +1060,7 @@ function SplitEntry({
   amount: number
   typed: boolean
   remaining: number
+  needsReference: boolean
   reference: string
   problem: string | null
   onReference: (value: string) => void
@@ -811,15 +1076,15 @@ function SplitEntry({
   const quick = isCash ? quickCashAmounts(remaining) : [remaining]
 
   return (
-    <div className="mt-2">
-      <div className="flex items-baseline justify-between gap-3 rounded-2xl bg-[#F6F8F7] px-4 py-3">
+    <div className="flex flex-1 flex-col gap-2">
+      <div className="flex items-baseline justify-between gap-3 rounded-2xl bg-[#F6F8F7] px-4 py-2.5">
         <span className="text-sm text-slate-500">{methodLabel} amount</span>
         <span className={`truncate text-2xl font-semibold tabular-nums ${typed ? 'text-[#091413]' : 'text-slate-400'}`}>
           {money(amount)}
         </span>
       </div>
 
-      {!isCash && (
+      {needsReference && (
         <input
           key={method}
           type="text"
@@ -831,11 +1096,11 @@ function SplitEntry({
           onChange={(event) => onReference(event.target.value)}
           onKeyDown={onReferenceKeyDown}
           placeholder={method === 1 ? 'Approval code' : 'Reference no.'}
-          className="mt-2 h-12 w-full rounded-2xl border-0 bg-[#F3F5F4] px-4 text-base tracking-wide text-[#091413] placeholder:tracking-normal placeholder:text-slate-400 outline-none transition focus:bg-white focus:ring-2 focus:ring-[#1F5E3B]"
+          className="h-12 w-full shrink-0 rounded-2xl border-0 bg-[#F3F5F4] px-4 text-base tracking-wide text-[#091413] placeholder:tracking-normal placeholder:text-slate-400 outline-none transition focus:bg-white focus:ring-2 focus:ring-[#1F5E3B]"
         />
       )}
 
-      <div className="mt-2 grid grid-cols-4 gap-2">
+      <div className="grid shrink-0 grid-cols-4 gap-2">
         {quick.map((value, index) => (
           <button
             key={value}
@@ -848,28 +1113,13 @@ function SplitEntry({
         ))}
       </div>
 
-      <div className="mt-2 grid grid-cols-3 gap-2">
-        {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => (
-          <KeypadKey key={digit} label={digit} onClick={() => onDigit(digit)}>
-            {digit}
-          </KeypadKey>
-        ))}
-        <KeypadKey label="Double zero" onClick={onDoubleZero}>
-          00
-        </KeypadKey>
-        <KeypadKey label="0" onClick={() => onDigit('0')}>
-          0
-        </KeypadKey>
-        <KeypadKey label="Delete last digit" onClick={onBackspace}>
-          <BackspaceIcon size={20} />
-        </KeypadKey>
-      </div>
+      <Keypad onDigit={onDigit} onDoubleZero={onDoubleZero} onBackspace={onBackspace} />
 
       <button
         type="button"
         onClick={onAdd}
         disabled={Boolean(problem)}
-        className="mt-3 h-12 w-full rounded-2xl bg-[#E6F1EA] text-[15px] font-semibold text-[#1F5E3B] transition active:scale-[0.99] disabled:bg-slate-100 disabled:font-medium disabled:text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+        className="h-12 w-full shrink-0 rounded-2xl bg-[#E6F1EA] text-[15px] font-semibold text-[#1F5E3B] transition active:scale-[0.99] disabled:bg-slate-100 disabled:font-medium disabled:text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
       >
         {problem ?? `Add ${methodLabel} ${money(amount)}`}
       </button>
@@ -897,9 +1147,9 @@ function CashEntry({
   const hasEntry = cashValue > 0
 
   return (
-    <div className="mt-3">
+    <div className="flex flex-1 flex-col gap-2">
       {/* Quick amounts — all of them cover the total */}
-      <div className="grid grid-cols-4 gap-2">
+      <div className="grid shrink-0 grid-cols-4 gap-2">
         {quickAmounts.map((amount, index) => {
           const selected = hasEntry && Math.abs(cashValue - amount) < 0.005
           return (
@@ -908,7 +1158,7 @@ function CashEntry({
               type="button"
               onClick={() => onQuickSelect(amount)}
               aria-pressed={selected}
-              className={`h-12 truncate rounded-xl px-1 text-sm font-medium tabular-nums transition active:scale-95 touch-manipulation ${
+              className={`h-12 truncate rounded-xl px-1 text-sm font-medium tabular-nums transition active:scale-95 touch-manipulation [@media(max-height:700px)]:h-11 ${
                 selected ? 'bg-[#1F5E3B] text-white' : 'bg-[#E6F1EA] text-[#1F5E3B]'
               }`}
             >
@@ -918,27 +1168,46 @@ function CashEntry({
         })}
       </div>
 
-      {/* Keypad */}
-      <div className="mt-3 grid grid-cols-3 gap-2">
-        {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => (
-          <KeypadKey key={digit} label={digit} onClick={() => onDigit(digit)}>
-            {digit}
-          </KeypadKey>
-        ))}
-        <KeypadKey label="Double zero" onClick={onDoubleZero}>
-          00
-        </KeypadKey>
-        <KeypadKey label="0" onClick={() => onDigit('0')}>
-          0
-        </KeypadKey>
-        <KeypadKey label="Delete last digit" onClick={onBackspace}>
-          <BackspaceIcon size={20} />
-        </KeypadKey>
-      </div>
+      <Keypad onDigit={onDigit} onDoubleZero={onDoubleZero} onBackspace={onBackspace} />
 
-      <p className="mt-2 hidden text-center text-xs text-slate-400 lg:block">
+      {/* Only for a mouse + keyboard register; touch tablets have no hardware keys to hint at. */}
+      <p className="hidden shrink-0 text-center text-xs text-slate-400 [@media(pointer:fine)_and_(min-height:760px)]:block">
         You can also type on your keyboard. Enter completes the sale.
       </p>
+    </div>
+  )
+}
+
+/**
+ * The numeric keypad. Its four rows share whatever height the dialog has left (never below
+ * a 44px touch target, never taller than a comfortable ~96px), which is what lets the whole
+ * payment step fit the screen without scrolling.
+ */
+function Keypad({
+  onDigit,
+  onDoubleZero,
+  onBackspace,
+}: {
+  onDigit: (digit: string) => void
+  onDoubleZero: () => void
+  onBackspace: () => void
+}) {
+  return (
+    <div className="grid max-h-[25.5rem] min-h-[12.5rem] flex-1 grid-cols-3 grid-rows-4 gap-2">
+      {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => (
+        <KeypadKey key={digit} label={digit} onClick={() => onDigit(digit)}>
+          {digit}
+        </KeypadKey>
+      ))}
+      <KeypadKey label="Double zero" onClick={onDoubleZero}>
+        00
+      </KeypadKey>
+      <KeypadKey label="0" onClick={() => onDigit('0')}>
+        0
+      </KeypadKey>
+      <KeypadKey label="Delete last digit" onClick={onBackspace}>
+        <BackspaceIcon size={22} />
+      </KeypadKey>
     </div>
   )
 }
@@ -949,7 +1218,7 @@ function KeypadKey({ label, onClick, children }: { label: string; onClick: () =>
       type="button"
       onClick={onClick}
       aria-label={label}
-      className="flex h-[clamp(2.875rem,7vh,4rem)] items-center justify-center rounded-2xl bg-[#F6F8F7] text-2xl font-medium text-[#091413] transition-colors active:bg-[#E6F1EA] touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
+      className="flex min-h-11 items-center justify-center rounded-2xl bg-[#F6F8F7] text-2xl font-medium text-[#091413] transition-colors active:bg-[#E6F1EA] touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
     >
       {children}
     </button>
@@ -960,6 +1229,7 @@ function KeypadKey({ label, onClick, children }: { label: string; onClick: () =>
 function OrderItems({
   id,
   className,
+  listClassName,
   cart,
   totals,
   taxRatePercent,
@@ -967,33 +1237,38 @@ function OrderItems({
 }: {
   id: string
   className: string
+  listClassName: string
   cart: CartLine[]
-  totals: CartTotals
+  totals: CheckoutTotals
   taxRatePercent: number
   money: (value: number) => string
 }) {
   return (
     <div id={id} className={`rounded-2xl ring-1 ring-slate-100 ${className}`}>
-      <ul className="max-h-48 overflow-y-auto overscroll-contain px-4 lg:max-h-72">
+      <ul className={`overflow-y-auto overscroll-contain px-4 ${listClassName}`}>
         {cart.map((line) => (
           <li
-            key={line.product.id}
-            className="flex items-baseline justify-between gap-3 border-b border-slate-100 py-2.5 text-sm last:border-b-0"
+            key={line.key}
+            className="flex items-baseline justify-between gap-3 border-b border-slate-100 py-2 text-sm last:border-b-0"
           >
-            <span className="min-w-0 truncate text-[#091413]">
-              {line.product.name}
-              <span className="text-slate-400"> × {line.quantity}</span>
+            <span className="min-w-0 text-[#091413]">
+              <span className="block truncate">
+                {line.product.name}
+                <span className="text-slate-400"> × {line.quantity}</span>
+              </span>
+              {line.modifiers.length > 0 && <span className="block truncate text-xs text-slate-500">{modifierSummary(line.modifiers)}</span>}
             </span>
             <span className="shrink-0 tabular-nums text-[#091413]">
-              {money(line.product.sellingPrice * line.quantity)}
+              {money(lineTotal(line))}
             </span>
           </li>
         ))}
       </ul>
 
-      <dl className="space-y-1.5 border-t border-slate-100 px-4 py-3 text-sm">
+      <dl className="shrink-0 space-y-1 border-t border-slate-100 px-4 py-2.5 text-sm">
         <SummaryRow label="Subtotal" value={money(totals.subtotal)} />
-        {totals.discount > 0 && <SummaryRow label="Discount" value={`−${money(totals.discount)}`} />}
+        {totals.manualDiscount > 0 && <SummaryRow label="Discount" value={`−${money(totals.manualDiscount)}`} />}
+        {totals.loyaltyDiscount > 0 && <SummaryRow label="Points" value={`−${money(totals.loyaltyDiscount)}`} />}
         <SummaryRow label={`Tax (${taxRatePercent}%)`} value={money(totals.tax)} />
         <SummaryRow label="Total" value={money(totals.total)} strong />
       </dl>
@@ -1110,6 +1385,15 @@ function BackspaceIcon({ size = 16 }: { size?: number }) {
   )
 }
 
+function LockIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0" aria-hidden="true">
+      <rect x="4" y="11" width="16" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </svg>
+  )
+}
+
 function PrinterIcon({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1154,6 +1438,16 @@ function MoreIcon({ size = 18 }: { size?: number }) {
       <circle cx="5" cy="12" r="1.75" />
       <circle cx="12" cy="12" r="1.75" />
       <circle cx="19" cy="12" r="1.75" />
+    </svg>
+  )
+}
+
+function LedgerIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 4h12a4 4 0 0 1 4 4v12H8a4 4 0 0 1-4-4V4z" />
+      <line x1="8" y1="9" x2="16" y2="9" />
+      <line x1="8" y1="13" x2="13" y2="13" />
     </svg>
   )
 }

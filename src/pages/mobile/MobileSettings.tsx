@@ -6,6 +6,7 @@ import { Capacitor } from '@capacitor/core'
 import { authApi } from '../../api/authApi'
 import { settingsApi, type SettingsPayload } from '../../api/settingsApi'
 import { DataManagement } from '../../components/settings/DataManagement'
+import { SalesRulesSettings, salesRulesErrors } from '../../components/settings/SalesRulesSettings'
 import { ChevronRight } from '../../components/ui/Icons'
 import {
   ABOVE_BOTTOM_NAV,
@@ -72,6 +73,15 @@ export function MobileSettings() {
       taxRate: data.taxRate,
       receiptFooter: data.receiptFooter,
       showLogoOnReceipt: data.showLogoOnReceipt,
+      maxDiscountPercent: data.maxDiscountPercent,
+      seniorDiscountPercent: data.seniorDiscountPercent,
+      loyaltyEnabled: data.loyaltyEnabled,
+      loyaltyAmountPerPoint: data.loyaltyAmountPerPoint,
+      loyaltyPointValue: data.loyaltyPointValue,
+      creditEnabled: data.creditEnabled,
+      creditDefaultDays: data.creditDefaultDays,
+      allowNegativeStock: data.allowNegativeStock,
+      foodServiceEnabled: data.foodServiceEnabled,
     }
     setForm(next)
     setSaved(next)
@@ -97,7 +107,7 @@ export function MobileSettings() {
     const tax = Number(taxInput)
     if (taxInput.trim() === '' || Number.isNaN(tax) || tax < 0 || tax > 100) errors.taxRate = 'Enter a rate from 0 to 100.'
   }
-  const isValid = Object.keys(errors).length === 0
+  const isValid = Object.keys(errors).length === 0 && (!form || Object.keys(salesRulesErrors(form)).length === 0)
 
   const passwordError =
     newPassword.length > 0 && newPassword.length < MIN_PASSWORD
@@ -354,6 +364,18 @@ export function MobileSettings() {
                 </div>
               </div>
             </Group>
+
+            <SalesRulesSettings
+              form={form}
+              update={update}
+              disabled={!canManageSettings || busy}
+              currencySymbol={form.currencySymbol || '₱'}
+              section={({ title, description, children }) => (
+                <Group title={title} description={description}>
+                  {children}
+                </Group>
+              )}
+            />
           </fieldset>
         )}
 

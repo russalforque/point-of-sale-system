@@ -1,7 +1,8 @@
-import type { HeldOrder, HeldOrderLine } from '../types'
+import type { DiscountType, HeldOrder, HeldOrderLine } from '../types'
 import { executeSQL, querySQL } from '../database/sqlite'
 import { runTransaction } from '../database/tx'
 import { auditStatement } from '../services/audit'
+import { requirePermission } from '../services/authz'
 import { ApiError } from '../utils/errors'
 import { getStoredUser } from '../utils/session'
 
@@ -16,6 +17,8 @@ export type HoldOrderPayload = {
   customerName: string | null
   orderType: number
   discount: number
+  discountType?: DiscountType | null
+  discountReference?: string | null
   lines: HeldOrderLine[]
   subtotal: number
   total: number
@@ -34,6 +37,8 @@ type HeldRow = {
   total: number
   cashier_name: string
   created_at: string
+  discount_type: string | null
+  discount_reference: string | null
 }
 
 function parseLines(json: string): HeldOrderLine[] {
@@ -53,6 +58,8 @@ function toHeldOrder(row: HeldRow): HeldOrder {
     customerName: row.customer_name,
     orderType: row.order_type,
     discount: row.discount,
+    discountType: row.discount_type === 'senior_pwd' ? 'senior_pwd' : row.discount > 0 ? 'manual' : null,
+    discountReference: row.discount_reference ?? null,
     lines: parseLines(row.items_json),
     itemCount: row.item_count,
     subtotal: row.subtotal,
@@ -74,6 +81,7 @@ export const heldOrdersApi = {
   },
 
   hold: async (payload: HoldOrderPayload): Promise<void> => {
+    await requirePermission('sales.hold')
     const lines = payload.lines.filter((line) => line.quantity > 0)
     if (lines.length === 0) throw new ApiError('Add items before holding the order.', 400)
 
@@ -85,8 +93,8 @@ export const heldOrdersApi = {
 
     await runTransaction([
       {
-        statement: `INSERT INTO held_orders (label, customer_id, customer_name, order_type, discount, items_json, item_count, subtotal, total, cashier_id, cashier_name, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        statement: `INSERT INTO held_orders (label, customer_id, customer_name, order_type, discount, items_json, item_count, subtotal, total, cashier_id, cashier_name, created_at, discount_type, discount_reference)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         values: [
           label,
           payload.customerId,
@@ -100,6 +108,8 @@ export const heldOrdersApi = {
           user ? Number(user.id) : null,
           cashierName,
           now,
+          payload.discountType ?? null,
+          payload.discountType === 'senior_pwd' ? payload.discountReference?.trim() || null : null,
         ],
       },
       auditStatement('hold', `Held order${label ? ` “${label}”` : ''} · ${itemCount} ${itemCount === 1 ? 'item' : 'items'}`, undefined, undefined, now),

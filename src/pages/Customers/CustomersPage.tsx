@@ -31,8 +31,9 @@ import type { Customer } from '../../types'
 import { getErrorMessage } from '../../utils/errors'
 import { formatDate, formatDateTime, formatMoney } from '../../utils/format'
 import { MobileCustomers } from '../mobile/MobileCustomers'
+import { CustomerCreditPanel } from '../../components/customers/CustomerCreditPanel'
 
-type StatusFilter = '' | 'active' | 'inactive'
+type StatusFilter = '' | 'active' | 'inactive' | 'owing'
 type FormErrors = Partial<Record<'fullName' | 'email' | 'phone', string>>
 
 const PAGE_SIZE = 20
@@ -98,7 +99,8 @@ function DesktopCustomersPage() {
     () =>
       customerApi.list({
         search: q || undefined,
-        isActive: status === '' ? undefined : status === 'active',
+        isActive: status === '' || status === 'owing' ? undefined : status === 'active',
+        withBalance: status === 'owing' || undefined,
         page,
         pageSize: PAGE_SIZE,
       }),
@@ -109,14 +111,17 @@ function DesktopCustomersPage() {
   const counts = useAsync(async () => {
     const count = (isActive?: boolean) =>
       customerApi.list({ search: q || undefined, isActive, page: 1, pageSize: 1 }).then((r) => r.totalCount)
-    const [all, active] = await Promise.all([count(), count(true)])
-    return { all, active, inactive: Math.max(0, all - active) }
+    const [all, active, owing] = await Promise.all([
+      count(),
+      count(true),
+      customerApi.list({ search: q || undefined, withBalance: true, page: 1, pageSize: 1 }).then((r) => r.totalCount),
+    ])
+    return { all, active, inactive: Math.max(0, all - active), owing }
   }, [q])
 
   const recentSales = useAsync(async () => {
     if (!view) return null
-    const result = await salesApi.list({ search: view.fullName, page: 1, pageSize: 20 })
-    return result.items.filter((sale) => sale.customerId === view.id).slice(0, 5)
+    return (await salesApi.list({ customerId: view.id, page: 1, pageSize: 5 })).items
   }, [view?.id])
 
   const items = data?.items ?? []
@@ -279,7 +284,12 @@ function DesktopCustomersPage() {
     { key: '', label: 'All', count: counts.data?.all },
     { key: 'active', label: 'Active', count: counts.data?.active },
     { key: 'inactive', label: 'Inactive', count: counts.data?.inactive },
+    ...(settings.creditEnabled || (counts.data?.owing ?? 0) > 0
+      ? [{ key: 'owing' as const, label: 'Owes money', count: counts.data?.owing }]
+      : []),
   ]
+  const showPoints = settings.loyaltyEnabled || items.some((customer) => customer.loyaltyPoints > 0)
+  const showBalance = settings.creditEnabled || items.some((customer) => customer.creditBalance > 0.004)
 
   return (
     <div className="min-h-full bg-[#F6F8F7] text-[#091413] antialiased">
@@ -366,6 +376,8 @@ function DesktopCustomersPage() {
                 hint={
                   q
                     ? `Nothing matches “${q}”.`
+                    : status === 'owing'
+                    ? 'Nobody owes the store money right now.'
                     : hasFilters
                     ? 'No customers have this status.'
                     : 'Save customers to track their purchases and loyalty points.'
@@ -401,7 +413,8 @@ function DesktopCustomersPage() {
                     <tr>
                       <th scope="col" className="py-3 pl-6 pr-3 font-medium">Customer</th>
                       <th scope="col" className="px-3 py-3 font-medium">Contact</th>
-                      <th scope="col" className="px-3 py-3 text-right font-medium">Points</th>
+                      {showPoints && <th scope="col" className="px-3 py-3 text-right font-medium">Points</th>}
+                      {showBalance && <th scope="col" className="px-3 py-3 text-right font-medium">Owes</th>}
                       <th scope="col" className="px-3 py-3 font-medium">Status</th>
                       <th scope="col" className="py-3 pl-3 pr-6"><span className="sr-only">Actions</span></th>
                     </tr>
@@ -440,7 +453,12 @@ function DesktopCustomersPage() {
                             {customer.email || 'No email'}
                           </span>
                         </td>
-                        <td className="px-3 py-3 text-right tabular-nums">{customer.loyaltyPoints.toLocaleString()}</td>
+                        {showPoints && <td className="px-3 py-3 text-right tabular-nums">{customer.loyaltyPoints.toLocaleString()}</td>}
+                        {showBalance && (
+                          <td className={`px-3 py-3 text-right tabular-nums ${customer.creditBalance > 0.004 ? 'font-medium text-amber-700' : 'text-slate-300'}`}>
+                            {customer.creditBalance > 0.004 ? formatMoney(customer.creditBalance, settings.currencySymbol) : '—'}
+                          </td>
+                        )}
                         <td className="px-3 py-3">
                           {customer.isActive ? (
                             <span className="text-sm text-[#1F5E3B]">Active</span>
@@ -458,7 +476,7 @@ function DesktopCustomersPage() {
                                   navigate(`/customers/edit/${customer.id}`)
                                 }}
                                 aria-label={`Edit ${customer.fullName}`}
-                                className="h-9 rounded-full px-3 text-sm font-medium text-[#1F5E3B] opacity-0 transition hover:bg-[#F2F8F4] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] group-hover:opacity-100"
+                                className="h-9 rounded-full px-3 text-sm font-medium text-[#1F5E3B] opacity-0 pointer-coarse:h-11 pointer-coarse:opacity-100 [@media(hover:none)]:opacity-100 transition hover:bg-[#F2F8F4] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] group-hover:opacity-100"
                               >
                                 Edit
                               </button>
@@ -518,10 +536,17 @@ function DesktopCustomersPage() {
 
             <div className="grid gap-4 sm:grid-cols-[1fr_auto]">
               <ContactActions phone={view.phone} email={view.email} />
-              <div className="rounded-2xl bg-[#F2F8F4] px-5 py-3 sm:min-w-40">
-                <p className="text-sm text-[#1F5E3B]">Loyalty points</p>
-                <p className="text-2xl font-bold tabular-nums">{view.loyaltyPoints.toLocaleString()}</p>
-              </div>
+              {(settings.loyaltyEnabled || view.loyaltyPoints > 0) && (
+                <div className="rounded-2xl bg-[#F2F8F4] px-5 py-3 sm:min-w-40">
+                  <p className="text-sm text-[#1F5E3B]">Loyalty points</p>
+                  <p className="text-2xl font-bold tabular-nums">{view.loyaltyPoints.toLocaleString()}</p>
+                  {settings.loyaltyEnabled && view.loyaltyPoints > 0 && (
+                    <p className="text-xs text-slate-500">
+                      Worth {formatMoney(view.loyaltyPoints * settings.loyaltyPointValue, settings.currencySymbol)}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             <DetailList>
@@ -529,6 +554,15 @@ function DesktopCustomersPage() {
               <DetailRow label="Email" value={view.email} />
               <DetailRow label="Address" value={view.address} />
             </DetailList>
+
+            <CustomerCreditPanel
+              customer={view}
+              onChanged={(updated) => {
+                setView(updated)
+                void reload()
+                void counts.reload()
+              }}
+            />
 
             <section>
               <h3 className="text-sm font-medium">Recent purchases</h3>

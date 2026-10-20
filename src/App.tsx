@@ -25,6 +25,10 @@ import { ReturnsPage } from './pages/Returns/ReturnsPage'
 import { StockCountPage } from './pages/Inventory/StockCountPage'
 import { ReceiveStockPage } from './pages/Inventory/ReceiveStockPage'
 import { AuditLogPage } from './pages/AuditLog/AuditLogPage'
+import { PurchaseOrdersPage } from './pages/PurchaseOrders/PurchaseOrdersPage'
+import { ExpensesPage } from './pages/Expenses/ExpensesPage'
+import { IngredientsPage } from './pages/Ingredients/IngredientsPage'
+import { ModifiersPage } from './pages/Modifiers/ModifiersPage'
 
 export default function App() {
   return (
@@ -72,6 +76,25 @@ export default function App() {
 
                     <Route element={<RequirePermission permission="inventory.receive" />}>
                       <Route path="/receive-stock" element={<ReceiveStockPage />} />
+                    </Route>
+
+                    {/* Baristas reach it to log waste and make batches; managers for everything else. */}
+                    <Route
+                      element={<RequirePermission permission={['inventory.manage', 'inventory.count', 'inventory.waste', 'inventory.produce']} />}
+                    >
+                      <Route path="/ingredients" element={<IngredientsPage />} />
+                    </Route>
+
+                    <Route element={<RequirePermission permission="products.manage" />}>
+                      <Route path="/modifiers" element={<ModifiersPage />} />
+                    </Route>
+
+                    <Route element={<RequirePermission permission="purchasing.manage" />}>
+                      <Route path="/purchase-orders" element={<PurchaseOrdersPage />} />
+                    </Route>
+
+                    <Route element={<RequirePermission permission="expenses.manage" />}>
+                      <Route path="/expenses" element={<ExpensesPage />} />
                     </Route>
 
                     <Route element={<RequirePermission permission="audit.view" />}>

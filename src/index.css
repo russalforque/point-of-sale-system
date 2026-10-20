@@ -14,14 +14,22 @@
   --font-sans: "DM Sans", "Noto Sans", "Segoe UI", system-ui, sans-serif;
   --font-display: Manrope, "DM Sans", "Noto Sans", "Segoe UI", system-ui, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Noto Sans", "Courier New", monospace;
-  --color-brand: #2563eb;
-  --color-brand-hover: #1d4ed8;
-  --color-ink: #111827;
-  --color-muted: #6b7280;
-  --color-line: #e5e7eb;
-  --color-canvas: #f3f4f6;
-  --color-success: #15803d;
-  --color-danger: #dc2626;
+  /*
+   * Sellix design tokens. They mirror the hex values used across the app
+   * (brand green #1F5E3B, ink #091413, canvas #F6F8F7 …) so new code can write
+   * `bg-brand` / `text-ink` instead of repeating raw colours.
+   */
+  --color-brand: #1f5e3b;
+  --color-brand-hover: #194d30;
+  --color-brand-soft: #e6f1ea;
+  --color-brand-tint: #f2f8f4;
+  --color-ink: #091413;
+  --color-muted: #64748b;
+  --color-line: #e9eeeb;
+  --color-field: #f3f5f4;
+  --color-canvas: #f6f8f7;
+  --color-success: #1f5e3b;
+  --color-danger: #e11d48;
   --color-warn: #b45309;
 }
 
@@ -50,6 +58,90 @@ input,
 select,
 textarea {
   font-family: inherit;
+}
+
+@layer base {
+  /* Touch-first: no double-tap zoom delay and no grey Android tap flash on controls
+     (every control draws its own pressed/hover state). */
+  button,
+  a,
+  label,
+  [role='button'],
+  [role='tab'],
+  [role='option'] {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Brand focus ring for anything that doesn't draw its own (utilities still override). */
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Side drawer instead of a bottom sheet: landscape tablets / desktops (and phones held sideways). */
+@custom-variant drawer (@media (orientation: landscape) and (min-width: 640px));
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Exit keyframes have no `from`, so they start wherever a drag left the panel. */
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes sheet-out {
+  to {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(2rem);
+  }
+}
+
+@keyframes drawer-out {
+  to {
+    opacity: 0;
+    transform: translateX(2rem);
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 @media print {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   Bar,
@@ -11,6 +11,7 @@ import {
 } from 'recharts'
 
 import { dashboardApi } from '../../api/dashboardApi'
+import { NotificationCenter } from '../../components/notifications/NotificationCenter'
 import {
   EmptyState,
   ErrorState,
@@ -21,8 +22,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { useSettings } from '../../context/SettingsContext'
 import { useAsync } from '../../hooks/useAsync'
-import { useDismissOnBack } from '../../hooks/useDismissOnBack'
-import { usePersistentNotifications } from '../../hooks/usePersistentNotifications'
+import { useDashboardNotifications } from '../../hooks/useDashboardNotifications'
 import {
   formatDateTime,
   formatMoney,
@@ -71,15 +71,6 @@ export interface DashboardData {
   recentTransactions: RecentTransaction[]
   topSellingProducts: TopSellingProduct[]
   salesOverview: SalesOverviewItem[]
-}
-
-interface AppNotification {
-  id: string
-  title: string
-  description: string
-  timestamp: string
-  type: 'critical' | 'warning' | 'info'
-  read: boolean
 }
 
 type MobileFilterTab =
@@ -168,73 +159,8 @@ export function MobileDashboard() {
   const money = (value: number) =>
     formatMoney(value, settings.currencySymbol)
 
-  /* -------------------------------------------------------------
-     GENERATED NOTIFICATIONS
-  ------------------------------------------------------------- */
-
-  const generatedNotifications =
-    useMemo<AppNotification[]>(() => {
-      if (!data) return []
-
-      const items: AppNotification[] = []
-
-      data.lowStockProducts
-        ?.filter((product) => product.stockQuantity <= 0)
-        .forEach((product) => {
-          items.push({
-            id: `oos-${product.id}`,
-            title: 'Out of stock',
-            description: `${product.name} (${product.sku}) has no units left.`,
-            timestamp: 'Now',
-            type: 'critical',
-            read: false,
-          })
-        })
-
-      data.lowStockProducts
-        ?.filter((product) => product.stockQuantity > 0)
-        .slice(0, 3)
-        .forEach((product) => {
-          items.push({
-            id: `low-${product.id}`,
-            title: 'Running low',
-            description: `${product.name}: ${product.stockQuantity} left (reorder at ${product.reorderLevel}).`,
-            timestamp: 'Reorder',
-            type: 'warning',
-            read: false,
-          })
-        })
-
-      data.recentTransactions
-        ?.slice(0, 2)
-        .forEach((transaction) => {
-          items.push({
-            id: `tx-${transaction.id}`,
-            title: 'Sale completed',
-            description: `${transaction.invoiceNumber} · ${formatMoney(
-              transaction.total,
-              settings.currencySymbol,
-            )}`,
-            timestamp: safeFormatDateTime(transaction.createdAt),
-            type: 'info',
-            read: false,
-          })
-        })
-
-      return items
-    }, [data, settings.currencySymbol])
-
-  /* -------------------------------------------------------------
-     NOTIFICATION STATE — read / dismissed survives reloads
-  ------------------------------------------------------------- */
-
-  const {
-    notifications,
-    markAsRead: handleMarkAsRead,
-    markAllAsRead: handleMarkAllAsRead,
-    clearAll: handleClearAll,
-    dismiss: handleDismiss,
-  } = usePersistentNotifications(generatedNotifications, Boolean(data))
+  // Read / dismissed state is persisted so it survives reloads and navigation.
+  const notificationState = useDashboardNotifications(data)
 
   /* -------------------------------------------------------------
      REFRESH
@@ -257,10 +183,7 @@ export function MobileDashboard() {
   if (loading && !data) {
     return (
       <div className="flex min-h-[70vh] flex-col items-center justify-center bg-white px-6 text-center">
-        <Spinner />
-        <p className="mt-4 text-sm text-slate-500">
-          Loading dashboard…
-        </p>
+        <Spinner label="Loading dashboard…" />
       </div>
     )
   }
@@ -353,13 +276,7 @@ export function MobileDashboard() {
               <RefreshIcon size={20} spinning={isRefreshing} />
             </IconButton>
 
-            <NotificationBell
-              notifications={notifications}
-              onMarkAsRead={handleMarkAsRead}
-              onMarkAllAsRead={handleMarkAllAsRead}
-              onClearAll={handleClearAll}
-              onDismiss={handleDismiss}
-            />
+            <NotificationCenter {...notificationState} variant="soft" />
           </div>
         </header>
 
@@ -898,224 +815,6 @@ function IconButton({
 }
 
 /* =============================================================
-   NOTIFICATION BELL
-============================================================= */
-
-interface NotificationBellProps {
-  notifications: AppNotification[]
-  onMarkAsRead: (id: string) => void
-  onMarkAllAsRead: () => void
-  onClearAll: () => void
-  onDismiss: (id: string) => void
-}
-
-function NotificationBell({
-  notifications,
-  onMarkAsRead,
-  onMarkAllAsRead,
-  onClearAll,
-  onDismiss,
-}: NotificationBellProps) {
-  const [isOpen, setIsOpen] = useState(false)
-
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  // Set by <CloseOnBack> while open; closing through it also consumes the history entry.
-  const closeRef = useRef<(() => void) | null>(null)
-  const requestClose = () => {
-    if (closeRef.current) closeRef.current()
-    else setIsOpen(false)
-  }
-
-  const unreadCount = useMemo(
-    () => notifications.filter((notification) => !notification.read).length,
-    [notifications],
-  )
-
-  useEffect(() => {
-    if (!isOpen) return
-
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(event.target as Node)
-      ) {
-        requestClose()
-      }
-    }
-
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') requestClose()
-    }
-
-    document.addEventListener('mousedown', handleClickOutside)
-    document.addEventListener('keydown', handleEscape)
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
-      document.removeEventListener('keydown', handleEscape)
-    }
-  }, [isOpen])
-
-  return (
-    <div ref={containerRef} className="relative">
-      <IconButton
-        label={
-          unreadCount > 0
-            ? `Notifications, ${unreadCount} unread`
-            : 'Notifications'
-        }
-        onClick={() => (isOpen ? requestClose() : setIsOpen(true))}
-        active={isOpen}
-      >
-        <BellIcon size={20} />
-
-        {unreadCount > 0 && (
-          <span className="absolute right-1.5 top-1.5 h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-white" />
-        )}
-      </IconButton>
-
-      {isOpen && (
-        <>
-          <CloseOnBack
-            onDismiss={() => setIsOpen(false)}
-            closeRef={closeRef}
-          />
-          <div
-            className="fixed inset-0 z-40 bg-black/10 sm:hidden"
-            onClick={requestClose}
-            aria-hidden="true"
-          />
-
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Notifications"
-            className="fixed inset-x-3 top-[5.5rem] z-50 flex max-h-[70vh] flex-col overflow-hidden rounded-2xl bg-white shadow-[0_12px_40px_rgba(9,20,19,0.12)] ring-1 ring-slate-100 sm:absolute sm:right-0 sm:top-full sm:mt-2 sm:w-[360px]"
-          >
-            <div className="flex items-center justify-between px-4 pb-2 pt-3">
-              <p className="text-sm font-semibold">Notifications</p>
-
-              <div className="flex items-center">
-                {unreadCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={onMarkAllAsRead}
-                    className="min-h-10 rounded-lg px-2 text-xs font-medium text-[#1F5E3B] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
-                  >
-                    Mark all read
-                  </button>
-                )}
-
-                {notifications.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={onClearAll}
-                    className="min-h-10 rounded-lg px-2 text-xs text-slate-400 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto overscroll-contain">
-              {notifications.length === 0 ? (
-                <p className="px-4 pb-10 pt-8 text-center text-sm text-slate-400">
-                  You're all caught up.
-                </p>
-              ) : (
-                <ul>
-                  {notifications.map((notification) => {
-                    const isUnread = !notification.read
-
-                    const dotColor =
-                      notification.type === 'critical'
-                        ? 'bg-rose-500'
-                        : notification.type === 'warning'
-                        ? 'bg-amber-400'
-                        : 'bg-slate-300'
-
-                    return (
-                      <li
-                        key={notification.id}
-                        className="flex items-start gap-3 border-t border-slate-100 px-4 py-3"
-                      >
-                        <span
-                          className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
-                            isUnread ? dotColor : 'bg-transparent'
-                          }`}
-                        />
-
-                        <button
-                          type="button"
-                          onClick={() => isUnread && onMarkAsRead(notification.id)}
-                          className="min-w-0 flex-1 text-left focus-visible:outline-none"
-                        >
-                          <div className="flex items-baseline justify-between gap-3">
-                            <p
-                              className={`text-sm ${
-                                isUnread ? 'font-medium' : 'text-slate-500'
-                              }`}
-                            >
-                              {notification.title}
-                            </p>
-                            <span className="shrink-0 text-[11px] text-slate-400">
-                              {notification.timestamp}
-                            </span>
-                          </div>
-
-                          <p className="mt-0.5 text-xs leading-5 text-slate-500">
-                            {notification.description}
-                          </p>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => onDismiss(notification.id)}
-                          aria-label="Dismiss notification"
-                          className="-mr-3 -mt-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-slate-300 transition hover:bg-slate-100 hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
-                        >
-                          <ClearIcon size={14} />
-                        </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
-
-/** Mounted only while the notification panel is open, so Android back closes it instead of leaving the page. */
-function CloseOnBack({
-  onDismiss,
-  closeRef,
-}: {
-  onDismiss: () => void
-  closeRef: { current: (() => void) | null }
-}) {
-  const { close } = useDismissOnBack('dashboardNotificationsOpen', onDismiss)
-
-  useEffect(() => {
-    closeRef.current = close
-  })
-
-  useEffect(
-    () => () => {
-      closeRef.current = null
-    },
-    [closeRef],
-  )
-
-  return null
-}
-
-/* =============================================================
    ICONS
 ============================================================= */
 
@@ -1151,15 +850,6 @@ function RefreshIcon({ size = 16, spinning = false }: { size?: number; spinning?
     <Svg size={size} className={spinning ? 'animate-spin' : ''}>
       <path d="M21 12a9 9 0 1 1-9-9c2.5 0 4.9 1 6.7 2.7L21 8" />
       <path d="M21 3v5h-5" />
-    </Svg>
-  )
-}
-
-function BellIcon({ size = 16 }: { size?: number }) {
-  return (
-    <Svg size={size}>
-      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
-      <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
     </Svg>
   )
 }
@@ -1208,15 +898,6 @@ function ChevronIcon({ size = 16, className = '' }: { size?: number; className?:
   return (
     <Svg size={size} className={className}>
       <path d="m9 18 6-6-6-6" />
-    </Svg>
-  )
-}
-
-function ClearIcon({ size = 14 }: { size?: number }) {
-  return (
-    <Svg size={size}>
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
     </Svg>
   )
 }

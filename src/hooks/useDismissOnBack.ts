@@ -16,10 +16,12 @@ function asRecord(state: unknown): Record<string, unknown> {
  * popped (back pressed), `onDismiss` runs. While `blocked` is true — e.g. a payment is
  * being submitted — the entry is restored, so back does nothing.
  *
+ * `onBlocked` runs when back is pressed while blocked, e.g. to ask "Discard changes?".
+ *
  * Always close the overlay through the returned `close()` so the history entry is
  * consumed and no extra "empty" back step is left behind.
  */
-export function useDismissOnBack(key: string, onDismiss: () => void, blocked = false) {
+export function useDismissOnBack(key: string, onDismiss: () => void, blocked = false, onBlocked?: () => void) {
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -28,10 +30,12 @@ export function useDismissOnBack(key: string, onDismiss: () => void, blocked = f
   const closingRef = useRef(false)
   const onDismissRef = useRef(onDismiss)
   const blockedRef = useRef(blocked)
+  const onBlockedRef = useRef(onBlocked)
 
   useEffect(() => {
     onDismissRef.current = onDismiss
     blockedRef.current = blocked
+    onBlockedRef.current = onBlocked
   })
 
   const currentUrl = `${location.pathname}${location.search}${location.hash}`
@@ -54,6 +58,7 @@ export function useDismissOnBack(key: string, onDismiss: () => void, blocked = f
 
     if (blockedRef.current && !closingRef.current) {
       navigate(currentUrl, { state: { ...asRecord(location.state), [key]: true } })
+      onBlockedRef.current?.()
       return
     }
 

@@ -38,6 +38,7 @@ import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
 import { useDebounced } from '../../hooks/useDebounced'
 import type { Customer } from '../../types'
+import { CustomerCreditPanel } from '../../components/customers/CustomerCreditPanel'
 import { getErrorMessage } from '../../utils/errors'
 import { formatDate, formatDateTime, formatMoney } from '../../utils/format'
 
@@ -130,8 +131,7 @@ export function MobileCustomers() {
 
   const recentSales = useAsync(async () => {
     if (!view) return null
-    const result = await salesApi.list({ search: view.fullName, page: 1, pageSize: 20 })
-    return result.items.filter((sale) => sale.customerId === view.id).slice(0, 5)
+    return (await salesApi.list({ customerId: view.id, page: 1, pageSize: 5 })).items
   }, [view?.id])
 
   const items = data?.items ?? []
@@ -429,10 +429,17 @@ export function MobileCustomers() {
                     </div>
 
                     {customer.isActive ? (
-                      <div className="shrink-0 text-right">
-                        <p className="text-[15px] font-medium tabular-nums">{customer.loyaltyPoints.toLocaleString()}</p>
-                        <p className="text-xs text-slate-400">points</p>
-                      </div>
+                      customer.creditBalance > 0.004 ? (
+                        <div className="shrink-0 text-right">
+                          <p className="text-[15px] font-medium tabular-nums text-amber-700">{formatMoney(customer.creditBalance, settings.currencySymbol)}</p>
+                          <p className="text-xs text-slate-400">owes</p>
+                        </div>
+                      ) : settings.loyaltyEnabled || customer.loyaltyPoints > 0 ? (
+                        <div className="shrink-0 text-right">
+                          <p className="text-[15px] font-medium tabular-nums">{customer.loyaltyPoints.toLocaleString()}</p>
+                          <p className="text-xs text-slate-400">points</p>
+                        </div>
+                      ) : null
                     ) : (
                       <InactivePill />
                     )}
@@ -473,16 +480,30 @@ export function MobileCustomers() {
               onMissing={canManage ? (field) => navigate(`/customers/edit/${view.id}?focus=${field}`) : undefined}
             />
 
-            <div className="rounded-3xl bg-[#F2F8F4] px-5 py-4">
-              <p className="text-sm font-medium text-[#1F5E3B]">Loyalty points</p>
-              <p className="mt-1 text-3xl font-bold tabular-nums">{view.loyaltyPoints.toLocaleString()}</p>
-            </div>
+            {(settings.loyaltyEnabled || view.loyaltyPoints > 0) && (
+              <div className="rounded-3xl bg-[#F2F8F4] px-5 py-4">
+                <p className="text-sm font-medium text-[#1F5E3B]">Loyalty points</p>
+                <p className="mt-1 text-3xl font-bold tabular-nums">{view.loyaltyPoints.toLocaleString()}</p>
+                {settings.loyaltyEnabled && view.loyaltyPoints > 0 && (
+                  <p className="text-xs text-slate-500">Worth {formatMoney(view.loyaltyPoints * settings.loyaltyPointValue, settings.currencySymbol)}</p>
+                )}
+              </div>
+            )}
 
             <DetailList>
               <DetailRow label="Phone" value={view.phone} />
               <DetailRow label="Email" value={view.email} />
               <DetailRow label="Address" value={view.address} />
             </DetailList>
+
+            <CustomerCreditPanel
+              customer={view}
+              onChanged={(updated) => {
+                setView(updated)
+                void reload()
+                void counts.reload()
+              }}
+            />
 
             <section aria-label="Recent purchases" className="pt-2">
               <div className="flex items-baseline justify-between">

@@ -26,6 +26,12 @@ export type Permission =
   | 'inventory.receive'
   | 'audit.view'
   | 'backup.manage'
+  | 'sales.discount'
+  | 'expenses.manage'
+  | 'purchasing.manage'
+  | 'credit.manage'
+  | 'inventory.waste'
+  | 'inventory.produce'
 
 const ALL_PERMISSIONS: Permission[] = [
   'products.view',
@@ -53,6 +59,12 @@ const ALL_PERMISSIONS: Permission[] = [
   'inventory.receive',
   'audit.view',
   'backup.manage',
+  'sales.discount',
+  'expenses.manage',
+  'purchasing.manage',
+  'credit.manage',
+  'inventory.waste',
+  'inventory.produce',
 ]
 
 // Manager's brief only calls out "manage products" / "manage inventory" as
@@ -82,9 +94,16 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'inventory.count',
     'inventory.receive',
     'audit.view',
+    'sales.discount',
+    'expenses.manage',
+    'purchasing.manage',
+    'credit.manage',
+    'inventory.waste',
+    'inventory.produce',
   ],
-  // Refunds and voids stay manager-level; a cashier can still start one at the counter
-  // and have a manager or admin approve it with their PIN (see ApprovalDialog).
+  // Refunds, voids and discounts above the store's limit stay manager-level; a cashier can
+  // still start one at the counter and have a manager or admin approve it with their PIN
+  // (see ApprovalDialog).
   cashier: [
     'products.view',
     'customers.view',
@@ -93,6 +112,10 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'sales.hold',
     'drawer.open',
     'cash.movement',
+    // Baristas spill milk and brew the day's cold brew: they log waste and make batches
+    // (each one is recorded with their name) but can't otherwise change stock.
+    'inventory.waste',
+    'inventory.produce',
   ],
 }
 

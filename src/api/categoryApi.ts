@@ -1,6 +1,16 @@
 import type { Category } from '../types'
 import { querySQL, executeSQL } from '../database/sqlite'
+import { requirePermission } from '../services/authz'
 import { ApiError } from '../utils/errors'
+
+/** Required, and unique ignoring case, so the register never shows two "Drinks" tabs. */
+async function assertCategoryName(name: string, exceptId?: number): Promise<string> {
+  const trimmed = name.trim()
+  if (!trimmed) throw new ApiError('Enter a category name.', 400)
+  const taken = await querySQL(`SELECT 1 FROM categories WHERE UPPER(name) = UPPER(?) AND id != ? LIMIT 1`, [trimmed, exceptId ?? -1])
+  if (taken.values?.length) throw new ApiError(`There is already a category called “${trimmed}”.`, 400)
+  return trimmed
+}
 
 export type CategoryPayload = { name: string; description?: string; isActive: boolean }
 
@@ -47,9 +57,11 @@ export const categoryApi = {
   },
 
   create: async (payload: CategoryPayload): Promise<Category> => {
+    await requirePermission('categories.manage')
+    const name = await assertCategoryName(payload.name)
     const result = await executeSQL(
       `INSERT INTO categories (name, description, is_active) VALUES (?, ?, ?)`,
-      [payload.name, payload.description ?? null, payload.isActive ? 1 : 0],
+      [name, payload.description ?? null, payload.isActive ? 1 : 0],
     )
     const id = result.changes?.lastId
     if (!id) throw new ApiError('Failed to create category.', 500)
@@ -57,14 +69,17 @@ export const categoryApi = {
   },
 
   update: async (id: number, payload: CategoryPayload): Promise<Category> => {
+    await requirePermission('categories.manage')
+    const name = await assertCategoryName(payload.name, id)
     await executeSQL(
       `UPDATE categories SET name = ?, description = ?, is_active = ? WHERE id = ?`,
-      [payload.name, payload.description ?? null, payload.isActive ? 1 : 0, id],
+      [name, payload.description ?? null, payload.isActive ? 1 : 0, id],
     )
     return categoryApi.get(id)
   },
 
   remove: async (id: number): Promise<void> => {
+    await requirePermission('categories.manage')
     const usage = await querySQL(`SELECT COUNT(*) AS count FROM products WHERE category_id = ?`, [id])
     const count = (usage.values?.[0]?.count as number | undefined) ?? 0
     if (count > 0) {

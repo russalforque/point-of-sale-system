@@ -1,6 +1,119 @@
 import { useId, type ReactNode } from 'react'
 
-import { Minus, Plus } from './Icons'
+import { useDismissOnBack } from '../../hooks/useDismissOnBack'
+import { Minus, Plus, Search, X } from './Icons'
+
+/**
+ * Puts a page's dialogs on the back stack: Android / browser back closes them before leaving
+ * the page. Mount it while any dialog is open and close dialogs through the `close` it passes
+ * down. Keep it mounted when one dialog replaces another, so there's still a single back step.
+ */
+export function BackLayer({
+  name,
+  onBack,
+  blocked,
+  onBlocked,
+  children,
+}: {
+  name: string
+  onBack: () => void
+  /** Back is ignored (and `onBlocked` runs) while true, e.g. while a form has unsaved changes. */
+  blocked?: boolean
+  onBlocked?: () => void
+  children: (close: () => void) => ReactNode
+}) {
+  const { close } = useDismissOnBack(name, onBack, blocked, onBlocked)
+  return <>{children(close)}</>
+}
+
+export type PillOption<T extends string> = { key: T; label: string; count?: number }
+
+/** Single-choice filter pills. They wrap instead of scrolling so no option hides off-screen. */
+export function PillGroup<T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+  size = 'md',
+}: {
+  label: string
+  options: PillOption<T>[]
+  value: T
+  onChange: (value: T) => void
+  size?: 'sm' | 'md'
+}) {
+  return (
+    <div role="group" aria-label={label} className="flex flex-wrap gap-2">
+      {options.map((option) => {
+        const active = value === option.key
+        return (
+          <button
+            key={option.key}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(option.key)}
+            className={`inline-flex items-center gap-1.5 rounded-full font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1 ${
+              size === 'sm' ? 'h-9 px-3.5 text-[13px] pointer-coarse:h-11' : 'h-10 px-4 text-sm pointer-coarse:h-11'
+            } ${
+              active
+                ? size === 'sm'
+                  ? 'bg-brand-soft text-brand ring-1 ring-brand/25'
+                  : 'bg-brand text-white shadow-sm'
+                : 'bg-field text-slate-600 hover:bg-line active:bg-line'
+            }`}
+          >
+            {option.label}
+            {option.count !== undefined && (
+              <span className={`tabular-nums ${active ? (size === 'sm' ? 'text-brand/70' : 'text-white/70') : 'text-slate-400'}`}>
+                {option.count}
+              </span>
+            )}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/** Search input with a leading icon and a 44px clear button once there's text. */
+export function SearchBox({
+  value,
+  onChange,
+  placeholder,
+  label,
+  className = '',
+}: {
+  value: string
+  onChange: (value: string) => void
+  placeholder: string
+  label: string
+  className?: string
+}) {
+  return (
+    <div className={`relative min-w-0 ${className}`}>
+      <Search size={16} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+      <input
+        type="search"
+        enterKeyHint="search"
+        aria-label={label}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        className="h-12 w-full rounded-2xl border-0 bg-field pl-11 pr-12 text-[15px] placeholder:text-slate-400 outline-none transition focus:bg-white focus:ring-2 focus:ring-brand [&::-webkit-search-cancel-button]:hidden"
+      />
+      {value && (
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          aria-label="Clear search"
+          className="absolute right-0.5 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 hover:text-slate-600 active:bg-line"
+        >
+          <X size={14} />
+        </button>
+      )}
+    </div>
+  )
+}
 
 /**
  * Shell for the operational back-office pages (returns, stock count, receiving, audit log).

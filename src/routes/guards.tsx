@@ -17,8 +17,10 @@ export function GuestRoute() {
   return <Outlet />
 }
 
-export function RequirePermission({ permission }: { permission: Permission }) {
+/** Allows the route when the user has `permission`, or any one of a list of permissions. */
+export function RequirePermission({ permission }: { permission: Permission | Permission[] }) {
   const { can } = useAuth()
-  if (!can(permission)) return <Navigate to="/access-denied" replace />
+  const allowed = Array.isArray(permission) ? permission.some(can) : can(permission)
+  if (!allowed) return <Navigate to="/access-denied" replace />
   return <Outlet />
 }

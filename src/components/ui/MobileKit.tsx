@@ -4,6 +4,7 @@ import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAt
 
 import { useDismissOnBack } from '../../hooks/useDismissOnBack'
 import { AmountInput } from './AmountInput'
+import { DateInput } from './DateInput'
 import { Check, ChevronDown, ChevronRight, Plus, Search, X } from './Icons'
 import { EmptyState, ErrorState, Spinner } from './States'
 
@@ -419,6 +420,51 @@ const fieldClass = (error?: string) =>
     error ? 'bg-rose-50 ring-2 ring-rose-300 focus:ring-rose-500' : 'bg-[#F3F5F4] focus:ring-[#1F5E3B]'
   }`
 
+/** Labelled date field ("YYYY-MM-DD" in/out). Use this instead of TextField type="date":
+ *  the Android WebView's native date box can't be styled (empty box, arrow on the edge). */
+export function DateField({
+  label,
+  value,
+  onChange,
+  optional,
+  hint,
+  error,
+  placeholder,
+  min,
+  max,
+  disabled,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  optional?: boolean
+  hint?: string
+  error?: string
+  placeholder?: string
+  min?: string
+  max?: string
+  disabled?: boolean
+}) {
+  const id = useId()
+  return (
+    <FieldShell id={id} label={label} optional={optional} hint={hint} error={error}>
+      <DateInput
+        id={id}
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        min={min}
+        max={max}
+        disabled={disabled}
+        invalid={Boolean(error)}
+        aria-invalid={Boolean(error)}
+        aria-describedby={error || hint ? `${id}-message` : undefined}
+        className={`mt-1.5 h-12 w-full rounded-2xl text-[15px] ${error ? 'bg-rose-50' : 'bg-[#F3F5F4]'}`}
+      />
+    </FieldShell>
+  )
+}
+
 export function TextField({
   label,
   value,
@@ -606,7 +652,8 @@ export function PickerField({
   )
 }
 
-function PickerSheet({
+/** The picker sheet on its own, for a button that opens a list (e.g. "Add ingredient"). */
+export function PickerSheet({
   title,
   value,
   options,
@@ -731,7 +778,7 @@ export function SwitchRow({
 }) {
   return (
     <label
-      className={`flex min-h-14 items-center justify-between gap-3 rounded-2xl bg-[#F6F8F7] px-4 py-2 ${
+      className={`relative flex min-h-14 items-center justify-between gap-3 rounded-2xl bg-[#F6F8F7] px-4 py-2 ${
         disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
       }`}
     >

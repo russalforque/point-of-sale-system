@@ -4,14 +4,18 @@ import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
 import {
   faBox,
   faBoxesStacked,
+  faJarWheat,
+  faSliders,
   faCartShopping,
   faChartLine,
   faClipboardCheck,
   faClipboardList,
   faClock,
   faEllipsis,
+  faFileInvoiceDollar,
   faGear,
   faHouse,
+  faMoneyBillWave,
   faPrint,
   faRotateLeft,
   faScroll,
@@ -37,6 +41,7 @@ import {
 } from '../../components/layout/MoreSheet'
 import { ConfirmDialog } from '../../components/ui/Modal'
 import { useAuth } from '../../context/AuthContext'
+import { useSettings } from '../../context/SettingsContext'
 import { ROLE_LABELS, type Permission, type Role } from '../../utils/permissions'
 
 interface MobileBottomNavProps {
@@ -45,7 +50,13 @@ interface MobileBottomNavProps {
 }
 
 type PrimaryItem = { to: string; label: string; icon: IconDefinition; permission?: Permission; badge?: number }
-type SecondaryItem = MoreNavItem & { permission: Permission }
+type SecondaryItem = MoreNavItem & {
+  permission: Permission
+  /** Shown to any of these instead (baristas see Ingredients for waste and batches). */
+  anyOf?: Permission[]
+  /** Only with Settings → Recipes, ingredients & options turned on. */
+  foodService?: boolean
+}
 
 /**
  * Secondary destinations shown in the "More" sheet. These mirror the existing
@@ -56,15 +67,27 @@ const SECONDARY_GROUPS: { title: string; items: SecondaryItem[] }[] = [
     title: 'Operations',
     items: [
       { to: '/returns', label: 'Returns', description: 'Refunds, returns and voids by receipt number', icon: faRotateLeft, permission: 'sales.process' },
+      {
+        to: '/ingredients',
+        label: 'Ingredients',
+        description: 'Beans, milk, cups: stock, waste and batches',
+        icon: faJarWheat,
+        permission: 'inventory.manage',
+        anyOf: ['inventory.manage', 'inventory.count', 'inventory.waste', 'inventory.produce'],
+        foodService: true,
+      },
       { to: '/stock-count', label: 'Stock Count', description: 'Count shelves and correct stock', icon: faClipboardCheck, permission: 'inventory.count' },
+      { to: '/purchase-orders', label: 'Purchase Orders', description: 'Order stock from suppliers', icon: faFileInvoiceDollar, permission: 'purchasing.manage' },
       { to: '/receive-stock', label: 'Receive Stock', description: 'Record supplier deliveries', icon: faTruckRampBox, permission: 'inventory.receive' },
+      { to: '/expenses', label: 'Expenses', description: 'Rent, bills and other costs', icon: faMoneyBillWave, permission: 'expenses.manage' },
     ],
   },
   {
     title: 'Management',
     items: [
       { to: '/products', label: 'Products', description: 'Catalog, prices and photos', icon: faBox, permission: 'products.view' },
-      { to: '/customers', label: 'Customers', description: 'Contacts and loyalty points', icon: faUsers, permission: 'customers.view' },
+      { to: '/modifiers', label: 'Options', description: 'Sizes, milks and add-ons', icon: faSliders, permission: 'products.manage', foodService: true },
+      { to: '/customers', label: 'Customers', description: 'Contacts, points and credit', icon: faUsers, permission: 'customers.view' },
       { to: '/categories', label: 'Categories', description: 'Group products at the register', icon: faTags, permission: 'categories.manage' },
       { to: '/suppliers', label: 'Suppliers', description: 'Vendors and their contacts', icon: faTruck, permission: 'suppliers.manage' },
     ],
@@ -85,6 +108,7 @@ export function MobileBottomNav({ alertCount = 0 }: MobileBottomNavProps) {
   const location = useLocation()
   const navigate = useNavigate()
   const { can, user, logout } = useAuth()
+  const { settings } = useSettings()
 
   const sheetId = useId()
   const moreButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -111,7 +135,9 @@ export function MobileBottomNav({ alertCount = 0 }: MobileBottomNavProps) {
 
   const secondaryGroups: MoreNavGroup[] = SECONDARY_GROUPS.map((group) => ({
     title: group.title,
-    items: group.items.filter((item) => can(item.permission)),
+    items: group.items
+      .filter((item) => (!item.foodService || settings.foodServiceEnabled) && (item.anyOf ? item.anyOf.some(can) : can(item.permission)))
+      .map(({ to, label, description, icon }) => ({ to, label, description, icon })),
   })).filter((group) => group.items.length > 0)
 
   const isOnSecondaryRoute = secondaryGroups.some((group) =>
