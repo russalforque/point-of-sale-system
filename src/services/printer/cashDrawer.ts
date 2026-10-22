@@ -3,7 +3,7 @@ import type { PrinterConfig } from './types'
 const ESC = 0x1b
 
 function clampByte(n: number): number {
-  return Math.max(0, Math.min(255, Math.round(n)))
+  return Number.isFinite(n) ? Math.max(0, Math.min(255, Math.round(n))) : 0
 }
 
 /**
@@ -17,7 +17,8 @@ export function buildDrawerKickCommand(config: Pick<PrinterConfig, 'drawerPin' |
     ESC,
     0x70,
     config.drawerPin === 1 ? 1 : 0,
-    clampByte(config.drawerOnMs),
-    clampByte(config.drawerOffMs),
+    // Epson ESC p uses two milliseconds per byte, not one millisecond.
+    clampByte(config.drawerOnMs / 2),
+    clampByte(config.drawerOffMs / 2),
   ])
 }

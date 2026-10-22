@@ -8,7 +8,6 @@ import {
   faBars,
   faBox,
   faBoxOpen,
-  faBoxesStacked,
   faChartBar,
   faCheck,
   faChevronDown,

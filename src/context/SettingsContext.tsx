@@ -5,6 +5,8 @@ import type { StoreSetting } from '../types'
 
 const fallback: StoreSetting = {
   id: 0,
+  businessType: 'retail',
+  businessSetupComplete: true,
   storeName: 'Sellix POS',
   phone: null,
   email: null,
@@ -27,6 +29,7 @@ const fallback: StoreSetting = {
 
 type SettingsContextValue = {
   settings: StoreSetting
+  error: string | null
   reload: () => Promise<void>
 }
 
@@ -35,13 +38,15 @@ const SettingsContext = createContext<SettingsContextValue | undefined>(undefine
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth()
   const [settings, setSettings] = useState<StoreSetting>(fallback)
+  const [error, setError] = useState<string | null>(null)
 
   const reload = useCallback(async () => {
     if (!user) return
     try {
       setSettings(await settingsApi.get())
-    } catch {
-      /* keep last known store settings */
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to load store settings.')
     }
   }, [user])
 
@@ -49,7 +54,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     void reload()
   }, [reload])
 
-  const value = useMemo(() => ({ settings, reload }), [settings, reload])
+  const value = useMemo(() => ({ settings, reload, error }), [settings, reload, error])
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>
 }
 

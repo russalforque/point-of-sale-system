@@ -28,6 +28,7 @@ export function useDismissOnBack(key: string, onDismiss: () => void, blocked = f
   const markerPresent = hasMarker(location.state, key)
   const armedRef = useRef(false)
   const closingRef = useRef(false)
+  const pushedRef = useRef(false)
   const onDismissRef = useRef(onDismiss)
   const blockedRef = useRef(blocked)
   const onBlockedRef = useRef(onBlocked)
@@ -42,6 +43,10 @@ export function useDismissOnBack(key: string, onDismiss: () => void, blocked = f
 
   // Push the marker entry once when the overlay opens.
   useEffect(() => {
+    // React StrictMode replays mount effects. Push only one entry, otherwise close()
+    // pops onto another marked entry and leaves the overlay open after a saved action.
+    if (pushedRef.current) return
+    pushedRef.current = true
     if (!hasMarker(location.state, key)) {
       navigate(currentUrl, { state: { ...asRecord(location.state), [key]: true } })
     }

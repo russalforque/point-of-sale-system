@@ -18,7 +18,7 @@ import {
   usePrinterSettings,
 } from '../../hooks/usePrinterSettings'
 
-const clampByte = (value: string) => Math.min(255, Math.max(0, Math.floor(Number(value) || 0)))
+const clampMilliseconds = (value: string) => Math.min(510, Math.max(0, Math.floor(Number(value) || 0)))
 
 export function MobilePrinterSettings() {
   const p = usePrinterSettings()
@@ -270,7 +270,7 @@ export function MobilePrinterSettings() {
                 <ChevronIcon />
               </summary>
               <div className="px-4 pb-4">
-                <p className="text-xs text-slate-500">Only change these if your drawer doesn’t open. The standard is pin 0, 25 ms on, 250 ms off.</p>
+                <p className="text-xs text-slate-500">Only change these if your drawer doesn’t open. The standard is pin 0, 50 ms on, 500 ms off.</p>
                 <div className="mt-3 grid grid-cols-3 gap-2">
                   <NumberBox label="Pin">
                     <select
@@ -287,9 +287,9 @@ export function MobilePrinterSettings() {
                       type="number"
                       inputMode="numeric"
                       min={0}
-                      max={255}
+                      max={510}
                       value={config.drawerOnMs}
-                      onChange={(e) => p.updateConfig({ drawerOnMs: clampByte(e.target.value) })}
+                      onChange={(e) => p.updateConfig({ drawerOnMs: clampMilliseconds(e.target.value) })}
                       className="h-12 w-full rounded-xl border-0 bg-[#F3F5F4] px-3 text-[15px] tabular-nums outline-none focus:ring-2 focus:ring-[#1F5E3B]"
                     />
                   </NumberBox>
@@ -298,16 +298,16 @@ export function MobilePrinterSettings() {
                       type="number"
                       inputMode="numeric"
                       min={0}
-                      max={255}
+                      max={510}
                       value={config.drawerOffMs}
-                      onChange={(e) => p.updateConfig({ drawerOffMs: clampByte(e.target.value) })}
+                      onChange={(e) => p.updateConfig({ drawerOffMs: clampMilliseconds(e.target.value) })}
                       className="h-12 w-full rounded-xl border-0 bg-[#F3F5F4] px-3 text-[15px] tabular-nums outline-none focus:ring-2 focus:ring-[#1F5E3B]"
                     />
                   </NumberBox>
                 </div>
                 <button
                   type="button"
-                  onClick={() => p.updateConfig({ drawerPin: 0, drawerOnMs: 25, drawerOffMs: 250 })}
+                  onClick={() => p.updateConfig({ drawerPin: 0, drawerOnMs: 50, drawerOffMs: 500 })}
                   className="mt-3 h-11 rounded-full px-3 text-sm font-medium text-[#1F5E3B] active:bg-[#F2F8F4]"
                 >
                   Reset to standard

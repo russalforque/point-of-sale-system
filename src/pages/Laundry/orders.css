@@ -1,0 +1,174 @@
+/* Scoped to the order list; order details keep their existing workflow. */
+.laundry-orders { max-width: 1440px; padding: 32px; }
+.lo-header { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 30px; }
+.lo-header > div:first-child { min-width: 0; }
+.lo-header h1 { font-size: 30px; line-height: 1.2; font-weight: 800; letter-spacing: -1px; margin-bottom: 8px; }
+.lo-header > div > p:last-child { font-size: 13px; line-height: 1.6; color: #66776c; }
+.lo-header .lo-eyebrow { display: flex; align-items: center; gap: 8px; color: var(--color-brand); font-size: 10px; font-weight: 700; letter-spacing: 1.8px; margin-bottom: 10px; }
+.lo-eyebrow > span { width: 6px; height: 6px; border-radius: 50%; background: var(--color-brand); }
+.lo-header-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.lo-overview-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.lo-overview-label h2 { font-size: 14px; font-weight: 700; letter-spacing: -.3px; }
+.lo-overview-label > span { color: #66776c; font-size: 11px; }
+.lo-overview { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 24px; }
+.lo-metric { min-width: 0; padding: 18px 20px; background: white; border: 1px solid #e3eae6; border-radius: 14px; }
+.lo-metric > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lo-metric h3 { font-family: var(--font-sans); font-size: 12px; font-weight: 500; color: #607168; }
+.lo-metric-icon { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 9px; flex-shrink: 0; }
+.lo-tone-slate { background: #f0f3f1; color: #6a7c70; }
+.lo-tone-blue { background: #edf4fc; color: #5a85af; }
+.lo-tone-green { background: #eaf5ed; color: #398152; }
+.lo-tone-sage { background: #f1f3e8; color: #7d8b58; }
+.lo-metric-value { margin: 12px 0 6px; font-family: var(--font-display); font-weight: 800; font-size: 30px; line-height: 1.2; letter-spacing: -.7px; font-variant-numeric: tabular-nums; }
+.lo-metric-note { color: #66776c; font-size: 11px; }
+.lo-summary-error { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: #9a611f; background: #fff8e9; border-radius: 10px; font-size: 12px; padding: 8px 14px; margin-bottom: 16px; }
+.lo-list { min-width: 0; border: 1px solid #e3eae6; border-radius: 16px; background: white; scroll-margin-block: 20px; }
+.lo-list-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; padding: 22px 24px 18px; }
+.lo-list-heading > button { min-height: 48px; }
+.lo-list-heading h2 { font-size: 15px; font-weight: 700; letter-spacing: -.3px; }
+.lo-list-heading p { font-size: 12px; color: #66776c; margin-top: 4px; }
+.lo-sort { display: flex; align-items: center; gap: 6px; flex-shrink: 0; color: #66776c; font-size: 11px; }
+.lo-quick-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 24px 18px; }
+.lo-quick-filters > button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 48px; min-width: 0; padding: 9px 16px; border-radius: 9px; background: #f4f6f4; color: #66776c; font-size: 12px; font-weight: 500; cursor: pointer; transition: background .15s, color .15s; }
+.lo-quick-filters > button:hover { background: #e9f1eb; }
+.lo-quick-filters > button.is-active { background: #20563e; color: white; }
+.lo-search-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 0 24px 12px; }
+.lo-filter-toggle { min-height: 48px; padding-inline: 16px; border-radius: 10px; }
+.lo-filter-toggle.is-active { background: #edf5ef; color: #20563e; }
+.lo-filter-count { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding-inline: 4px; border-radius: 50%; background: #20563e; color: white; font-size: 11px; }
+.lo-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 12px; margin: 0 24px 18px; padding: 16px; border: 1px solid #e3eae6; border-radius: 12px; background: #f8faf9; }
+.lo-filters[hidden] { display: none; }
+.lo-search { min-width: 0; }
+.lo-search > span { display: block; color: #374151; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+.lo-search input { height: 48px; border-radius: 10px; background: #f5f7f6; font-size: 14px; }
+.lo-filters .laundry-field :is(input, select) { font-size: 13px; }
+.lo-active-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; border-top: 1px solid #edf1ee; padding: 10px 24px; }
+.lo-active-filters > button:not(:last-child) { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; max-width: 100%; min-height: 44px; padding: 6px 10px; color: #3e6950; background: #edf5ef; border-radius: 8px; font-size: 11px; cursor: pointer; }
+.lo-active-filters > button > span { min-width: 0; overflow-wrap: anywhere; }
+.lo-active-filters > button > svg { flex-shrink: 0; }
+.lo-active-filters > button:last-child { font-size: 11px; padding-inline: 12px; margin-left: auto; }
+.lo-loading { display: flex; align-items: center; justify-content: center; min-height: 240px; border-top: 1px solid #edf1ee; }
+.lo-list-error { padding: 24px; border-top: 1px solid #edf1ee; }
+.lo-table-head, .laundry-orders .lo-order-row { display: grid; grid-template-columns: minmax(0, .95fr) minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, .95fr) 16px; gap: 16px; align-items: center; padding-inline: 24px; }
+.lo-table-head { border-block: 1px solid #edf1ee; background: #f8faf9; font-size: 11px; color: #66776c; padding-block: 12px; }
+.lo-table-head > :nth-child(5) { text-align: right; }
+.laundry-orders .lo-order-row { padding-block: 18px; min-height: 100px; border-bottom: 1px solid #edf1ee; }
+.laundry-orders .lo-order-row:last-child { border-bottom: 0; }
+.laundry-orders .lo-order-row:hover { background: #f3f9f5; }
+.lo-order-identity { grid-column: 1; }
+.lo-order-row strong { font-size: 13px; font-weight: 600; }
+.lo-order-identity > strong { color: #356849; }
+.lo-order-identity p { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; color: #66776c; font-size: 11px; margin-top: 6px; }
+.lo-customer { display: flex; align-items: center; gap: 10px; }
+.lo-customer > div { min-width: 0; }
+.lo-customer p { color: #66776c; font-size: 11px; margin-top: 5px; }
+.lo-avatar { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 34px; height: 34px; background: #edf3ee; color: #66816e; font-size: 10px; font-weight: 700; border-radius: 50%; }
+.lo-state .laundry-status { font-size: 11px; padding: 5px 8px; border-radius: 6px; background: #f0f3f1; color: #5c7063; }
+.lo-state[data-status="Ready for Pickup"] .laundry-status { background: #e8f5ec; color: #287044; }
+.lo-state[data-status=Completed] .laundry-status { background: #f0f3f1; color: #5b7163; }
+.lo-state[data-status=Cancelled] .laundry-status { background: #fff0f1; color: #a44251; }
+.lo-pickup p { display: flex; align-items: start; gap: 5px; color: #607168; font-size: 11px; }
+.lo-pickup p > svg { flex-shrink: 0; margin-top: 2px; }
+.lo-pickup .lo-unscheduled { color: #7d8981; }
+.lo-pickup.is-overdue p { color: #a0533e; }
+.lo-pickup small { display: block; color: #a0533e; font-size: 10px; margin-top: 5px; }
+.lo-payment { min-width: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.lo-desktop-payment { display: flex; flex-direction: column; align-items: end; gap: 5px; }
+.lo-mobile-payment { display: none; }
+.lo-payment-state { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: #67776b; }
+.lo-payment-state > span { width: 5px; height: 5px; background: currentColor; border-radius: 50%; flex-shrink: 0; }
+.lo-payment-state.is-paid { color: #38804c; }
+.lo-payment-state.is-partial { color: #9c7429; }
+.lo-payment-state.is-unpaid { color: #ab644a; }
+.lo-payment small { font-size: 10px; color: #718078; }
+.lo-row-arrow { color: #8da394; }
+.laundry-orders .lo-order-row:focus-visible { position: relative; outline: 3px solid #20563e; outline-offset: -3px; }
+.lo-order-row :is(strong, p, .laundry-status) { overflow-wrap: anywhere; }
+.lo-mobile-label { display: none; }
+.lo-empty { display: flex; align-items: center; flex-direction: column; text-align: center; padding: 48px 20px; border-top: 1px solid #edf1ee; }
+.lo-empty-icon { display: flex; align-items: center; justify-content: center; width: 62px; height: 62px; border-radius: 18px; background: #eef5f0; color: #7a9a85; margin-bottom: 18px; }
+.lo-empty h3 { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+.lo-empty p { max-width: 320px; font-size: 12px; color: #66776c; margin-bottom: 22px; line-height: 1.7; }
+.lo-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; border-top: 1px solid #edf1ee; padding: 16px 24px; }
+.lo-pagination > p { color: #66776c; font-size: 11px; }
+.lo-pagination nav { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.lo-pagination button { font-size: 12px; padding-inline: 14px; }
+.lo-page-number { font-size: 11px; color: #66776c; font-variant-numeric: tabular-nums; }
+.lo-spin { animation: lo-spin 1s linear infinite; }
+@keyframes lo-spin { to { transform: rotate(360deg); } }
+@container (max-width: 1040px) {
+  .lo-overview { gap: 12px; }
+  .lo-metric { padding: 16px; }
+  .lo-table-head, .laundry-orders .lo-order-row { padding-inline: 18px; gap: 12px; }
+  .lo-avatar { display: none; }
+}
+@container (max-width: 760px) {
+  .lo-overview-label { margin-bottom: 10px; }
+  .lo-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 20px; }
+  .laundry-orders .lo-metric { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px; border-radius: 10px; }
+  .laundry-orders .lo-metric h3 { font-size: 12px; line-height: 1.4; }
+  .laundry-orders .lo-metric-value { margin: 0; font-size: 23px; flex-shrink: 0; }
+  .laundry-orders :is(.lo-metric-icon, .lo-metric-note) { display: none; }
+  .lo-list-heading { padding: 16px; }
+  .laundry-orders .lo-list-heading p { display: none; }
+  .lo-search-toolbar { padding-inline: 16px; gap: 8px; }
+  .lo-quick-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0 16px 16px; }
+  .lo-quick-filters > button { min-height: 48px; padding-inline: 8px; }
+  .lo-filters { margin-inline: 16px; }
+  .lo-table-head { display: none; }
+  .lo-order-list { display: grid; gap: 10px; background: #f6f8f7; padding: 12px; border-top: 1px solid #edf1ee; }
+  .laundry-orders .lo-order-row { grid-template-columns: minmax(0, 1fr) minmax(0, .85fr); grid-template-areas: "customer arrow" "order order" "status payment" "pickup pickup"; gap: 8px 12px; padding: 16px; background: white; border: 1px solid #e2eae4; border-radius: 14px; box-shadow: 0 2px 4px #213d2b04; }
+  .laundry-orders .lo-order-row:last-child { border-bottom: 1px solid #e2eae4; }
+  .lo-order-identity { grid-area: order; display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; padding-bottom: 12px; border-bottom: 1px solid #edf1ee; }
+  .laundry-screen.laundry-orders .lo-order-identity > strong { color: #607168; font-size: 12px; font-weight: 500; }
+  .laundry-orders .lo-order-identity p { margin: 0; font-size: 12px; }
+  .lo-order-identity p > svg { display: none; }
+  .lo-customer { grid-area: customer; grid-column: 1 / -1; padding-right: 28px; }
+  .laundry-screen.laundry-orders .lo-customer strong { display: block; font-size: 16px; line-height: 1.4; color: #183e2c; }
+  .laundry-orders :is(.lo-avatar, .lo-customer p) { display: none; }
+  .lo-state { grid-area: status; align-self: center; }
+  .lo-pickup { grid-area: pickup; display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; border-top: 1px solid #edf1ee; padding-top: 10px; }
+  .lo-pickup.lo-pickup-inactive { display: none; }
+  .lo-pickup small { margin: 0; font-weight: 600; }
+  .lo-payment { grid-area: payment; }
+  .lo-desktop-payment { display: none; }
+  .lo-mobile-payment { display: flex; align-items: end; flex-direction: column; gap: 2px; }
+  .lo-mobile-payment > span { font-size: 12px; color: #66776c; }
+  .laundry-screen.laundry-orders .lo-mobile-payment > strong { font-size: 18px; line-height: 1.3; letter-spacing: -.3px; }
+  .lo-mobile-payment:is(.is-unpaid, .is-partial) > strong { color: #99502d; }
+  .lo-mobile-payment.is-paid > span { color: #287044; }
+  .lo-row-arrow { display: block; grid-area: arrow; justify-self: end; align-self: start; margin-top: 3px; }
+  .lo-mobile-label { display: block; font-size: 12px; color: #718078; }
+  .lo-state .laundry-status { font-size: 12px; padding: 6px 9px; }
+  .lo-pagination { gap: 12px; }
+  .lo-pagination > p { width: 100%; }
+  .lo-pagination nav { width: 100%; justify-content: space-between; }
+}
+@container (max-width: 560px) {
+  .lo-header { align-items: start; flex-direction: column; gap: 18px; margin-bottom: 24px; }
+  .lo-header h1 { font-size: 28px; }
+  .lo-header-actions { width: 100%; }
+  .lo-header-actions > a { flex: 1; }
+  .laundry-orders .lo-eyebrow { display: none; }
+  .lo-overview-label h2 { font-size: 12px; }
+  .lo-sort { font-size: 11px; }
+  .lo-sort svg { display: none; }
+  .lo-filters { grid-template-columns: minmax(0, 1fr); }
+  .lo-active-filters { padding: 10px 16px; }
+  .lo-active-filters > button:last-child { margin-left: 0; }
+  .lo-pagination { padding: 16px; }
+  .lo-pagination button { padding-inline: 10px; }
+  .lo-pagination button > span { display: none; }
+  .lo-pagination button { min-width: 44px; }
+}
+@container (max-width: 400px) {
+  .lo-filter-label { display: none; }
+  .lo-filter-toggle { padding-inline: 14px; }
+  .lo-filters { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 767px) {
+  .laundry-orders { padding: 24px 12px; }
+  .laundry-orders :is(input, select) { font-size: 16px; min-width: 0; max-width: 100%; }
+}
+@media (min-width: 768px) and (max-width: 1100px) { .laundry-orders { padding: 24px; } }
+@media (prefers-reduced-motion: reduce) { .lo-spin { animation: none; } }

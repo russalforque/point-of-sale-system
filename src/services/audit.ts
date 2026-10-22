@@ -7,6 +7,11 @@ import { getStoredUser } from '../utils/session'
  * reject UPDATE/DELETE - and nothing in the app offers to.
  */
 export const AUDIT_ACTIONS = {
+  drawer: 'Cash drawer',
+  laundry_order: 'Laundry order',
+  laundry_payment: 'Laundry payment',
+  laundry_status: 'Laundry status',
+  laundry_catalog: 'Laundry catalog',
   login: 'Login',
   logout: 'Logout',
   sale: 'Sale',

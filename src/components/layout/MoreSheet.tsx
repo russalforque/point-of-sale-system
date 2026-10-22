@@ -15,7 +15,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 export const MORE_SHEET_STATE_KEY = 'moreSheetOpen'
 
 /** Height of the fixed bottom navigation, including the Android gesture/nav bar inset. */
-export const BOTTOM_NAV_HEIGHT = 'calc(4.5rem + max(0.35rem, env(safe-area-inset-bottom, 0px)))'
+export const BOTTOM_NAV_HEIGHT = 'calc(var(--mobile-nav-row-height, 4.5rem) + max(0.35rem, env(safe-area-inset-bottom, 0px)))'
 
 export function isMoreSheetOpen(state: unknown): boolean {
   return typeof state === 'object' && state !== null && (state as Record<string, unknown>)[MORE_SHEET_STATE_KEY] === true

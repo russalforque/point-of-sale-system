@@ -55,6 +55,7 @@ export function useHeldOrders() {
     const totals = checkoutTotals({ ...checkout, redeemPoints: 0 }, settings)
     try {
       await heldOrdersApi.hold({
+        notes: checkout.notes,
         label,
         customerId: checkout.customerId,
         customerName,
@@ -132,6 +133,8 @@ export function useHeldOrders() {
 
     setCheckout({
       ...checkout,
+      requestId: crypto.randomUUID(),
+      notes: order.notes ?? '',
       cart,
       customerId: customer?.id ?? null,
       discount: order.discountType === 'senior_pwd' ? 0 : order.discount,

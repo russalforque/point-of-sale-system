@@ -3,6 +3,8 @@ import type { DiscountType } from '../types'
 import { DEFAULT_ORDER_TYPE, type CartLine, type OrderType, type PaymentMethod } from '../utils/pos'
 
 export interface CheckoutState {
+  requestId: string
+  notes?: string
   customerId: number | null
   cart: CartLine[]
   /** Manual discount (money). Ignored while `discountType` is 'senior_pwd', which follows the subtotal. */
@@ -25,6 +27,7 @@ interface CheckoutContextType {
 }
 
 export const defaultCheckoutState: CheckoutState = {
+  requestId: '',
   customerId: null,
   cart: [],
   discount: 0,
@@ -40,9 +43,9 @@ export const defaultCheckoutState: CheckoutState = {
 const CheckoutContext = createContext<CheckoutContextType | undefined>(undefined)
 
 export function CheckoutProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<CheckoutState>(defaultCheckoutState)
+  const [state, setState] = useState<CheckoutState>(() => ({ ...defaultCheckoutState, requestId: crypto.randomUUID() }))
 
-  const clearCheckout = () => setState(defaultCheckoutState)
+  const clearCheckout = () => setState({ ...defaultCheckoutState, requestId: crypto.randomUUID() })
 
   return (
     <CheckoutContext.Provider value={{ state, setState, clearCheckout }}>

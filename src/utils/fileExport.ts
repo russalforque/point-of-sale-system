@@ -1,6 +1,7 @@
 import { Capacitor } from '@capacitor/core'
 import { Directory, Filesystem } from '@capacitor/filesystem'
 import { Share } from '@capacitor/share'
+import { desktopInvoke, isDesktop } from '../services/platform'
 
 /**
  * Delivers a generated file to the user.
@@ -42,6 +43,11 @@ export async function saveFile({
 }): Promise<FileExportResult> {
   const name = safeFilename(filename)
   const bytes = typeof content === 'string' ? new TextEncoder().encode(content) : content
+
+  if (isDesktop()) {
+    const saved = await desktopInvoke<boolean>('export_file', { name, bytes: Array.from(bytes) })
+    return saved ? 'downloaded' : 'cancelled'
+  }
 
   if (Capacitor.isNativePlatform()) {
     const { uri } = await Filesystem.writeFile({

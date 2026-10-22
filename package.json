@@ -4,6 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "test": "node --experimental-vm-modules --test tests/laundry.test.mjs tests/platform.test.mjs",
+    "test:platform": "node --experimental-vm-modules --test tests/platform.test.mjs",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "desktop:test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "android:sync": "npm run typecheck && npm run build && cap sync android",
+    "android:debug": "npm run android:sync && cd android && gradlew.bat assembleDebug",
+    "android:release": "npm run android:sync && cd android && gradlew.bat assembleRelease",
+    "test:laundry": "node --experimental-vm-modules --test tests/laundry.test.mjs",
+    "typecheck": "tsc --noEmit",
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
@@ -25,6 +35,7 @@
     "@fortawesome/free-solid-svg-icons": "^7.3.1",
     "@fortawesome/react-fontawesome": "^3.5.0",
     "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/api": "^2.12.4",
     "@untitledui/icons": "^0.0.22",
     "axios": "^1.20.0",
     "jszip": "^3.10.2",
@@ -39,6 +50,7 @@
     "@babel/core": "^7.29.7",
     "@eslint/js": "^10.0.1",
     "@rolldown/plugin-babel": "^0.2.3",
+    "@tauri-apps/cli": "^2.12.3",
     "@types/node": "^26.4.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
@@ -49,6 +61,6 @@
     "eslint-plugin-react-refresh": "^0.5.3",
     "globals": "^17.7.0",
     "typescript": "^7.0.2",
-    "vite": "^8.2.0"
+    "vite": "^8.2.4"
   }
 }

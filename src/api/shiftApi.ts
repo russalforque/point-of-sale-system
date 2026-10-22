@@ -6,7 +6,8 @@ import { auditStatement } from '../services/audit'
 import { CASH_METHOD } from '../services/payments'
 import { roundMoney } from '../utils/amount'
 import { formatMoney } from '../utils/format'
-import { getStoredUser } from '../utils/session'
+import { currentActor, requirePermission } from '../services/authz'
+import { hasPermission } from '../utils/permissions'
 import { ApiError } from '../utils/errors'
 
 export type StartShiftPayload = {
@@ -81,7 +82,7 @@ const SHIFT_SELECT = `
  * and cash out paid from this shift's drawer are applied to the expected cash.
  */
 async function summarizeShift(shift: { id: number; startingCash: number }): Promise<ShiftSummary> {
-  const [salesResult, refundsResult, movementsResult] = await Promise.all([
+  const [salesResult, refundsResult, movementsResult, laundryResult] = await Promise.all([
     querySQL(
       `SELECT sp.method AS method, SUM(sp.amount) AS total
        FROM sale_payments sp
@@ -97,6 +98,7 @@ async function summarizeShift(shift: { id: number; startingCash: number }): Prom
     querySQL(`SELECT type, COALESCE(SUM(amount), 0) AS total FROM cash_movements WHERE shift_id = ? GROUP BY type`, [
       shift.id,
     ]),
+    querySQL('SELECT method, SUM(amount_cents) AS total FROM laundry_payments WHERE shift_id=? GROUP BY method', [shift.id]),
   ])
 
   let cashSales = 0
@@ -104,6 +106,10 @@ async function summarizeShift(shift: { id: number; startingCash: number }): Prom
   for (const row of (salesResult.values ?? []) as { method: number; total: number }[]) {
     if (row.method === CASH_METHOD) cashSales += row.total
     else nonCashSales += row.total
+  }
+  for (const row of (laundryResult.values ?? []) as { method: string; total: number }[]) {
+    if (row.method === 'Cash') cashSales += row.total / 100
+    else nonCashSales += row.total / 100
   }
   const cashRefunds = (refundsResult.values?.[0]?.total as number | undefined) ?? 0
   const movements = (movementsResult.values ?? []) as { type: number; total: number }[]
@@ -121,10 +127,15 @@ async function summarizeShift(shift: { id: number; startingCash: number }): Prom
   }
 }
 
-function requireEmployee(): { id: number; fullName: string } {
-  const user = getStoredUser()
-  if (!user) throw new ApiError('Not signed in.', 401)
-  return { id: Number(user.id), fullName: user.fullName }
+async function requireEmployee(): Promise<{ id: number; fullName: string }> {
+  return requirePermission('sales.process')
+}
+
+async function requireShiftAccess(employeeId: number): Promise<void> {
+  const actor = await currentActor()
+  if (actor.id !== employeeId && !hasPermission(actor.role, 'shifts.manage')) {
+    throw new ApiError('You do not have permission to view another employee’s shift.', 403)
+  }
 }
 
 async function currencySymbol(): Promise<string> {
@@ -134,7 +145,7 @@ async function currencySymbol(): Promise<string> {
 export const shiftApi = {
   /** The signed-in employee's open shift, or null if they haven't started one. */
   getActive: async (): Promise<Shift | null> => {
-    const { id } = requireEmployee()
+    const { id } = await requireEmployee()
     const result = await querySQL(`${SHIFT_SELECT} WHERE employee_id = ? AND status = 0 LIMIT 1`, [id])
     const row = result.values?.[0] as ShiftRow | undefined
     return row ? toShift(row) : null
@@ -144,6 +155,7 @@ export const shiftApi = {
     const result = await querySQL(`${SHIFT_SELECT} WHERE id = ? LIMIT 1`, [id])
     const row = result.values?.[0] as ShiftRow | undefined
     if (!row) throw new ApiError('Shift not found.', 404)
+    await requireShiftAccess(row.employee_id)
     return toShift(row)
   },
 
@@ -152,7 +164,7 @@ export const shiftApi = {
       throw new ApiError('Enter a valid starting cash amount.', 400)
     }
 
-    const { id, fullName } = requireEmployee()
+    const { id, fullName } = await requireEmployee()
     const existing = await querySQL(`SELECT id FROM shifts WHERE employee_id = ? AND status = 0 LIMIT 1`, [id])
     if (existing.values?.length) {
       throw new ApiError('You already have an active shift.', 400)
@@ -209,6 +221,7 @@ export const shiftApi = {
   },
 
   movements: async (shiftId: number): Promise<CashMovement[]> => {
+    await shiftApi.get(shiftId)
     const result = await querySQL(
       `SELECT id, shift_id, type, amount, reason, created_by, created_at FROM cash_movements WHERE shift_id = ? ORDER BY created_at DESC`,
       [shiftId],
@@ -234,12 +247,13 @@ export const shiftApi = {
 
   /** Cash added to (float top-up) or taken from (payouts, bank drops) the signed-in employee's drawer. */
   addCashMovement: async (payload: CashMovementPayload): Promise<void> => {
+    if (payload.type !== 'in' && payload.type !== 'out') throw new ApiError('Choose cash in or cash out.', 400)
     const amount = roundMoney(payload.amount)
     const reason = payload.reason.trim()
     if (!Number.isFinite(amount) || amount <= 0) throw new ApiError('Enter an amount above zero.', 400)
     if (reason.length < 3) throw new ApiError('Enter a reason.', 400)
 
-    const { fullName } = requireEmployee()
+    const { fullName } = await requirePermission('cash.movement')
     const { shift, summary } = await shiftApi.summary()
     const symbol = await currencySymbol()
     if (payload.type === 'out' && amount > summary.expectedCash) {
@@ -267,7 +281,7 @@ export const shiftApi = {
       throw new ApiError('Enter a valid actual cash amount.', 400)
     }
 
-    const { id, fullName } = requireEmployee()
+    const { id, fullName } = await requireEmployee()
     const active = await shiftApi.getActive()
     if (!active) throw new ApiError('No active shift to end.', 400)
     if (active.employeeId !== id) throw new ApiError('This shift does not belong to you.', 403)
@@ -316,9 +330,11 @@ export const shiftApi = {
   history: async (params: {
     employeeName?: string
     status?: 'open' | 'closed'
+    cashResult?: 'balanced' | 'short' | 'over' | 'uncounted'
     page?: number
     pageSize?: number
   }): Promise<PagedResult<Shift>> => {
+    await requirePermission('shifts.manage')
     const clauses: string[] = []
     const values: unknown[] = []
 
@@ -330,6 +346,16 @@ export const shiftApi = {
       clauses.push('status = ?')
       values.push(params.status === 'open' ? 0 : 1)
     }
+    if (params.cashResult) {
+      clauses.push('status = 1')
+      const cashClauses = {
+        balanced: 'ABS(difference) < 0.005',
+        short: 'difference <= -0.005',
+        over: 'difference >= 0.005',
+        uncounted: 'difference IS NULL',
+      }
+      clauses.push(cashClauses[params.cashResult])
+    }
 
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
     const page = params.page ?? 1
@@ -339,7 +365,7 @@ export const shiftApi = {
     const totalCount = (countResult.values?.[0]?.count as number | undefined) ?? 0
 
     const result = await querySQL(
-      `${SHIFT_SELECT} ${where} ORDER BY started_at DESC LIMIT ? OFFSET ?`,
+      `${SHIFT_SELECT} ${where} ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?`,
       [...values, pageSize, (page - 1) * pageSize],
     )
 

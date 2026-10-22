@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import type { SettingsPayload } from '../../api/settingsApi'
 import { formatMoney } from '../../utils/format'
 import { SwitchRow, TextField } from '../ui/MobileKit'
+import { useSettings } from '../../context/SettingsContext'
 
 type SalesRules = Pick<
   SettingsPayload,
@@ -51,6 +52,7 @@ export function SalesRulesSettings({
   currencySymbol: string
   section: (props: { title: string; description?: string; children: ReactNode }) => ReactNode
 }) {
+  const { settings } = useSettings()
   const errors = salesRulesErrors(form)
   const money = (value: number) => formatMoney(value, currencySymbol)
   const percentSuffix = <span className="px-3 text-[15px] text-slate-400">%</span>
@@ -59,6 +61,25 @@ export function SalesRulesSettings({
     form.loyaltyAmountPerPoint > 0 && form.loyaltyPointValue > 0
       ? `A ${money(form.loyaltyAmountPerPoint * 10)} purchase earns 10 points, worth ${money(10 * form.loyaltyPointValue)} off a later purchase.`
       : undefined
+
+  if (settings.businessType === 'laundry') return (
+    <>{section({
+      title: 'Laundry discounts',
+      description: 'Cashiers can discount up to this limit. A manager or admin must record larger discounts.',
+      children: (
+        <TextField
+          label="Discount limit for cashiers"
+          amount
+          value={Number.isNaN(form.maxDiscountPercent) ? '' : form.maxDiscountPercent}
+          onChange={(raw) => update({ maxDiscountPercent: toNumber(raw) })}
+          error={errors.maxDiscountPercent}
+          hint="Percent of the order subtotal."
+          trailing={percentSuffix}
+          disabled={disabled}
+        />
+      ),
+    })}</>
+  )
 
   return (
     <>

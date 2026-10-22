@@ -1,0 +1,146 @@
+/* Shared mobile rules load after the individual laundry page styles. */
+:root {
+  --laundry-mobile-nav-row-height: 4rem;
+  --laundry-mobile-nav-height: calc(var(--laundry-mobile-nav-row-height) + max(.35rem, env(safe-area-inset-bottom, 0px)));
+}
+.laundry-add-floating, .laundry-mobile-action-bar { display: none; }
+.laundry-payment-form { padding: 0; margin: 0; border: 0; min-width: 0; }
+.laundry-dialog-panel { overflow-wrap: anywhere; }
+/* One chevron with reserved text space; native select menus and keyboard behavior remain. */
+:is(.laundry-screen, .laundry-dialog-panel, .ls-editor-panel) select:not([multiple]):not([size]) {
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23607168' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 16px 16px;
+  padding-inline-start: 12px;
+  padding-inline-end: 44px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+:is(.laundry-screen, .laundry-dialog-panel, .ls-editor-panel) select:not([multiple]):not([size]):dir(rtl) { background-position: left 14px center; }
+:is(.laundry-screen, .laundry-dialog-panel, .ls-editor-panel) select:disabled { cursor: not-allowed; }
+@media (forced-colors: active) {
+  :is(.laundry-screen, .laundry-dialog-panel, .ls-editor-panel) select:not([multiple]):not([size]) {
+    -webkit-appearance: auto;
+    appearance: auto;
+    background-image: none;
+    padding-inline-end: 12px;
+  }
+}
+.laundry-order-detail { max-width: 1400px; }
+.lod-hero { background: white; border: 1px solid #dce8df; border-radius: 16px; padding: 22px; margin-bottom: 20px; }
+.lod-hero-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.lod-hero-status > span:last-child { font-size: 12px; color: #66776c; }
+.lod-hero h2 { font-size: 22px; font-weight: 700; letter-spacing: -.5px; margin-top: 16px; }
+.lod-contact { display: inline-flex; align-items: center; min-height: 44px; font-size: 13px; color: #316d47; text-decoration: none; }
+.lod-contact:hover { text-decoration: underline; text-underline-offset: 4px; }
+.lod-money-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 14px; padding-top: 18px; border-top: 1px solid #e8eee9; }
+.lod-money-summary > div { min-width: 0; }
+.lod-money-summary span { display: block; color: #66776c; font-size: 12px; }
+.lod-money-summary strong { display: block; color: #285f3e; font-size: 23px; font-weight: 700; letter-spacing: -.4px; margin-top: 5px; font-variant-numeric: tabular-nums; }
+.lod-pickup { display: flex; align-items: start; gap: 6px; font-size: 12px; color: #66776c; margin-top: 16px; }
+.lod-pickup > svg { flex-shrink: 0; margin-top: 2px; }
+.lod-print-actions { padding: 16px; margin-top: 20px; background: white; border: 1px solid #e3eae6; border-radius: 14px; }
+.lod-print-actions > .laundry-status { display: none; }
+
+@media (max-width: 767px) {
+  [data-business-type=laundry] { --mobile-nav-row-height: var(--laundry-mobile-nav-row-height); }
+  .laundry-screen:is(.laundry-dashboard, .laundry-orders, .laundry-new-order, .laundry-reports, .laundry-services, .laundry-order-detail) { padding: 20px 16px; font-size: 14px; }
+  .laundry-screen.laundry-has-add { padding-bottom: 96px; }
+  .laundry-screen.laundry-mobile-has-bar { padding-bottom: 100px; }
+  .laundry-screen :is(input:not([type=checkbox]), select, textarea) { font-size: 16px; max-width: 100%; min-width: 0; }
+  .laundry-screen input[type=date], .laundry-screen input[type=datetime-local] { min-inline-size: 0; }
+  .laundry-screen:is(.laundry-dashboard, .laundry-orders, .laundry-new-order, .laundry-reports, .laundry-services, .laundry-order-detail) button { min-height: 48px; }
+  .laundry-screen :is(.ld-header h1, .lo-header h1, .lno-header h1, .lr-header h1, .ls-header h1, .laundry-header h1) { font-size: 27px; line-height: 1.25; letter-spacing: -.8px; }
+  .laundry-screen :is(.ld-eyebrow, .lo-eyebrow, .lno-eyebrow, .lr-eyebrow, .ls-eyebrow) { font-size: 11px; letter-spacing: 1.4px; }
+
+  /* Add actions remain at a consistent viewport position, clear of navigation. */
+  .laundry-add-desktop { display: none; }
+  .laundry-add-floating { display: inline-flex; position: fixed; right: max(18px, env(safe-area-inset-right, 0px)); bottom: calc(var(--laundry-mobile-nav-height) + 16px); z-index: 30; width: 58px; height: 58px; min-height: 58px; padding: 0; border-radius: 50%; box-shadow: 0 6px 22px #164d3b40, 0 2px 5px #164d3b20; }
+  .laundry-add-floating > span { display: none; }
+  .laundry-screen :is(.ld-header, .lo-header, .ls-header) { display: grid; grid-template-columns: minmax(0, 1fr) 48px; align-items: start; gap: 14px; margin-bottom: 22px; }
+  .laundry-screen :is(.ld-header-actions, .lo-header-actions, .ls-header-actions) { width: auto; justify-content: end; }
+  .laundry-screen .laundry-refresh-action { width: 48px; min-width: 48px; padding-inline: 0; }
+  .laundry-refresh-action > span { display: none; }
+  .laundry-refresh-action > svg { width: 18px; height: 18px; }
+
+  /* Navigation reserves its own height in MainLayout; page bars use this same value. */
+  .laundry-bottom-nav :is(a, button) { min-height: 56px; min-width: 0; padding-block: 2px; gap: 2px; }
+  .laundry-bottom-nav :is(a, button) > span:last-child { font-size: 11px; line-height: 14px; }
+  .laundry-mobile-action-bar { display: flex; position: fixed; left: 0; right: 0; bottom: var(--laundry-mobile-nav-height); z-index: 35; align-items: center; gap: 14px; padding: 10px max(16px, env(safe-area-inset-right, 0px)) 10px max(16px, env(safe-area-inset-left, 0px)); background: white; border-top: 1px solid #dce7df; box-shadow: 0 -4px 18px #183e2c0a; }
+  .laundry-mobile-action-bar > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .laundry-mobile-action-bar > div > span { display: block; color: #66776c; font-size: 12px; line-height: 1.5; }
+  .laundry-mobile-action-bar strong { display: block; font-family: var(--font-display); font-size: clamp(18px, 5vw, 23px); font-weight: 800; color: #20563e; font-variant-numeric: tabular-nums; }
+  .laundry-mobile-action-bar > button { min-height: 48px; padding-inline: 20px; font-size: 14px; }
+  .laundry-new-order .lno-order-bar { display: none; }
+  .laundry-new-order :is(.lno-section, .lno-summary) { scroll-margin-block: 16px 96px; }
+
+  /* Essential information stays legible without zooming. */
+  .laundry-screen :is(.ld-subtitle, .ld-metric-note, .lo-metric-note, .lo-list-heading p, .lno-section-heading p, .lno-help, .lno-save-help, .lr-metric-note, .lr-panel-header p, .lr-panel-footnote, .ls-card-footer > span, .ls-pricing-method) { font-size: 12px; line-height: 1.6; }
+  .laundry-screen :is(.ld-metric-top h3, .ld-metric-label, .lo-metric h3, .lr-metric h3) { font-size: 12px; }
+  .laundry-screen :is(.ld-order strong, .lo-order-row strong, .lno-service-name strong, .lno-summary-line strong) { font-size: 14px; }
+  .laundry-screen :is(.ld-order-customer p, .ld-order-status > p, .ld-order-payment .laundry-muted, .lo-customer p, .lo-order-identity p, .lo-pickup p, .lo-payment-state, .lo-payment small, .lno-service-name > span, .lno-summary-line small, .lr-kind, .ls-category) { font-size: 12px; line-height: 1.6; }
+  .laundry-screen :is(.ld-orders-footer p, .lo-pagination p, .lo-page-number, .lr-pagination p, .ls-pagination p, .lr-filter-help) { font-size: 12px; }
+  .laundry-screen :is(.laundry-status, .lo-state .laundry-status, .ld-order-status .laundry-status, .ls-status, .lr-method-pill) { font-size: 12px; }
+  .laundry-screen :is(.lo-mobile-label, .lr-count, .ls-count, .lno-count, .lr-current-label) { font-size: 12px; }
+  .laundry-screen .ls-availability > button { font-size: 12px; }
+  .laundry-screen .lr-table :is(td, th), .laundry-screen .lr-table td > small { font-size: 13px; }
+  .laundry-screen .lr-table td::before { font-size: 12px; }
+  .laundry-screen .lr-method-caption { font-size: 12px; }
+  .laundry-screen .lr-order-link { font-size: 13px; }
+  .laundry-screen .lr-balance-row small { font-size: 12px; }
+
+  /* Order details prioritize money and status before the longer service/history lists. */
+  .laundry-order-detail .laundry-header { gap: 14px; margin-bottom: 18px; }
+  .laundry-order-detail .laundry-header > .laundry-actions { width: 100%; }
+  .laundry-order-detail .laundry-header > .laundry-actions > a { min-height: 48px; width: 100%; }
+  .lod-hero { padding: 18px; margin-bottom: 16px; }
+  .lod-hero h2 { font-size: 22px; }
+  .lod-money-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .lod-money-summary > div:last-child { grid-column: 1 / -1; background: #edf5ef; border-radius: 10px; padding: 12px 14px; }
+  .lod-money-summary strong { font-size: 21px; }
+  .lod-money-summary > div:last-child strong { font-size: 28px; }
+  .lod-hero-status { align-items: start; }
+  .lod-hero-status > span:last-child { font-size: 12px; }
+  .laundry-order-detail .laundry-detail-layout > .laundry-stack { display: contents; }
+  .lod-payment-summary { order: 0; }
+  .lod-update-order { order: 1; }
+  .lod-customer-services { order: 2; }
+  .laundry-order-detail .laundry-status-history { order: 3; }
+  .laundry-order-detail .laundry-payment-history { order: 4; }
+  .laundry-order-detail .laundry-card { padding: 18px; border: 1px solid #e3eae6; box-shadow: none; }
+  .laundry-order-detail .laundry-row { flex-wrap: wrap; }
+  .laundry-order-detail .laundry-muted { font-size: 12px; line-height: 1.7; }
+  .laundry-order-detail .laundry-total { font-size: 22px; }
+  .lod-print-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 14px; }
+  .lod-print-actions > button { min-width: 0; padding-inline: 10px; font-size: 13px; }
+  .laundry-order-detail .laundry-timeline > div { position: relative; }
+  .laundry-order-detail .laundry-timeline > div::before { content: ''; position: absolute; left: -24px; top: 6px; height: 10px; width: 10px; border-radius: 50%; background: #8bb39a; box-shadow: 0 0 0 3px white; }
+  .laundry-order-detail .laundry-timeline strong { font-size: 14px; font-weight: 600; }
+
+  .laundry-dialog-panel :is(input, select, textarea), .ls-editor-panel :is(input:not([type=checkbox]), select) { font-size: 16px; }
+  .laundry-dialog-panel :is(button, input:not([type=checkbox]), select), .ls-editor-panel :is(button, input:not([type=checkbox]), select) { min-height: 48px; }
+  .laundry-dialog-panel .laundry-dialog-primary { flex: 1; }
+  .laundry-dialog-panel > div:first-child > button, .ls-editor-panel > div:first-child > button { min-width: 48px; min-height: 48px; }
+  .laundry-dialog-panel pre { max-width: 100%; overscroll-behavior-x: contain; }
+  .customer-laundry-panel dl > div:last-child { grid-column: 1 / -1; }
+  .customer-laundry-panel dl dd { overflow-wrap: anywhere; }
+  .customer-laundry-order { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding-block: 16px; }
+  .customer-laundry-order > div:last-child { text-align: left; }
+  .customer-laundry-order .laundry-muted { font-size: 12px; }
+}
+@media (max-width: 767px) {
+  @container (min-width: 340px) and (max-width: 560px) {
+    .laundry-reports .lr-date-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+}
+@media (max-width: 767px) and (max-height: 450px) {
+  :root { --laundry-mobile-nav-row-height: 3.5rem; }
+  .laundry-bottom-nav :is(a, button) { min-height: 48px; }
+  .laundry-bottom-nav a[aria-label="New order"] > span:first-child { width: 32px; height: 32px; }
+  .laundry-mobile-action-bar { padding-block: 6px; }
+  .laundry-mobile-action-bar > button { min-height: 44px; }
+}

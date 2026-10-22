@@ -207,6 +207,8 @@ export function MobileSales() {
 
     setCheckout({
       ...checkout,
+      requestId: crypto.randomUUID(),
+      notes: '',
       cart: [],
       discount: 0,
       discountType: 'manual',
@@ -651,6 +653,10 @@ export function MobileSales() {
 
           {/* Totals + primary action */}
           <div className="border-t border-slate-100 px-5 pb-[max(1rem,env(safe-area-inset-bottom,0px))] pt-4">
+            <label className="mb-3 block text-xs font-medium text-slate-500">Order notes
+              <input aria-label="Order notes" maxLength={1000} value={checkout.notes ?? ''} onChange={event => setCheckout({ ...checkout, notes: event.target.value })}
+                placeholder="Allergies, packing instructions…" className="mt-1 h-11 w-full rounded-xl bg-[#F3F5F4] px-3 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-[#1F5E3B]" />
+            </label>
             <dl className="space-y-1.5 text-sm">
               <TotalRow label="Subtotal" value={money(totals.subtotal)} />
               {totals.manualDiscount > 0 && (

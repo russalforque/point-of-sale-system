@@ -22,3 +22,15 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Desktop build tools, generated output and business databases
+src-tauri/target/
+src-tauri/gen/
+.npm-cache/
+.gradle-cache/
+.qa/
+*.db
+*.db-wal
+*.db-shm
+*.sellix
+artifacts/**/*.apk

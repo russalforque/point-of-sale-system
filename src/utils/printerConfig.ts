@@ -3,8 +3,9 @@ import type { PrinterConfig } from '../services/printer/types'
 const CONFIG_KEY = 'sellix.printer.config'
 
 // Defaults match a POS-5890U-L style printer: 58mm paper, Bluetooth, no cutter.
-// Drawer: "ON for cash", pin 0 with a 25ms/250ms pulse.
+// Drawer: "ON for cash", pin 0, 50/500 ms (the original ESC/POS bytes 25/250).
 export const DEFAULT_PRINTER_CONFIG: PrinterConfig = {
+  pulseTimingVersion: 2,
   connectionType: 'bluetooth',
   deviceId: null,
   deviceName: null,
@@ -12,16 +13,23 @@ export const DEFAULT_PRINTER_CONFIG: PrinterConfig = {
   autoCut: false,
   autoOpenDrawerOnCash: true,
   drawerPin: 0,
-  drawerOnMs: 25,
-  drawerOffMs: 250,
+  drawerOnMs: 50,
+  drawerOffMs: 500,
 }
 
 export function getPrinterConfig(): PrinterConfig {
-  const raw = localStorage.getItem(CONFIG_KEY)
-  if (!raw) return { ...DEFAULT_PRINTER_CONFIG }
   try {
-    // Older saved configs (Bluetooth only) simply pick up the new defaults.
-    return { ...DEFAULT_PRINTER_CONFIG, ...(JSON.parse(raw) as Partial<PrinterConfig>) }
+    const raw = localStorage.getItem(CONFIG_KEY)
+    if (!raw) return { ...DEFAULT_PRINTER_CONFIG }
+    const saved = JSON.parse(raw) as Partial<PrinterConfig>
+    const scale = saved.pulseTimingVersion === 2 ? 1 : 2
+    const timing = (value: number | undefined, fallback: number) => Number.isFinite(value) ? Math.max(0, Math.min(510, Number(value) * scale)) : fallback
+    return {
+      ...DEFAULT_PRINTER_CONFIG, ...saved,
+      pulseTimingVersion: 2,
+      drawerOnMs: timing(saved.drawerOnMs, 50),
+      drawerOffMs: timing(saved.drawerOffMs, 500),
+    }
   } catch {
     return { ...DEFAULT_PRINTER_CONFIG }
   }

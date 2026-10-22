@@ -5,10 +5,12 @@ import { auditStatement } from '../services/audit'
 import { requirePermission } from '../services/authz'
 import { ApiError } from '../utils/errors'
 
-export type SettingsPayload = Omit<StoreSetting, 'id'>
+export type SettingsPayload = Omit<StoreSetting, 'id' | 'businessType' | 'businessSetupComplete'>
 
 type SettingsRow = {
   id: number
+  business_type: 'retail' | 'laundry'
+  business_setup_complete: number
   store_name: string
   phone: string | null
   email: string | null
@@ -32,6 +34,8 @@ type SettingsRow = {
 function toStoreSetting(row: SettingsRow): StoreSetting {
   return {
     id: row.id,
+    businessType: row.business_type,
+    businessSetupComplete: Boolean(row.business_setup_complete),
     storeName: row.store_name,
     phone: row.phone,
     email: row.email,
@@ -80,8 +84,8 @@ export const settingsApi = {
 
     if (!row) {
       await executeSQL(
-        `INSERT INTO store_settings (id, store_name, currency, currency_symbol, tax_rate, receipt_footer, show_logo_on_receipt)
-         VALUES (1, 'Sellix POS', 'PHP', '₱', 0.12, '', 1)`,
+        `INSERT INTO store_settings (id, store_name, currency, currency_symbol, tax_rate, receipt_footer, show_logo_on_receipt, business_setup_complete)
+         VALUES (1, 'Sellix POS', 'PHP', '₱', 0.12, '', 1, 0)`,
       )
       return settingsApi.get()
     }

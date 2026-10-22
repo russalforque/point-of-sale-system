@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Capacitor } from '@capacitor/core'
+import { hasLocalDatabase } from './services/platform'
 import './index.css'
 import App from './App'
 import { initDatabase } from './database/sqlite'
@@ -17,9 +18,9 @@ async function startApp() {
 
   console.log('=== SELLIX START ===')
   console.log('Platform:', Capacitor.getPlatform())
-  console.log('Native:', Capacitor.isNativePlatform())
+  console.log('Native:', hasLocalDatabase())
 
-  if (Capacitor.isNativePlatform()) {
+  if (hasLocalDatabase()) {
     try {
       console.log('=== SQLITE START ===')
 
@@ -34,6 +35,15 @@ async function startApp() {
       console.log('=== SQLITE READY ===')
     } catch (error) {
       console.error('=== SQLITE ERROR ===', error)
+      createRoot(root).render(
+        <div style={{ padding: 32, fontFamily: 'sans-serif' }} role="alert">
+          <h1>Unable to open Sellix data</h1>
+          <p>Database setup did not complete. Your existing data has been retained. Restart to retry before recording transactions.</p>
+          <p>{error instanceof Error ? error.message : 'Check available storage and restart Sellix.'}</p>
+          <button onClick={() => window.location.reload()}>Restart Sellix</button>
+        </div>,
+      )
+      return
     }
   }
 

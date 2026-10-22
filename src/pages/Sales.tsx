@@ -90,6 +90,7 @@ function DesktopSales() {
   const { notify } = useToast()
   const { settings } = useSettings()
   const { can } = useAuth()
+  const { openDrawer: manualDrawer, isOpeningDrawer } = useReceiptPrinter()
   const { state: checkout, setState: setCheckout } = useCheckout()
   const held = useHeldOrders()
   const [showHold, setShowHold] = useState(false)
@@ -194,6 +195,8 @@ function DesktopSales() {
     }
     setCheckout({
       ...checkout,
+      requestId: crypto.randomUUID(),
+      notes: '',
       cart: [],
       discount: 0,
       discountType: 'manual',
@@ -254,14 +257,18 @@ function DesktopSales() {
   useEffect(() => {
     if (isPaymentOpen || showHistory || showHold || showHeld || pickerProduct) return
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === '/' && !isTypingTarget(event.target)) {
+      if (event.repeat || event.isComposing || event.altKey || event.metaKey || event.ctrlKey || isTypingTarget(event.target)) return
+      if (event.key === '/' || event.key === 'F2') {
         event.preventDefault()
         searchRef.current?.focus()
+      } else if (event.key === 'F4' && cart.length > 0) {
+        event.preventDefault()
+        setIsPaymentOpen(true)
       }
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [isPaymentOpen, showHistory, showHold, showHeld, pickerProduct])
+  }, [isPaymentOpen, showHistory, showHold, showHeld, pickerProduct, cart.length])
 
   // Auto-cancel the pending "clear order" confirmation.
   useEffect(() => {
@@ -322,7 +329,13 @@ function DesktopSales() {
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 gap-4 px-4 pb-4 md:grid-cols-[minmax(0,1fr)_20rem] lg:grid-cols-[minmax(0,1fr)_22rem] lg:px-6 lg:pb-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
+      <div className="register-desktop-grid grid min-h-0 flex-1 gap-4 px-4 pb-4 md:grid-cols-[minmax(0,1fr)_20rem] lg:grid-cols-[minmax(0,1fr)_22rem] lg:px-6 lg:pb-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
+        <nav aria-label="Product categories" className="register-category-rail hidden min-h-0 flex-col gap-2 overflow-y-auto rounded-2xl bg-white p-3 ring-1 ring-slate-100">
+          <p className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Categories</p>
+          {categoryOptions.map(option => <button key={option.id || 'all'} type="button" aria-pressed={categoryId === option.id} onClick={() => setCategoryId(option.id)}
+            className={`min-h-11 rounded-xl px-3 py-2 text-left text-sm font-medium focus-visible:outline-2 focus-visible:outline-[#1F5E3B] ${categoryId === option.id ? 'bg-[#1F5E3B] text-white' : 'hover:bg-[#F3F5F4]'}`}>{option.name}</button>)}
+          <p className="mt-auto px-3 pt-5 text-xs leading-6 text-slate-500">F2 / Search<br />F4 Checkout</p>
+        </nav>
         {/* ============================ CATALOG ============================ */}
         <main className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100">
           <div className="shrink-0 border-b border-slate-100 p-4">
@@ -361,7 +374,7 @@ function DesktopSales() {
               Press Enter to add an exact SKU match. Press slash to focus search from anywhere.
             </p>
 
-            <div role="tablist" aria-label="Categories" className="mt-3 flex gap-2 overflow-x-auto pb-0.5 scrollbar-none">
+            <div role="tablist" aria-label="Categories" className="register-category-tabs mt-3 flex gap-2 overflow-x-auto pb-0.5 scrollbar-none">
               {categoryOptions.map((option) => {
                 const active = categoryId === option.id
                 return (
@@ -607,6 +620,12 @@ function DesktopSales() {
 
           {/* Totals + primary action */}
           <div className="shrink-0 border-t border-slate-100 p-4">
+            <label className="mb-3 block text-xs font-medium text-slate-500">Order notes
+              <input aria-label="Order notes" maxLength={1000} value={checkout.notes ?? ''} onChange={event => setCheckout({ ...checkout, notes: event.target.value })}
+                placeholder="Allergies, packing instructions…" className="mt-1 h-10 w-full rounded-xl bg-[#F3F5F4] px-3 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-[#1F5E3B]" />
+            </label>
+            {can('drawer.open') && <button type="button" disabled={isOpeningDrawer} onClick={() => void manualDrawer().then(() => notify('Drawer command sent.'), error => notify(getErrorMessage(error), 'error'))}
+              className="mb-3 text-xs font-medium text-[#1F5E3B] disabled:opacity-50">{isOpeningDrawer ? 'Sending command…' : 'Open cash drawer'}</button>}
             <dl className="space-y-1.5 text-sm">
               <TotalRow label="Subtotal" value={money(totals.subtotal)} />
               <DiscountControl

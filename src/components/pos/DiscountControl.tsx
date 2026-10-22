@@ -6,6 +6,14 @@ import { formatMoney } from '../../utils/format'
 import { AmountInput } from '../ui/AmountInput'
 import { X } from '../ui/Icons'
 
+/** Shared money-entry control for retail and laundry manual discounts. */
+export function DiscountAmountInput({ id, value, onChange, currencySymbol, disabled }: {
+  id: string; value: string | number; onChange: (value: string) => void; currencySymbol: string; disabled?: boolean
+}) {
+  return <><span className="text-slate-400">{currencySymbol}</span><AmountInput id={id} value={value} placeholder="0.00" disabled={disabled} onChange={onChange}
+    className="h-9 w-24 rounded-lg border-0 bg-[#F3F5F4] px-2.5 text-right text-sm tabular-nums text-[#091413] outline-none focus:bg-white focus:ring-2 focus:ring-[#1F5E3B] disabled:opacity-50 pointer-coarse:h-11" /></>
+}
+
 /**
  * Order discount on the register: a typed amount, or one tap for the Senior Citizen / PWD
  * discount (which follows the subtotal and records the ID number). Shared by both registers.
@@ -47,14 +55,12 @@ export function DiscountControl({
             <span className="text-sm tabular-nums text-[#091413]">−{money(totals.manualDiscount)}</span>
           ) : (
             <>
-              <span className="text-slate-400">{settings.currencySymbol}</span>
-              <AmountInput
+              <DiscountAmountInput
                 id="register-discount"
+                currencySymbol={settings.currencySymbol}
                 value={checkout.discount || ''}
-                placeholder="0.00"
                 disabled={disabled}
                 onChange={(value) => onChange({ discount: Math.max(0, Number(value) || 0) })}
-                className="h-9 w-24 rounded-lg border-0 bg-[#F3F5F4] px-2.5 text-right text-sm tabular-nums text-[#091413] outline-none focus:bg-white focus:ring-2 focus:ring-[#1F5E3B] disabled:opacity-50 pointer-coarse:h-11"
               />
             </>
           )}

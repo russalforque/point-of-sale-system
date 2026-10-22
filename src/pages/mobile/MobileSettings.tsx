@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Capacitor } from '@capacitor/core'
+import { hasLocalDatabase } from '../../services/platform'
 
 import { authApi } from '../../api/authApi'
 import { settingsApi, type SettingsPayload } from '../../api/settingsApi'
@@ -41,7 +41,8 @@ export function MobileSettings() {
   const { notify } = useToast()
   const { user, logout, can } = useAuth()
   const canManageSettings = can('settings.manage')
-  const { reload: reloadSettings } = useSettings()
+  const { reload: reloadSettings, settings: currentSettings } = useSettings()
+  const isLaundry = currentSettings.businessType === 'laundry'
   const navigate = useNavigate()
   const store = useAsync(() => settingsApi.get(), [])
 
@@ -60,7 +61,7 @@ export function MobileSettings() {
   const [confirmLogout, setConfirmLogout] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
 
-  const passwordChangeSupported = Capacitor.isNativePlatform()
+  const passwordChangeSupported = hasLocalDatabase()
 
   function loadForm(data: SettingsPayload) {
     const next: SettingsPayload = {
@@ -267,7 +268,7 @@ export function MobileSettings() {
               <TextAreaField label="Address" optional value={form.address ?? ''} onChange={(address) => update({ address })} />
             </Group>
 
-            <Group title="Currency & tax">
+            <Group title={isLaundry ? 'Currency' : 'Currency & tax'}>
               <div className="grid grid-cols-2 gap-3">
                 <TextField
                   label="Symbol"
@@ -288,7 +289,7 @@ export function MobileSettings() {
                   autoCorrect="off"
                 />
               </div>
-              <TextField
+              {!isLaundry && <TextField
                 label="Tax rate"
                 type="number"
                 inputMode="decimal"
@@ -308,7 +309,8 @@ export function MobileSettings() {
                     : 'No tax is added. Use 0 if your prices already include tax.'
                 }
                 trailing={<span className="px-3 text-[15px] text-slate-400">%</span>}
-              />
+              />}
+              {isLaundry && <p className="text-xs text-slate-500">Laundry services use the final prices configured in Services. Include applicable tax in those prices.</p>}
             </Group>
 
             <Group title="Receipt">
@@ -328,7 +330,7 @@ export function MobileSettings() {
               />
 
               {/* Preview stays open so changes are visible as you type */}
-              <div>
+              <div hidden={isLaundry}>
                 <p className="text-sm font-medium">Preview</p>
                 <div className="mt-1.5 rounded-2xl bg-[#F6F8F7] p-4">
                   <div className="mx-auto max-w-72 rounded-lg bg-white px-4 py-4 font-mono text-xs text-slate-700 shadow-[0_1px_3px_rgba(9,20,19,0.08)]">
@@ -383,7 +385,7 @@ export function MobileSettings() {
         <Group title="Password">
           {!passwordChangeSupported ? (
             <p className="rounded-2xl bg-[#F6F8F7] px-4 py-3 text-sm text-slate-500">
-              Password changes are only available in the Android app.
+              Password changes are only available in the Windows or Android app.
             </p>
           ) : (
             <form

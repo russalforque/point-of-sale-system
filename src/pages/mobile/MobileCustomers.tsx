@@ -1,3 +1,4 @@
+import { CustomerLaundryPanel } from '../../components/customers/CustomerLaundryPanel'
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
@@ -130,9 +131,9 @@ export function MobileCustomers() {
   }, [q])
 
   const recentSales = useAsync(async () => {
-    if (!view) return null
+    if (!view || settings.businessType === 'laundry') return null
     return (await salesApi.list({ customerId: view.id, page: 1, pageSize: 5 })).items
-  }, [view?.id])
+  }, [view?.id, settings.businessType])
 
   const items = data?.items ?? []
   const isFirstLoad = loading && !data
@@ -496,6 +497,7 @@ export function MobileCustomers() {
               <DetailRow label="Address" value={view.address} />
             </DetailList>
 
+            {settings.businessType === 'laundry' ? <CustomerLaundryPanel key={view.id} customerId={view.id} /> : <>
             <CustomerCreditPanel
               customer={view}
               onChanged={(updated) => {
@@ -545,6 +547,7 @@ export function MobileCustomers() {
                 <p className="mt-1 py-2 text-sm text-slate-400">No purchases yet.</p>
               )}
             </section>
+            </>}
           </SheetBody>
 
           {canManage && (

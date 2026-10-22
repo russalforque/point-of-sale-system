@@ -1,3 +1,4 @@
+import { CustomerLaundryPanel } from '../../components/customers/CustomerLaundryPanel'
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
@@ -32,6 +33,7 @@ import { getErrorMessage } from '../../utils/errors'
 import { formatDate, formatDateTime, formatMoney } from '../../utils/format'
 import { MobileCustomers } from '../mobile/MobileCustomers'
 import { CustomerCreditPanel } from '../../components/customers/CustomerCreditPanel'
+import { LaundryCustomers } from '../Laundry/Customers'
 
 type StatusFilter = '' | 'active' | 'inactive' | 'owing'
 type FormErrors = Partial<Record<'fullName' | 'email' | 'phone', string>>
@@ -67,6 +69,8 @@ function validate(form: CustomerPayload): FormErrors {
 
 export function CustomersPage() {
   const isMobile = useIsMobile()
+  const { settings } = useSettings()
+  if (settings.businessType === 'laundry') return <LaundryCustomers />
   if (isMobile) return <MobileCustomers />
   return <DesktopCustomersPage />
 }
@@ -120,9 +124,9 @@ function DesktopCustomersPage() {
   }, [q])
 
   const recentSales = useAsync(async () => {
-    if (!view) return null
+    if (!view || settings.businessType === 'laundry') return null
     return (await salesApi.list({ customerId: view.id, page: 1, pageSize: 5 })).items
-  }, [view?.id])
+  }, [view?.id, settings.businessType])
 
   const items = data?.items ?? []
   const hasFilters = q !== '' || status !== ''
@@ -555,6 +559,7 @@ function DesktopCustomersPage() {
               <DetailRow label="Address" value={view.address} />
             </DetailList>
 
+            {settings.businessType === 'laundry' ? <CustomerLaundryPanel key={view.id} customerId={view.id} /> : <>
             <CustomerCreditPanel
               customer={view}
               onChanged={(updated) => {
@@ -588,6 +593,7 @@ function DesktopCustomersPage() {
                 <p className="mt-1 py-2 text-sm text-slate-400">No purchases yet.</p>
               )}
             </section>
+            </>}
           </div>
         </Modal>
       )}

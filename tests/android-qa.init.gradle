@@ -1,0 +1,10 @@
+// Optional device acceptance build. Install beside the real POS; never migrate shop data.
+// gradlew -I ../tests/android-qa.init.gradle assembleDebug --offline --no-daemon
+allprojects {
+    plugins.withId('com.android.application') {
+        androidComponents.finalizeDsl { extension ->
+            extension.defaultConfig.applicationId = 'com.sellix.pos.tabletqa'
+            extension.sourceSets.getByName('debug').manifest.srcFile(rootProject.file('../tests/android-qa-manifest.xml'))
+        }
+    }
+}

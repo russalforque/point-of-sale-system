@@ -17,6 +17,7 @@ import {
   faHouse,
   faMoneyBillWave,
   faPrint,
+  faPlus,
   faRotateLeft,
   faScroll,
   faTags,
@@ -131,9 +132,24 @@ export function MobileBottomNav({ alertCount = 0 }: MobileBottomNavProps) {
     },
     { to: '/reports', label: 'Reports', icon: faChartLine, permission: 'reports.view' },
   ]
-  const primaryItems = allPrimaryItems.filter((item) => !item.permission || can(item.permission))
+  const laundry = settings.businessType === 'laundry'
+  const laundryPrimary: PrimaryItem[] = [
+    { to:'/dashboard',label:'Home',icon:faHouse },
+    { to:'/laundry/orders',label:'Orders',icon:faClipboardList,permission:'sales.process' },
+    { to:'/laundry/new',label:'New order',icon:faPlus,permission:'sales.process' },
+    { to:'/customers',label:'Customers',icon:faUsers,permission:'customers.view' },
+  ]
+  const primaryItems = (laundry ? laundryPrimary : allPrimaryItems).filter((item) => !item.permission || can(item.permission))
 
-  const secondaryGroups: MoreNavGroup[] = SECONDARY_GROUPS.map((group) => ({
+  const laundrySecondary: { title: string; items: SecondaryItem[] }[] = [
+    { title:'Laundry', items:[
+      {to:'/laundry/services',label:'Services & Add-ons',description:'Configure laundry prices',icon:faSliders,permission:'products.manage'},
+      {to:'/reports',label:'Reports',description:'Collections and balances',icon:faChartLine,permission:'reports.view'},
+      {to:'/shift',label:'My Shift',description:'Open or close the register',icon:faClock,permission:'sales.process'},
+    ] },
+    ...SECONDARY_GROUPS.filter(group=>group.title==='System'),
+  ]
+  const secondaryGroups: MoreNavGroup[] = (laundry ? laundrySecondary : SECONDARY_GROUPS).map((group) => ({
     title: group.title,
     items: group.items
       .filter((item) => (!item.foodService || settings.foodServiceEnabled) && (item.anyOf ? item.anyOf.some(can) : can(item.permission)))
@@ -196,10 +212,10 @@ export function MobileBottomNav({ alertCount = 0 }: MobileBottomNavProps) {
       {/* Fixed bottom navigation — stays above the More sheet and its backdrop */}
       <nav
         aria-label="Main navigation"
-        className="fixed inset-x-0 bottom-0 z-[43] block select-none border-t border-slate-100 bg-white md:hidden"
+        className={`${laundry ? 'laundry-bottom-nav ' : ''}fixed inset-x-0 bottom-0 z-[43] block select-none border-t border-slate-100 bg-white md:hidden`}
         style={{ paddingBottom: 'max(0.35rem, env(safe-area-inset-bottom, 0px))' }}
       >
-        <div className="mx-auto flex h-[4.5rem] max-w-md items-center justify-around px-2">
+        <div className="mx-auto flex max-w-md items-center justify-around px-2" style={{ height: 'var(--mobile-nav-row-height, 4.5rem)' }}>
           {primaryItems.map((item) => (
             <NavLink
               key={item.to}
@@ -213,7 +229,7 @@ export function MobileBottomNav({ alertCount = 0 }: MobileBottomNavProps) {
                 const active = isActive && !isSheetOpen
                 return (
                   <>
-                    <NavIcon icon={item.icon} active={active} badge={item.badge} />
+                    <NavIcon icon={item.icon} active={active} badge={item.badge} prominent={laundry && item.to === '/laundry/new'} />
                     <NavLabel label={item.label} active={active} />
                   </>
                 )
@@ -271,11 +287,11 @@ export function MobileBottomNav({ alertCount = 0 }: MobileBottomNavProps) {
   )
 }
 
-function NavIcon({ icon, active, badge }: { icon: IconDefinition; active: boolean; badge?: number }) {
+function NavIcon({ icon, active, badge, prominent = false }: { icon: IconDefinition; active: boolean; badge?: number; prominent?: boolean }) {
   return (
     <span
-      className={`relative flex h-8 w-14 items-center justify-center rounded-full transition-colors duration-150 ${
-        active ? 'bg-[#E6F1EA] text-[#1F5E3B]' : 'text-slate-500'
+      className={`relative flex items-center justify-center transition-colors duration-150 ${prominent ? 'h-10 w-10 rounded-xl bg-[#20563E] text-white' : `h-8 w-14 rounded-full ${
+        active ? 'bg-[#E6F1EA] text-[#1F5E3B]' : 'text-slate-500'}`
       }`}
     >
       <FontAwesomeIcon icon={icon} className="h-5 w-5" />

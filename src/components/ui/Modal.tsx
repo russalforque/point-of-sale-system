@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, type ReactNode } from 'react'
+import { useDialogFocus } from '../../hooks/useDialogFocus'
+import { useEffect, useId, type ReactNode } from 'react'
 import { TriangleWarning, X } from './Icons'
 import { Button } from './Button'
 
@@ -47,25 +48,8 @@ export function Modal({
 }) {
   const resolvedSize: ModalSize = size ?? (wide ? 'xl' : 'md')
   const titleId = useId()
-  const panelRef = useRef<HTMLDivElement | null>(null)
-
-  // Focus the dialog on open and hand focus back to whatever triggered it on close
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null
-    panelRef.current?.focus()
-    return () => {
-      previouslyFocused?.focus?.()
-    }
-  }, [])
-
-  // Lock background scroll while the dialog is open
-  useEffect(() => {
-    const original = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => {
-      document.body.style.overflow = original
-    }
-  }, [])
+  const descriptionId = useId()
+  const { panelRef, onKeyDown } = useDialogFocus()
 
   // Escape closes the dialog unless it's mid-submit / a critical confirmation
   useEffect(() => {
@@ -79,9 +63,10 @@ export function Modal({
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex items-end justify-center bg-[#091413]/40 backdrop-blur-[2px] animate-in fade-in duration-150 sm:items-center ${
+      className={`fixed inset-0 z-50 flex items-end justify-center bg-[#091413]/40 backdrop-blur-[2px] transition-none sm:items-center ${
         mobileFullScreen ? 'p-0 sm:p-4' : 'p-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] sm:p-4'
       }`}
+      style={{ top: 'var(--app-top,0px)', bottom: 'auto', height: 'var(--app-height,100dvh)', paddingTop: 'max(0.75rem,env(safe-area-inset-top,0px))', paddingBottom: 'max(0.75rem,env(safe-area-inset-bottom,0px))' }}
       onMouseDown={(e) => {
         if (preventClose) return
         if (e.target === e.currentTarget) onClose()
@@ -92,9 +77,11 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
-        className={`flex w-full flex-col overflow-hidden rounded-2xl bg-white shadow-[0_20px_60px_rgba(9,20,19,0.18)] ring-1 ring-slate-100 outline-none animate-in fade-in zoom-in-95 duration-150 ${
-          panelClassName ?? `max-h-[min(88vh,44rem)] ${sizeClass[resolvedSize]}`
+        onKeyDown={onKeyDown}
+        className={`flex w-full flex-col overflow-hidden rounded-2xl bg-white shadow-[0_20px_60px_rgba(9,20,19,0.18)] ring-1 ring-slate-100 outline-none transition-none ${
+          panelClassName ?? `max-h-[min(100%,44rem)] ${sizeClass[resolvedSize]}`
         } ${
           mobileFullScreen
             ? 'max-sm:h-full max-sm:max-h-full max-sm:max-w-full max-sm:rounded-none max-sm:ring-0'
@@ -110,7 +97,7 @@ export function Modal({
             <h2 id={titleId} className="text-base font-semibold text-[#091413]">
               {title}
             </h2>
-            {description && <p className={`text-sm text-slate-500 ${dense ? 'truncate' : 'mt-0.5'}`}>{description}</p>}
+            {description && <p id={descriptionId} className={`text-sm text-slate-500 ${dense ? 'truncate' : 'mt-0.5'}`}>{description}</p>}
           </div>
           <button
             type="button"

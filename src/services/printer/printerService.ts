@@ -1,4 +1,6 @@
 import { Capacitor } from '@capacitor/core'
+import { isDesktop } from '../platform'
+import { WindowsPrinterService } from './windowsPrinter'
 
 import { BluetoothPrinterService } from './bluetoothPrinter'
 import { PrinterError } from './errors'
@@ -17,7 +19,7 @@ let instance: PrinterService | null = null
  */
 export function getPrinterService(): PrinterService {
   if (!instance) {
-    instance = Capacitor.getPlatform() === 'android' ? new NativePrinterService() : new BluetoothPrinterService()
+    instance = isDesktop() ? new WindowsPrinterService() : Capacitor.getPlatform() === 'android' ? new NativePrinterService() : new BluetoothPrinterService()
   }
   return instance
 }

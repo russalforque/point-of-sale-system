@@ -1,4 +1,5 @@
 import { initDatabase, querySQL } from './sqlite'
+import { isDesktop } from '../services/platform'
 
 /** One parameterised statement inside a multi-statement write. */
 export type SqlStatement = { statement: string; values: unknown[] }
@@ -23,6 +24,13 @@ export async function runChunkedTransaction(
   chunks: SqlStatement[][],
   onProgress?: (done: number, total: number) => void,
 ): Promise<void> {
+  // Keep ownership inside one IPC call: unrelated reads/writes cannot join an import
+  // transaction while the renderer yields to display progress.
+  if (isDesktop()) {
+    await runTransaction(chunks.flat())
+    onProgress?.(chunks.length, chunks.length)
+    return
+  }
   const db = await initDatabase()
   if ((await db.isTransactionActive()).result) {
     throw new Error('Another save is still in progress. Try again in a moment.')

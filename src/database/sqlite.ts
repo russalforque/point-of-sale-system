@@ -1,31 +1,51 @@
 import { Capacitor } from '@capacitor/core'
+import { isDesktop } from '../services/platform'
+import { desktopDatabase } from './desktop'
+import type { LocalConnection } from './connection'
 import {
   CapacitorSQLite,
   SQLiteConnection,
-  SQLiteDBConnection,
 } from '@capacitor-community/sqlite'
 
 const sqlite = new SQLiteConnection(CapacitorSQLite)
 
-let db: SQLiteDBConnection | null = null
+let db: LocalConnection | null = null
+let opening: Promise<LocalConnection> | null = null
+let restoring = false
 
 // The file on disk is `${DB_NAME}SQLite.db` - SellixBackupPlugin.java relies on that name.
 const DB_NAME = 'sellix_pos'
 
-export async function initDatabase(): Promise<SQLiteDBConnection> {
+export async function initDatabase(): Promise<LocalConnection> {
+  if (restoring) throw new Error('A database restore is in progress. Wait for Sellix to restart.')
+  if (opening) return opening
+  opening = openDatabase().catch(error => {
+    db = null
+    throw error
+  }).finally(() => { opening = null })
+  return opening
+}
+
+async function openDatabase(): Promise<LocalConnection> {
   if (db) {
+    return db
+  }
+
+  if (isDesktop()) {
+    await desktopDatabase.open()
+    db = desktopDatabase
     return db
   }
 
   if (!Capacitor.isNativePlatform()) {
     // The @capacitor-community/sqlite web implementation needs a <jeep-sqlite>
     // element registered in the DOM plus initWebStore() setup this project
-    // doesn't ship - local SQLite is Android-only here. Fail fast with a
+    // doesn't ship. The native Windows adapter was already selected above. Fail fast with a
     // clear, catchable error instead of letting the native plugin throw its
     // "jeep-sqlite element is not present" error, so every existing caller's
     // try/catch (useAsync's error state, etc.) degrades gracefully instead of
     // crashing the page.
-    throw new Error('SQLite is only available on the native Android app (no local database in web preview).')
+    throw new Error('Open Sellix on Windows or Android to use the local database. Web preview has no production database.')
   }
 
   const dbName = DB_NAME
@@ -47,6 +67,7 @@ export async function initDatabase(): Promise<SQLiteDBConnection> {
     }
 
     await db.open()
+    await db.execute('PRAGMA foreign_keys = ON;', false)
 
     console.log('SQLite database opened successfully')
 
@@ -78,12 +99,33 @@ export async function closeDatabase(): Promise<void> {
  * (backup restore). The next initDatabase() call opens a fresh connection.
  */
 export async function releaseDatabase(): Promise<void> {
+  if (isDesktop()) {
+    await closeDatabase()
+    return
+  }
   db = null
 
   const isConnected = await sqlite.isConnection(DB_NAME, false)
   if (isConnected.result) {
     await sqlite.closeConnection(DB_NAME, false)
   }
+}
+
+/** Stops new SQL callers from reopening the file between close, replacement and reload. */
+export async function suspendForRestore(): Promise<void> {
+  if (restoring) throw new Error('A restore is already in progress.')
+  restoring = true
+  try {
+    await opening
+    await releaseDatabase()
+  } catch (error) {
+    restoring = false
+    throw error
+  }
+}
+
+export function resumeAfterFailedRestore(): void {
+  restoring = false
 }
 
 export async function executeSQL(

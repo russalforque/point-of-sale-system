@@ -12,6 +12,7 @@ import { getStoredUser } from '../utils/session'
  */
 
 export type HoldOrderPayload = {
+  notes?: string
   label?: string
   customerId: number | null
   customerName: string | null
@@ -25,6 +26,7 @@ export type HoldOrderPayload = {
 }
 
 type HeldRow = {
+  notes: string | null
   id: number
   label: string | null
   customer_id: number | null
@@ -52,6 +54,7 @@ function parseLines(json: string): HeldOrderLine[] {
 
 function toHeldOrder(row: HeldRow): HeldOrder {
   return {
+    notes: row.notes ?? null,
     id: row.id,
     label: row.label,
     customerId: row.customer_id,
@@ -93,8 +96,8 @@ export const heldOrdersApi = {
 
     await runTransaction([
       {
-        statement: `INSERT INTO held_orders (label, customer_id, customer_name, order_type, discount, items_json, item_count, subtotal, total, cashier_id, cashier_name, created_at, discount_type, discount_reference)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        statement: `INSERT INTO held_orders (label, customer_id, customer_name, order_type, discount, items_json, item_count, subtotal, total, cashier_id, cashier_name, created_at, discount_type, discount_reference, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         values: [
           label,
           payload.customerId,
@@ -110,6 +113,7 @@ export const heldOrdersApi = {
           now,
           payload.discountType ?? null,
           payload.discountType === 'senior_pwd' ? payload.discountReference?.trim() || null : null,
+          payload.notes?.trim().slice(0, 1000) || null,
         ],
       },
       auditStatement('hold', `Held order${label ? ` “${label}”` : ''} · ${itemCount} ${itemCount === 1 ? 'item' : 'items'}`, undefined, undefined, now),

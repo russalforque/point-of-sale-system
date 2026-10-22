@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Capacitor } from '@capacitor/core'
+import { hasLocalDatabase } from '../../services/platform'
 
 import { PrimaryButton } from '../ui/MobileKit'
 import { ConfirmDialog } from '../ui/Modal'
@@ -17,7 +17,7 @@ import { formatLongDateTime } from '../../utils/format'
 export function DataManagement() {
   const { notify } = useToast()
   const { can } = useAuth()
-  const supported = Capacitor.isNativePlatform()
+  const supported = hasLocalDatabase()
   const canManage = can('backup.manage')
 
   const info = useAsync(() => (supported ? backupService.getInfo() : Promise.resolve(null)), [supported])
@@ -28,7 +28,7 @@ export function DataManagement() {
   const lastBackup = lastBackupAt ?? info.data?.lastBackupAt ?? null
 
   if (!supported) {
-    return <p className="rounded-2xl bg-[#F6F8F7] px-4 py-3 text-sm text-slate-500">Backup and restore are only available in the Android app.</p>
+    return <p className="rounded-2xl bg-[#F6F8F7] px-4 py-3 text-sm text-slate-500">Backup and restore are only available in the Windows or Android app.</p>
   }
   if (!canManage) {
     return <p className="rounded-2xl bg-[#F6F8F7] px-4 py-3 text-sm text-slate-500">Only admins can back up or restore store data.</p>

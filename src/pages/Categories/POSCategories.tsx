@@ -177,17 +177,6 @@ export function POSCategories() {
     })
   }, [data, search])
 
-  const selectedCategory = useMemo(() => {
-    if (!data || selectedId === null) return null
-
-    return (
-      data.find(
-        (category) =>
-          String(category.id) === String(selectedId),
-      ) ?? null
-    )
-  }, [data, selectedId])
-
   function updateForm<K extends keyof CategoryPayload>(
     field: K,
     value: CategoryPayload[K],

@@ -47,6 +47,25 @@ type NavItem = {
 }
 type NavGroup = { title?: string; items: NavItem[] }
 
+const laundryGroups: NavGroup[] = [
+  { items: [
+    { to:'/dashboard',label:'Dashboard',icon:faHouse },
+    { to:'/laundry/orders',label:'Orders',icon:faClipboardList,permission:'sales.process' },
+    { to:'/laundry/new',label:'New Order',icon:faCartShopping,permission:'sales.process' },
+    { to:'/customers',label:'Customers',icon:faUsers,permission:'customers.view' },
+    { to:'/laundry/services',label:'Services & Add-ons',icon:faSliders,permission:'products.manage' },
+    { to:'/reports',label:'Reports',icon:faChartLine,permission:'reports.view' },
+    { to:'/shift',label:'My Shift',icon:faClock,permission:'sales.process' },
+  ] },
+  { title:'System',items: [
+    { to:'/users',label:'Users',icon:faUserShield,permission:'users.manage' },
+    { to:'/shift-history',label:'Shift History',icon:faClipboardList,permission:'shifts.manage' },
+    { to:'/audit-log',label:'Audit Log',icon:faScroll,permission:'audit.view' },
+    { to:'/printer-settings',label:'Printer',icon:faPrint,permission:'printer.configure' },
+    { to:'/settings',label:'Settings',icon:faGear,permission:'settings.view' },
+  ] },
+]
+
 // Ordered by how often a cashier or manager needs each page. Every route here exists in App.tsx.
 const groups: NavGroup[] = [
   {
@@ -119,7 +138,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const expanded = !collapsed || peeking
   const overlaying = collapsed && peeking
 
-  const visibleGroups = groups
+  const visibleGroups = (settings.businessType === 'laundry' ? laundryGroups : groups)
     .map((group) => ({
       ...group,
       items: group.items.filter(
@@ -225,6 +244,8 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
                     <li key={item.to}>
                       <NavLink
                         to={item.to}
+                        end={item.to === '/laundry/orders'}
+                        title={!expanded ? item.label : undefined}
                         onClick={stopPeek}
                         className={({ isActive }) =>
                           `relative flex h-11 items-center gap-3 rounded-xl px-4 text-sm transition-colors ${focusRing} ${
@@ -257,6 +278,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
             <button
               type="button"
               onClick={handleToggle}
+              aria-label={toggleLabel}
               aria-expanded={!collapsed}
               className={`flex h-11 w-full items-center gap-3 rounded-xl px-4 text-sm font-medium text-slate-500 transition-colors hover:bg-[#F3F5F4] hover:text-[#091413] ${focusRing}`}
             >

@@ -332,6 +332,10 @@ export class NativePrinterService implements PrinterService {
     await this.runJob(bytes)
   }
 
+  async printDocument(bytes: Uint8Array): Promise<void> {
+    await this.runJob(bytes)
+  }
+
   async testPrint(settings: StoreSetting, config: PrinterConfig): Promise<void> {
     const { bytes } = buildTestReceipt(settings, config.paperWidth, {
       cut: config.autoCut,

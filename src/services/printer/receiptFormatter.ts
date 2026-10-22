@@ -137,6 +137,7 @@ export function buildReceipt(
   b.row('Date', formatDateTime(sale.createdAt))
   b.row('Cashier', sale.cashierName || '-')
   if (sale.customerName) printWrapped(b, `Customer: ${sale.customerName}`)
+  if (sale.notes?.trim()) printWrapped(b, `Notes: ${sale.notes.trim()}`)
 
   b.divider()
   printItems(b, sale, paperWidth)
@@ -203,7 +204,7 @@ export function buildTestReceipt(
   b.align('left')
   b.divider()
   b.row('Printer', options.printerName ?? 'Receipt printer')
-  b.row('Connection', options.connectionType === 'usb' ? 'USB' : 'Bluetooth')
+  b.row('Connection', options.connectionType === 'windows' ? 'Windows queue' : options.connectionType === 'usb' ? 'USB' : 'Bluetooth')
   b.row('Paper', `${paperWidth}mm / ${b.columns} columns`)
   b.row('Printed', formatDateTime(new Date().toISOString()))
   b.divider()

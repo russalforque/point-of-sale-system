@@ -70,6 +70,7 @@ export function MobilePayment() {
 
   const [isMounted, setIsMounted] = useState(false)
   const [busy, setBusy] = useState(false)
+  const saleInFlight = useRef(false)
   const [receipt, setReceipt] = useState<Sale | null>(null)
   const [showItems, setShowItems] = useState(false)
   const [showVoidConfirm, setShowVoidConfirm] = useState(false)
@@ -139,12 +140,15 @@ export function MobilePayment() {
   }
 
   async function completeSale() {
-    if (busy || !isReadyToComplete) return
+    if (busy || receipt || saleInFlight.current || !isReadyToComplete) return
 
+    saleInFlight.current = true
     setBusy(true)
 
     try {
       const sale = await salesApi.create({
+        requestId: checkout.requestId,
+        notes: checkout.notes,
         customerId: checkout.customerId,
         discount: totals.manualDiscount,
         discountType: checkout.discountType,
@@ -159,23 +163,23 @@ export function MobilePayment() {
 
       setReceipt(sale)
       clearCheckout()
-      void sendReceiptToPrinter(sale, settings).then(
-        () => maybeAutoOpenDrawer(method),
+      void sendReceiptToPrinter(sale, settings).catch(
         // The sale is already committed to SQLite - a print failure never undoes it.
         (err) => notify(`Payment completed, but receipt printing failed. ${printerErrorMessage(err)}`, 'error'),
-      )
+      ).then(() => maybeAutoOpenDrawer(method, sale.id))
     } catch (err) {
       notify(getErrorMessage(err), 'error')
     } finally {
+      saleInFlight.current = false
       setBusy(false)
     }
   }
 
   /** Cash sales only, and only when the printer settings have auto-open enabled - non-cash payments never trigger the drawer automatically. */
-  function maybeAutoOpenDrawer(paymentMethod: PaymentMethod) {
+  function maybeAutoOpenDrawer(paymentMethod: PaymentMethod, saleId: number) {
     if (paymentMethod !== CASH_PAYMENT_METHOD) return
     if (!getPrinterConfig().autoOpenDrawerOnCash) return
-    void openDrawer().catch((err) => notify(printerErrorMessage(err), 'error'))
+    void openDrawer({ saleId }).catch((err) => notify(printerErrorMessage(err), 'error'))
   }
 
   function handleOpenDrawer() {

@@ -1,0 +1,33 @@
+name: Windows desktop verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run lint
+      # The hosted Windows image provides MSVC, the Windows SDK and Rust.
+      - run: rustup update stable
+      - run: cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
+      - run: npm run desktop:test
+      - run: npm run desktop:build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sellix-windows-unsigned
+          path: |
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/Cargo.lock
+          if-no-files-found: error

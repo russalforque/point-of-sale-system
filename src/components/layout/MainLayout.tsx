@@ -1,5 +1,9 @@
-import { useEffect, useState } from 'react'
-import { Outlet, useLocation } from 'react-router-dom'
+﻿import { useEffect, useState } from 'react'
+import { Navigate, Outlet, useLocation } from 'react-router-dom'
+import { useSettings } from '../../context/SettingsContext'
+import { BusinessSettings } from '../settings/BusinessSettings'
+import { AppLoader, ErrorState } from '../ui/States'
+import { hasLocalDatabase } from '../../services/platform'
 import { Sidebar } from './Sidebar'
 import { MobileBottomNav } from '../../pages/mobile/MobileButtomNav'
 import { useAndroidBackButton } from '../../hooks/useAndroidBackButton'
@@ -20,11 +24,12 @@ function getInitialCollapsed() {
 
 export function MainLayout() {
   const location = useLocation()
+  const { settings, error: settingsError, reload: reloadSettings } = useSettings()
   useAndroidBackButton()
   const [pageLoading, setPageLoading] = useState(false)
   const [collapsed, setCollapsed] = useState(getInitialCollapsed)
 
-  // 🟢 Detect if we are on the payment/checkout screen
+  // ðŸŸ¢ Detect if we are on the payment/checkout screen
   const isPaymentPage = location.pathname.startsWith('/payment')
 
   // Progress bar indicator on page change
@@ -42,8 +47,14 @@ export function MainLayout() {
     }
   }, [collapsed])
 
+  if (!settings.id && hasLocalDatabase()) return settingsError ? <ErrorState message={settingsError} onRetry={() => void reloadSettings()} /> : <AppLoader label="Loading store settingsâ€¦" />
+  if (!settings.businessSetupComplete) return <BusinessSettings setup />
+  const shared = /^\/(dashboard|customers|reports|settings|shift|shift-history|users|audit-log|printer-settings|access-denied)(\/|$)/.test(location.pathname)
+  if (settings.businessType === 'laundry' && !shared && !location.pathname.startsWith('/laundry/')) return <Navigate to="/dashboard" replace />
+  if (settings.businessType === 'retail' && location.pathname.startsWith('/laundry/')) return <Navigate to="/dashboard" replace />
+
   return (
-    <div className="flex h-screen h-[100dvh] w-full overflow-hidden bg-white selection:bg-[#285A48] selection:text-white">
+    <div data-business-type={settings.businessType} style={{ height: 'var(--app-height, 100dvh)', paddingTop: 'env(safe-area-inset-top,0px)', paddingLeft: 'env(safe-area-inset-left,0px)', paddingRight: 'env(safe-area-inset-right,0px)' }} className="flex w-full overflow-hidden bg-white selection:bg-[#285A48] selection:text-white">
       {/* Brand Top Page Loading Bar */}
       <div
         aria-hidden="true"
@@ -58,19 +69,19 @@ export function MainLayout() {
       {/* Main Canvas Area */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Scrollable Content Area */}
-        <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#F6F8F7] pt-[env(safe-area-inset-top,0px)] md:pt-0">
+        <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#F6F8F7] scroll-pb-24 md:pb-[env(safe-area-inset-bottom,0px)]">
           <div
             className={`mx-auto flex min-h-full max-w-screen-2xl flex-col ${
               isPaymentPage
                 ? 'pb-0'
-                : 'pb-[calc(5rem+env(safe-area-inset-bottom,0px))]'
+                : settings.businessType === 'laundry' ? 'pb-6' : 'pb-[calc(5rem+env(safe-area-inset-bottom,0px))]'
             } md:pb-0`}
           >
             <Outlet />
           </div>
         </main>
 
-        {/* 🟢 Bottom Navigation: Hidden on the payment screen to leave room for Pay/Settle */}
+        {/* ðŸŸ¢ Bottom Navigation: Hidden on the payment screen to leave room for Pay/Settle */}
         {!isPaymentPage && (
           <MobileBottomNav />
         )}

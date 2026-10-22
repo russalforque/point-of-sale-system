@@ -15,8 +15,12 @@ import { roundMoney, sumMoney } from '../utils/amount'
 import { formatMoney } from '../utils/format'
 import { hasPermission } from '../utils/permissions'
 import { ApiError } from '../utils/errors'
+import { exclusive } from '../services/exclusive'
 
 export type CreateSalePayload = {
+  /** Stable for a draft and all its retries; persisted atomically with the sale. */
+  requestId: string
+  notes?: string
   customerId?: number | null
   /** Cashier-entered discount (money), excluding any loyalty points redeemed. */
   discount: number
@@ -41,6 +45,7 @@ export type CreateSalePayload = {
 export type { StockShortage }
 
 type SaleRow = {
+  notes: string | null
   id: number
   invoice_number: string
   customer_id: number | null
@@ -149,6 +154,7 @@ function assembleSale(saleRow: SaleRow, itemRows: SaleItemRow[], tenderRows: Ten
 
   return {
     id: saleRow.id,
+    notes: saleRow.notes ?? null,
     invoiceNumber: saleRow.invoice_number,
     customerId: saleRow.customer_id,
     customerName: saleRow.customerName,
@@ -218,6 +224,7 @@ async function buildSale(row: SaleRow): Promise<Sale> {
 const SALE_SELECT = `
   SELECT
     s.id AS id,
+    s.notes AS notes,
     s.invoice_number AS invoice_number,
     s.customer_id AS customer_id,
     c.full_name AS customerName,
@@ -380,7 +387,7 @@ export const salesApi = {
     return row ? buildSale(row) : null
   },
 
-  create: async (payload: CreateSalePayload): Promise<Sale> => {
+  create: exclusive(async (payload: CreateSalePayload): Promise<Sale> => {
     if (payload.items.length === 0) {
       throw new ApiError('Cannot create a sale with no items.', 400)
     }
@@ -389,6 +396,21 @@ export const salesApi = {
     }
 
     const actor = await requirePermission('sales.process')
+    const requestId = payload.requestId?.trim()
+    if (!requestId || !/^[\w-]{16,128}$/.test(requestId)) throw new ApiError('A valid checkout request ID is required. Reopen the register and try again.', 400)
+    const notes = payload.notes?.trim() || null
+    if (notes && notes.length > 1000) throw new ApiError('Order notes must be 1000 characters or fewer.', 400)
+    const { requestId: _requestId, ...requestPayload } = payload
+    const fingerprint = JSON.stringify(requestPayload)
+    if (requestId) {
+      const existing = (await querySQL('SELECT actor_id, payload_json, sale_id FROM checkout_requests WHERE request_id = ?', [requestId])).values?.[0]
+      if (existing) {
+        if (existing.actor_id !== actor.id || existing.payload_json !== fingerprint) {
+          throw new ApiError('This checkout was already saved with different details. Check transaction history before starting a new sale.', 409)
+        }
+        return salesApi.get(existing.sale_id)
+      }
+    }
     const settings = await settingsApi.get()
     const cashierName = actor.fullName
     const now = new Date().toISOString()
@@ -491,8 +513,8 @@ export const salesApi = {
     const statements: SqlStatement[] = [
       {
         statement: `INSERT INTO sales (invoice_number, customer_id, cashier_id, shift_id, subtotal, discount, tax, total, status, created_at, order_type,
-             discount_type, discount_reference, discount_approved_by, loyalty_discount, points_earned, points_redeemed)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             discount_type, discount_reference, discount_approved_by, loyalty_discount, points_earned, points_redeemed, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         values: [
           invoiceNumber,
           customer?.id ?? null,
@@ -510,6 +532,7 @@ export const salesApi = {
           loyaltyDiscount,
           pointsEarned,
           redeemPoints,
+          notes,
         ],
       },
     ]
@@ -632,18 +655,26 @@ export const salesApi = {
       )
     }
 
+    if (requestId) statements.push({
+      statement: `INSERT INTO checkout_requests(request_id, actor_id, payload_json, invoice_number, sale_id, created_at) VALUES (?, ?, ?, ?, ${saleIdSql}, ?)`,
+      values: [requestId, actor.id, fingerprint, invoiceNumber, invoiceNumber, now],
+    })
+
     try {
       await runTransaction(statements)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (/not enough stock/i.test(message)) throw new ApiError('Stock changed while checking out. Review the cart and try again.', 409)
-      throw error instanceof ApiError ? error : new ApiError('Failed to complete sale.', 500)
+      throw error instanceof ApiError ? error : new ApiError('Checkout could not be confirmed. Retry this checkout without changing it, or check transaction history before starting another sale.', 500)
     }
 
-    const saleRow = await querySQL(`SELECT id FROM sales WHERE invoice_number = ? LIMIT 1`, [invoiceNumber])
-    const saleId = saleRow.values?.[0]?.id as number | undefined
-    if (!saleId) throw new ApiError('Failed to complete sale.', 500)
-
-    return salesApi.get(saleId)
-  },
+    try {
+      const saleRow = await querySQL(`SELECT id FROM sales WHERE invoice_number = ? LIMIT 1`, [invoiceNumber])
+      const saleId = saleRow.values?.[0]?.id as number | undefined
+      if (!saleId) throw new Error('Saved sale could not be read')
+      return await salesApi.get(saleId)
+    } catch {
+      throw new ApiError('Sale saved, but the receipt could not be loaded. Retry this checkout without changing it, or open transaction history.', 500)
+    }
+  }),
 }

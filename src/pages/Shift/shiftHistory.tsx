@@ -1,12 +1,14 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 
 import { shiftApi } from '../../api/shiftApi'
 import { Check } from '../../components/ui/Icons'
 import { useSettings } from '../../context/SettingsContext'
 import { useAsync } from '../../hooks/useAsync'
 import { useDebounced } from '../../hooks/useDebounced'
-import type { Shift } from '../../types'
+import type { PagedResult, Shift } from '../../types'
 import { formatDateTime, formatDayLabel, formatDuration, formatMoney, formatTime } from '../../utils/format'
+import { getErrorMessage } from '../../utils/errors'
+import './shift-history.css'
 
 /**
  * Shared pieces of the Shift History screen. The phone list and the tablet/desktop
@@ -14,6 +16,7 @@ import { formatDateTime, formatDayLabel, formatDuration, formatMoney, formatTime
  */
 
 export type StatusFilter = '' | 'open' | 'closed'
+export type CashResultFilter = '' | 'balanced' | 'short' | 'over' | 'uncounted'
 
 const PAGE_SIZE = 20
 
@@ -23,61 +26,75 @@ export const STATUS_OPTIONS: { key: StatusFilter; label: string }[] = [
   { key: 'closed', label: 'Closed' },
 ]
 
-/** Search + status filter + paging over `shiftApi.history` (query unchanged). */
+/** Only the latest request can update the list; a failed refresh keeps the same query's data. */
 export function useShiftHistory() {
   const { settings } = useSettings()
   const money = (value: number) => formatMoney(value, settings.currencySymbol)
 
-  const [search, setSearch] = useState('')
-  const [status, setStatus] = useState<StatusFilter>('')
+  const [search, setSearchValue] = useState('')
+  const [status, setStatusValue] = useState<StatusFilter>('')
+  const [cashResult, setCashResultValue] = useState<CashResultFilter>('')
   const [page, setPage] = useState(1)
   const q = useDebounced(search).trim()
-
-  const { data, loading, error, reload } = useAsync(
-    () =>
-      shiftApi.history({
-        employeeName: q || undefined,
-        status: status || undefined,
-        page,
-        pageSize: PAGE_SIZE,
-      }),
-    [q, status, page],
-  )
-
+  const queryKey = JSON.stringify([q, status, cashResult, page])
+  const generation = useRef(0)
+  const [state, setState] = useState<{ key: string; data: PagedResult<Shift> | null; loading: boolean; error: string | null }>({ key: '', data: null, loading: true, error: null })
+  const reload = useCallback(async () => {
+    const token = ++generation.current
+    setState(previous => ({ key: queryKey, data: previous.key === queryKey ? previous.data : null, loading: true, error: null }))
+    try {
+      const data = await shiftApi.history({ employeeName: q || undefined, status: status || undefined, cashResult: cashResult || undefined, page, pageSize: PAGE_SIZE })
+      if (token === generation.current) setState({ key: queryKey, data, loading: false, error: null })
+    } catch (error) {
+      if (token === generation.current) setState(previous => ({ ...previous, loading: false, error: getErrorMessage(error) }))
+    }
+  }, [queryKey, q, status, cashResult, page])
   useEffect(() => {
-    setPage(1)
-  }, [q, status])
+    void reload()
+    return () => { generation.current += 1 }
+  }, [reload])
+  const data = state.key === queryKey ? state.data : null
+  const loading = state.key !== queryKey || state.loading || search.trim() !== q
+  const error = state.key === queryKey ? state.error : null
+  useEffect(() => {
+    if (data && page > data.totalPages) setPage(Math.max(1, data.totalPages))
+  }, [data, page])
 
   return {
     money,
     search,
-    setSearch,
+    setSearch: (value: string) => { setSearchValue(value); setPage(1) },
     status,
-    setStatus,
+    setStatus: (value: StatusFilter) => { setStatusValue(value); if (value === 'open') setCashResultValue(''); setPage(1) },
+    cashResult,
+    setCashResult: (value: CashResultFilter) => { setCashResultValue(value); if (value) setStatusValue('closed'); setPage(1) },
     setPage,
     q,
+    queryKey,
     data,
     items: data?.items ?? [],
     loading,
     error,
     reload,
     isFirstLoad: loading && !data,
-    hasFilters: q !== '' || status !== '',
+    hasFilters: search.trim() !== '' || status !== '' || cashResult !== '',
     clearFilters: () => {
-      setSearch('')
-      setStatus('')
+      setSearchValue('')
+      setStatusValue('')
+      setCashResultValue('')
+      setPage(1)
     },
   }
 }
 
 /** Open shifts, oldest first, for the "On shift now" strip. Failures just hide the strip. */
 export function useOnShiftNow(enabled: boolean) {
-  const { data, reload } = useAsync(
+  const { data, reload, loading, error } = useAsync(
     () => (enabled ? shiftApi.history({ status: 'open', page: 1, pageSize: 12 }) : Promise.resolve(null)),
     [enabled],
   )
   const items = [...(data?.items ?? [])].sort((a, b) => a.startedAt.localeCompare(b.startedAt))
-  return { items, total: data?.totalCount ?? 0, reload }
+  return { items, total: data?.totalCount ?? 0, reload, loading, error }
 }
 
 /** A shift still open after this many hours was probably never closed. */
@@ -151,10 +168,10 @@ export function VarianceTag({ shift, money }: { shift: Shift; money: (value: num
 
   return (
     <span
-      className={`inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 text-xs font-semibold tabular-nums ${tone}`}
+      className={`sh-variance-tag inline-flex min-h-7 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold tabular-nums ${tone}`}
     >
       {variance.kind === 'open' && <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-[#1F5E3B]" />}
-      {variance.kind === 'balanced' && <Check size={10} />}
+      {variance.kind === 'balanced' && <Check size={10} aria-hidden="true" />}
       {varianceText(variance, money)}
     </span>
   )
@@ -186,10 +203,10 @@ export function ShiftDetails({ shift, money }: { shift: Shift; money: (value: nu
   }[variance.kind]
 
   return (
-    <div className="space-y-5">
-      <div className={`rounded-3xl px-5 py-4 ${hero.tone}`}>
+    <div className="sh-details space-y-5">
+      <div className={`sh-detail-hero rounded-2xl px-5 py-4 ${hero.tone}`}>
         <p className="text-sm font-medium">{hero.label}</p>
-        <p className="mt-1 truncate text-[32px] font-bold leading-none tracking-[-0.02em] tabular-nums text-[#091413]">
+        <p className="sh-detail-value mt-1 text-[32px] font-bold leading-tight tracking-[-0.02em] tabular-nums text-[#091413]">
           {hero.value}
         </p>
         <p className="mt-2 text-sm text-slate-600">
@@ -212,10 +229,10 @@ export function ShiftDetails({ shift, money }: { shift: Shift; money: (value: nu
         {shift.closedBy && <Row label="Closed by" value={shift.closedBy} />}
       </DetailSection>
 
-      <DetailSection title="Sales">
+      <DetailSection title="Payments recorded">
         <Row label="Cash" value={amount(shift.cashSales)} />
-        <Row label="Card, GCash & other" value={amount(shift.nonCashSales)} />
-        <Row label="Total sales" value={amount(shift.totalSales)} strong />
+        <Row label="Non-cash" value={amount(shift.nonCashSales)} />
+        <Row label="Total recorded" value={amount(shift.totalSales)} strong />
       </DetailSection>
 
       <DetailSection title="Time">
@@ -229,7 +246,7 @@ export function ShiftDetails({ shift, money }: { shift: Shift; money: (value: nu
 
 function DetailSection({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section>
+    <section className="sh-detail-section">
       <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</h3>
       <dl className="mt-1 divide-y divide-slate-100">{children}</dl>
     </section>
@@ -238,7 +255,7 @@ function DetailSection({ title, children }: { title: string; children: ReactNode
 
 function Row({ label, value, strong = false }: { label: string; value: string | null; strong?: boolean }) {
   return (
-    <div className="flex min-h-11 items-center justify-between gap-4 py-2">
+    <div className="sh-detail-row flex min-h-11 items-center justify-between gap-4 py-2">
       <dt className="text-sm text-slate-500">{label}</dt>
       <dd
         className={`text-right text-[15px] tabular-nums ${

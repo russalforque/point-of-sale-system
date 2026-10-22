@@ -1,11 +1,12 @@
-import { Capacitor } from '@capacitor/core'
+import { hasLocalDatabase } from '../services/platform'
 import type { LoginResponse, User } from '../types'
 import { querySQL, executeSQL } from '../database/sqlite'
-import { sha256 } from '../utils/hash'
+import { hashPassword, verifyPassword } from '../utils/hash'
 import { getStoredUser } from '../utils/session'
 import { ApiError } from '../utils/errors'
 import { APPROVER_ROLES, hasPermission, type Permission, type Role } from '../utils/permissions'
-import { logAudit } from '../services/audit'
+import { auditStatement, logAudit } from '../services/audit'
+import { runTransaction } from '../database/tx'
 
 export type Approver = { id: number; fullName: string; role: Role }
 
@@ -14,7 +15,7 @@ export const PIN_PATTERN = /^\d{4,6}$/
 
 /** Salted per user, so equal PINs on two accounts never produce the same hash. */
 export function hashPin(userId: number, pin: string): Promise<string> {
-  return sha256(`sellix-pin:${userId}:${pin}`)
+  return hashPassword(`sellix-pin:${userId}:${pin}`)
 }
 
 // Slows down guessing a short PIN at an unattended register.
@@ -66,7 +67,7 @@ function findWebDemoAccount(email: string): WebDemoAccount | undefined {
 
 export const authApi = {
   login: async (email: string, password: string): Promise<LoginResponse> => {
-    if (!Capacitor.isNativePlatform()) {
+    if (!hasLocalDatabase()) {
       const account = findWebDemoAccount(email)
       if (!account || account.password !== password) {
         throw new ApiError('Invalid email or password.', 401)
@@ -89,9 +90,11 @@ export const authApi = {
       throw new ApiError('Invalid email or password.', 401)
     }
 
-    const hash = await sha256(password)
-    if (hash !== row.password_hash) {
+    if (!(await verifyPassword(password, row.password_hash))) {
       throw new ApiError('Invalid email or password.', 401)
+    }
+    if (!row.password_hash.startsWith('pbkdf2-sha256$')) {
+      await executeSQL('UPDATE users SET password_hash = ? WHERE id = ? AND password_hash = ?', [await hashPassword(password), row.id, row.password_hash])
     }
 
     await logAudit('login', `${row.full_name} signed in`, { type: 'user', id: row.id }, { id: row.id, fullName: row.full_name })
@@ -105,7 +108,7 @@ export const authApi = {
 
   logout: async (): Promise<void> => {
     const user = getStoredUser()
-    if (user && Capacitor.isNativePlatform()) {
+    if (user && hasLocalDatabase()) {
       await logAudit('logout', `${user.fullName} signed out`, { type: 'user', id: user.id })
     }
   },
@@ -115,8 +118,8 @@ export const authApi = {
    * and confirms their role actually allows `permission`.
    */
   verifyApproval: async (pin: string, permission: Permission): Promise<Approver> => {
-    if (!Capacitor.isNativePlatform()) {
-      throw new ApiError('PIN approval is only available in the Android app.', 400)
+    if (!hasLocalDatabase()) {
+      throw new ApiError('PIN approval is only available in the Windows or Android app.', 400)
     }
     if (Date.now() < pinLockedUntil) {
       throw new ApiError('Too many wrong PINs. Wait 30 seconds and try again.', 429)
@@ -135,7 +138,10 @@ export const authApi = {
     }
 
     for (const row of rows) {
-      if ((await hashPin(row.id, pin)) !== row.pin_hash) continue
+      if (!(await verifyPassword(`sellix-pin:${row.id}:${pin}`, row.pin_hash))) continue
+      if (!row.pin_hash.startsWith('pbkdf2-sha256$')) {
+        await executeSQL('UPDATE users SET pin_hash = ? WHERE id = ? AND pin_hash = ?', [await hashPin(row.id, pin), row.id, row.pin_hash])
+      }
       failedPinAttempts = 0
       if (!hasPermission(row.role, permission)) {
         throw new ApiError(`${row.full_name} isn’t allowed to approve this.`, 403)
@@ -158,7 +164,7 @@ export const authApi = {
       throw new ApiError('Not signed in.', 401)
     }
 
-    if (!Capacitor.isNativePlatform()) {
+    if (!hasLocalDatabase()) {
       // No SQLite users table to re-validate against in web preview - trust
       // the session localStorage already persisted at login.
       return stored
@@ -179,17 +185,19 @@ export const authApi = {
   },
 
   changePassword: async (currentPassword: string, newPassword: string): Promise<void> => {
+    if (newPassword.length < 8) throw new ApiError('Use at least 8 characters for the password.', 400)
+    if (newPassword === currentPassword) throw new ApiError('Choose a different password.', 400)
     const stored = getStoredUser()
     if (!stored) {
       throw new ApiError('Not signed in.', 401)
     }
 
-    if (!Capacitor.isNativePlatform()) {
-      throw new ApiError('Password changes are only available on the native Android app.', 400)
+    if (!hasLocalDatabase()) {
+      throw new ApiError('Password changes are only available on the Windows or Android app.', 400)
     }
 
     const result = await querySQL(
-      `SELECT id, password_hash FROM users WHERE id = ? LIMIT 1`,
+      `SELECT id, password_hash FROM users WHERE id = ? AND is_active = 1 LIMIT 1`,
       [Number(stored.id)],
     )
 
@@ -198,12 +206,14 @@ export const authApi = {
       throw new ApiError('Session expired.', 401)
     }
 
-    const currentHash = await sha256(currentPassword)
-    if (currentHash !== row.password_hash) {
+    if (!(await verifyPassword(currentPassword, row.password_hash))) {
       throw new ApiError('Current password is incorrect.', 400)
     }
 
-    const newHash = await sha256(newPassword)
-    await executeSQL(`UPDATE users SET password_hash = ? WHERE id = ?`, [newHash, row.id])
+    const newHash = await hashPassword(newPassword)
+    await runTransaction([
+      { statement: `UPDATE users SET password_hash = ? WHERE id = ?`, values: [newHash, row.id] },
+      auditStatement('user', 'Changed sign-in password', { type: 'user', id: row.id }),
+    ])
   },
 }

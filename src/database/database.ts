@@ -1,36 +1,34 @@
 import { initDatabase } from './sqlite'
 import { UNITS } from '../services/units'
+import { LAUNDRY_SCHEMA } from './laundryMigration'
+import { LAUNDRY_PRICING_SCHEMA } from './laundryPricingMigration'
+import { LAUNDRY_WORKFLOW_SCHEMA } from './laundryWorkflowMigration'
 
 /**
  * Version of the schema below, stamped into every .sellix backup. Bump it whenever the schema
  * changes: this app then refuses backups from a newer schema, while older backups are brought
  * up to date by initializeDatabase() after a restore.
  */
-export const SCHEMA_VERSION = 6
+export const SCHEMA_VERSION = 11
 
 export async function initializeDatabase(): Promise<void> {
   const db = await initDatabase()
+  await db.execute('CREATE TABLE IF NOT EXISTS sellix_schema (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);')
+  const latest = (await db.query('SELECT MAX(version) AS version FROM sellix_schema')).values?.[0]?.version ?? 0
+  if (latest > SCHEMA_VERSION) throw new Error('This database requires a newer Sellix version. Existing records have been retained.')
 
   // On a device whose database already existed before shift linking was added,
   // `CREATE TABLE IF NOT EXISTS sales` below is a no-op and never adds this column.
   // The schema script is one transaction, so the later `CREATE INDEX idx_sales_shift`
   // referencing a missing column would otherwise fail and roll back everything in it -
   // including the brand new `shifts` table. Add the column explicitly first; this is a
-  // no-op (caught and ignored) once it already exists, and also a no-op on a fresh
+  // no-op after column introspection once it exists, and also a no-op on a fresh
   // install where `sales` doesn't exist yet (the CREATE TABLE below handles that case).
-  try {
-    await db.execute(`ALTER TABLE sales ADD COLUMN shift_id INTEGER;`)
-  } catch {
-    // Already has the column, or the table doesn't exist yet - both fine.
-  }
+  await addColumn(db, 'sales', 'shift_id INTEGER')
 
-  // Same story for order types (schema v2). Kept in its own try so an existing
-  // shift_id column above can't skip it. Older sales stay NULL (no order type recorded).
-  try {
-    await db.execute(`ALTER TABLE sales ADD COLUMN order_type INTEGER;`)
-  } catch {
-    // Already has the column, or the table doesn't exist yet - both fine.
-  }
+  // Same story for order types (schema v2). Each column is checked independently.
+  // Older sales stay NULL (no order type recorded).
+  await addColumn(db, 'sales', 'order_type INTEGER')
 
   await db.execute(`
     PRAGMA foreign_keys = ON;
@@ -238,19 +236,69 @@ export async function initializeDatabase(): Promise<void> {
   await migrateToV4(db)
   await migrateToV5(db)
   await migrateToV6(db)
+  await migrateToV7(db)
+  await migrateToV8(db)
+  await addColumn(db, 'laundry_orders', 'discounts_version INTEGER NOT NULL DEFAULT 0')
+  await addColumn(db, 'laundry_services', 'removed_at TEXT')
+  await addColumn(db, 'laundry_addons', 'removed_at TEXT')
+  await addColumn(db, 'laundry_order_items', "category TEXT NOT NULL DEFAULT ''")
+  await addColumn(db, 'laundry_order_addons', "category TEXT NOT NULL DEFAULT ''")
+  await db.execute(LAUNDRY_PRICING_SCHEMA)
+  await addColumn(db, 'laundry_configuration', 'allow_unpaid_completion INTEGER NOT NULL DEFAULT 0 CHECK(allow_unpaid_completion IN (0,1))')
+  await addColumn(db, 'laundry_orders', 'status_version INTEGER NOT NULL DEFAULT 0')
+  await addColumn(db, 'laundry_orders', 'archived_at TEXT')
+  await addColumn(db, 'laundry_orders', 'legacy_status TEXT')
+  await addColumn(db, 'laundry_status_history', 'from_status TEXT')
+  await addColumn(db, 'laundry_status_history', "event_type TEXT NOT NULL DEFAULT 'status'")
+  await addColumn(db, 'laundry_status_history', 'event_key TEXT')
+  await addColumn(db, 'laundry_status_history', 'status_version INTEGER')
+  await addColumn(db, 'laundry_status_history', 'completion_confirmed INTEGER NOT NULL DEFAULT 0')
+  await db.execute(LAUNDRY_WORKFLOW_SCHEMA)
+  await addColumn(db, 'sales', 'notes TEXT')
+  await addColumn(db, 'held_orders', 'notes TEXT')
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS checkout_requests (
+      request_id TEXT PRIMARY KEY,
+      actor_id INTEGER NOT NULL,
+      payload_json TEXT NOT NULL,
+      invoice_number TEXT NOT NULL UNIQUE,
+      sale_id INTEGER NOT NULL UNIQUE REFERENCES sales(id),
+      created_at TEXT NOT NULL
+    );
+    CREATE TRIGGER IF NOT EXISTS checkout_requests_no_update BEFORE UPDATE ON checkout_requests BEGIN SELECT RAISE(ABORT, 'Checkout retry records are immutable.'); END;
+    CREATE TRIGGER IF NOT EXISTS checkout_requests_no_delete BEFORE DELETE ON checkout_requests BEGIN SELECT RAISE(ABORT, 'Checkout retry records are immutable.'); END;
+    INSERT OR IGNORE INTO sellix_schema(version, applied_at) VALUES (9, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+  `)
 
   console.log('=== SQLITE DATABASE SCHEMA CREATED ===')
 }
 
 type Connection = Awaited<ReturnType<typeof initDatabase>>
 
+/** Categories are additive; never rebuild catalog tables referenced by saved orders. */
+async function migrateToV8(db: Connection): Promise<void> {
+  for (const table of ['laundry_services', 'laundry_addons']) {
+    const columns = await db.query(`PRAGMA table_info(${table})`)
+    if (!(columns.values ?? []).some(row => row.name === 'category')) {
+      await db.execute(`ALTER TABLE ${table} ADD COLUMN category TEXT NOT NULL DEFAULT '';`)
+    }
+  }
+}
+
+async function migrateToV7(db: Connection): Promise<void> {
+  // Introspect instead of swallowing an ALTER failure: disk/write failures must stop startup.
+  const columns = await db.query('PRAGMA table_info(store_settings)')
+  const names = new Set((columns.values ?? []).map(row => row.name))
+  if (!names.has('business_type')) await db.execute("ALTER TABLE store_settings ADD COLUMN business_type TEXT NOT NULL DEFAULT 'retail' CHECK(business_type IN ('retail','laundry'));")
+  if (!names.has('business_setup_complete')) await db.execute('ALTER TABLE store_settings ADD COLUMN business_setup_complete INTEGER NOT NULL DEFAULT 1 CHECK(business_setup_complete IN (0,1));')
+  await db.execute(LAUNDRY_SCHEMA)
+}
+
 /** ALTER TABLE ... ADD COLUMN that is a no-op once the column exists. */
 async function addColumn(db: Connection, table: string, definition: string): Promise<void> {
-  try {
-    await db.execute(`ALTER TABLE ${table} ADD COLUMN ${definition};`)
-  } catch {
-    // Column already exists.
-  }
+  const columns = (await db.query(`PRAGMA table_info(${table})`)).values ?? []
+  if (!columns.length || columns.some(column => column.name === definition.split(' ')[0])) return
+  await db.execute(`ALTER TABLE ${table} ADD COLUMN ${definition};`)
 }
 
 /**
@@ -410,12 +458,8 @@ async function migrateToV5(db: Connection): Promise<void> {
   )
 
   // Invoice numbers identify a sale everywhere (receipts, returns, sub-selects in salesApi).
-  // Databases that somehow already hold a duplicate keep working with the plain index from v3.
-  try {
-    await db.execute(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_invoice_unique ON sales(invoice_number);`)
-  } catch (err) {
-    console.warn('Duplicate invoice numbers found; unique invoice index not created.', err)
-  }
+  // Fail visibly on duplicates or storage errors; never delete or renumber business records.
+  await db.execute(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_invoice_unique ON sales(invoice_number);`)
 }
 
 /**

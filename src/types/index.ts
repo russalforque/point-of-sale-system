@@ -176,6 +176,7 @@ export type SaleItem = {
 export type SaleItemModifier = { groupName: string; name: string; priceDelta: number }
 
 export type Sale = {
+  notes?: string | null
   id: number
   invoiceNumber: string
   customerId: number | null
@@ -258,6 +259,8 @@ export type DashboardData = {
 
 export type StoreSetting = {
   id: number
+  businessType: 'retail' | 'laundry'
+  businessSetupComplete: boolean
   storeName: string
   phone: string | null
   email: string | null
@@ -338,6 +341,7 @@ export type HeldOrderLine = {
 }
 
 export type HeldOrder = {
+  notes?: string | null
   id: number
   label: string | null
   customerId: number | null

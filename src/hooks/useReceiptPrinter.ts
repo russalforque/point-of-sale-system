@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { printingApi } from '../api/printingApi'
-import { ensurePrinterConnected, getPrinterService, printerErrorMessage } from '../services/printer'
-import { getPrinterConfig } from '../utils/printerConfig'
+import { printerErrorMessage } from '../services/printer'
+import { openCashDrawer } from '../services/drawer'
 import type { Sale, StoreSetting } from '../types'
 
 export function useReceiptPrinter() {
@@ -12,6 +12,7 @@ export function useReceiptPrinter() {
   // `isPrinting` only disables the button after React re-renders; this ref closes the
   // gap so a fast double tap joins the job already running instead of sending a second copy.
   const printJob = useRef<Promise<void> | null>(null)
+  const drawerJob = useRef<Promise<void> | null>(null)
 
   function printReceipt(sale: Sale, settings: StoreSetting): Promise<void> {
     if (printJob.current) return printJob.current
@@ -33,18 +34,19 @@ export function useReceiptPrinter() {
   }
 
   /** Sends the ESC/POS drawer-kick command through the connected printer. */
-  async function openDrawer() {
+  function openDrawer(options?: { saleId: number }): Promise<void> {
+    if (drawerJob.current) return drawerJob.current
     setIsOpeningDrawer(true)
     setLastDrawerError(null)
-    try {
-      await ensurePrinterConnected()
-      await getPrinterService().openCashDrawer(getPrinterConfig())
-    } catch (error) {
+    const job = openCashDrawer(options).catch(error => {
       setLastDrawerError(printerErrorMessage(error))
       throw error
-    } finally {
+    }).finally(() => {
+      drawerJob.current = null
       setIsOpeningDrawer(false)
-    }
+    })
+    drawerJob.current = job
+    return job
   }
 
   return {

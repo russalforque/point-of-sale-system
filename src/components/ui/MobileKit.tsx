@@ -1,3 +1,4 @@
+import { useDialogFocus } from '../../hooks/useDialogFocus'
 import { useEffect, useId, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react'
@@ -283,10 +284,11 @@ export function InactivePill({ label = 'Inactive' }: { label?: string }) {
 ------------------------------------------------------------------ */
 
 export function Sheet({ label, onClose, children }: { label: string; onClose: () => void; children: ReactNode }) {
+  const { panelRef, onKeyDown } = useDialogFocus()
   return (
-    <div role="dialog" aria-modal="true" aria-label={label} className="fixed inset-0 z-50 flex flex-col justify-end">
+    <div ref={panelRef} tabIndex={-1} onKeyDown={onKeyDown} role="dialog" aria-modal="true" aria-label={label} style={{ top: 'var(--app-top,0px)', bottom: 'auto', height: 'var(--app-height,100dvh)', paddingTop: 'env(safe-area-inset-top,0px)' }} className="fixed inset-0 z-50 flex flex-col justify-end sm:items-center sm:justify-center sm:p-4">
       <div className="absolute inset-0 bg-black/30" onClick={onClose} aria-hidden="true" />
-      <div className="relative flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-3xl bg-white animate-in slide-in-from-bottom duration-200">
+      <div className="relative flex max-h-[96%] w-full flex-col overflow-hidden rounded-t-3xl bg-white transition-none sm:max-w-xl sm:rounded-2xl">
         <div className="flex justify-center pb-2 pt-2.5">
           <span className="h-1 w-10 rounded-full bg-slate-200" />
         </div>
@@ -330,12 +332,12 @@ export function SheetHeader({
 }
 
 export function SheetBody({ children }: { children: ReactNode }) {
-  return <div className="flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 pb-4">{children}</div>
+  return <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 pb-4">{children}</div>
 }
 
 export function SheetFooter({ children }: { children: ReactNode }) {
   return (
-    <div className="flex items-center gap-2 border-t border-slate-100 px-5 pb-[max(1rem,env(safe-area-inset-bottom,0px))] pt-3">
+    <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-slate-100 px-5 pb-[max(1rem,env(safe-area-inset-bottom,0px))] pt-3">
       {children}
     </div>
   )

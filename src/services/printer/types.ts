@@ -10,7 +10,7 @@ export type PrinterAvailability = 'ready' | 'bluetooth-off' | 'permission-denied
 export type PrinterPaperWidth = 58 | 80
 
 /** How the printer is attached to the Android device. */
-export type PrinterConnectionType = 'bluetooth' | 'usb'
+export type PrinterConnectionType = 'bluetooth' | 'usb' | 'windows'
 
 export type DiscoveredPrinter = {
   /** Stable identifier used to reconnect: the MAC address (Bluetooth) or "vendorId:productId" (USB). */
@@ -27,6 +27,8 @@ export type DiscoveredPrinter = {
 }
 
 export type PrinterConfig = {
+  /** v2 stores real milliseconds; older configs stored ESC/POS's 2 ms units. */
+  pulseTimingVersion?: 2
   /** Connection type of the saved printer. */
   connectionType: PrinterConnectionType
   deviceId: string | null
@@ -52,6 +54,7 @@ export type PrinterStatusListener = (
  * receipt is delegated to receiptFormatter.ts.
  */
 export interface PrinterService {
+  listWindowsPrinters?(): Promise<DiscoveredPrinter[]>
   isBluetoothEnabled(): Promise<boolean>
   /** Requests Bluetooth permission if needed, then reports adapter/permission state. */
   getAvailability(): Promise<PrinterAvailability>
@@ -77,6 +80,8 @@ export interface PrinterService {
   getConnectedPrinter(): DiscoveredPrinter | null
   onStatusChange(listener: PrinterStatusListener): () => void
   printReceipt(sale: Sale, settings: StoreSetting, config: PrinterConfig): Promise<void>
+  /** Sends a locally formatted document through the same guarded job queue. */
+  printDocument(bytes: Uint8Array): Promise<void>
   testPrint(settings: StoreSetting, config: PrinterConfig): Promise<void>
   /** Price labels with barcodes (see buildProductLabels). */
   printLabels(labels: { label: ProductLabel; copies: number }[], settings: StoreSetting, config: PrinterConfig): Promise<void>

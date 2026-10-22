@@ -1,12 +1,15 @@
-import { querySQL, executeSQL } from '../database/sqlite'
+import { querySQL } from '../database/sqlite'
 import { runTransaction, type SqlStatement } from '../database/tx'
-import { sha256 } from '../utils/hash'
+import { hashPassword, verifyPassword } from '../utils/hash'
 import { getStoredUser } from '../utils/session'
 import { ApiError } from '../utils/errors'
 import { APPROVER_ROLES, ROLE_LABELS, type Role } from '../utils/permissions'
 import { auditStatement } from '../services/audit'
 import { requirePermission } from '../services/authz'
 import { hashPin, PIN_PATTERN } from './authApi'
+import { serialQueue } from '../services/exclusive'
+
+const enqueueUserWrite = serialQueue()
 
 export type UserAccount = {
   id: number
@@ -68,7 +71,7 @@ async function pinHashFor(userId: number, pin: string): Promise<string> {
     [userId, ...APPROVER_ROLES],
   )
   for (const row of (others.values ?? []) as { id: number; pin_hash: string }[]) {
-    if ((await hashPin(row.id, pin)) === row.pin_hash) {
+    if (await verifyPassword(`sellix-pin:${row.id}:${pin}`, row.pin_hash)) {
       throw new ApiError('Another manager already uses this PIN. Choose a different one.', 400)
     }
   }
@@ -94,11 +97,12 @@ export const userApi = {
     return toUserAccount(row)
   },
 
-  create: async (payload: UserPayload): Promise<UserAccount> => {
+  create: (payload: UserPayload): Promise<UserAccount> => enqueueUserWrite(async () => {
     await requirePermission('users.manage')
     if (!payload.password) {
       throw new ApiError('Password is required for a new account.', 400)
     }
+    if (payload.password.length < 8) throw new ApiError('Use at least 8 characters for the password.', 400)
 
     const email = payload.email.trim().toLowerCase()
     const existing = await querySQL(`SELECT id FROM users WHERE email = ? LIMIT 1`, [email])
@@ -106,15 +110,14 @@ export const userApi = {
       throw new ApiError('An account with this email already exists.', 400)
     }
 
-    const passwordHash = await sha256(payload.password)
-    const result = await executeSQL(
-      `INSERT INTO users (email, full_name, password_hash, role, is_active) VALUES (?, ?, ?, ?, ?)`,
-      [email, payload.fullName, passwordHash, payload.role, payload.isActive ? 1 : 0],
-    )
-    const id = result.changes?.lastId
+    const passwordHash = await hashPassword(payload.password)
+    const id = (await querySQL('SELECT COALESCE(MAX(id),0)+1 AS id FROM users')).values?.[0]?.id as number | undefined
     if (!id) throw new ApiError('Failed to create user account.', 500)
 
-    const statements: SqlStatement[] = []
+    const statements: SqlStatement[] = [{
+      statement: `INSERT INTO users (id, email, full_name, password_hash, role, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+      values: [id, email, payload.fullName, passwordHash, payload.role, payload.isActive ? 1 : 0],
+    }]
     if (payload.pin && canHavePin(payload.role)) {
       statements.push({ statement: `UPDATE users SET pin_hash = ? WHERE id = ?`, values: [await pinHashFor(id, payload.pin), id] })
     }
@@ -128,9 +131,9 @@ export const userApi = {
     await runTransaction(statements)
 
     return userApi.get(id)
-  },
+  }),
 
-  update: async (id: number, payload: UserPayload): Promise<UserAccount> => {
+  update: (id: number, payload: UserPayload): Promise<UserAccount> => enqueueUserWrite(async () => {
     await requirePermission('users.manage')
     const current = getStoredUser()
     if (current && Number(current.id) === id && current.role === 'admin' && payload.role !== 'admin') {
@@ -147,7 +150,8 @@ export const userApi = {
       },
     ]
     if (payload.password) {
-      statements.push({ statement: `UPDATE users SET password_hash = ? WHERE id = ?`, values: [await sha256(payload.password), id] })
+      if (payload.password.length < 8) throw new ApiError('Use at least 8 characters for the password.', 400)
+      statements.push({ statement: `UPDATE users SET password_hash = ? WHERE id = ?`, values: [await hashPassword(payload.password), id] })
     }
 
     statements.push(...clearPinStatements(id, payload))
@@ -171,9 +175,9 @@ export const userApi = {
     await runTransaction(statements)
 
     return userApi.get(id)
-  },
+  }),
 
-  deactivate: async (id: number): Promise<void> => {
+  deactivate: (id: number): Promise<void> => enqueueUserWrite(async () => {
     await requirePermission('users.manage')
     const current = getStoredUser()
     if (current && Number(current.id) === id) {
@@ -184,5 +188,5 @@ export const userApi = {
       { statement: `UPDATE users SET is_active = 0 WHERE id = ?`, values: [id] },
       auditStatement('user', `Deactivated ${user.fullName} (${user.email})`, { type: 'user', id }),
     ])
-  },
+  }),
 }

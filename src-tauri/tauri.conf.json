@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Sellix POS",
+  "mainBinaryName": "Sellix POS",
+  "version": "0.1.0",
+  "identifier": "com.sellix.pos.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev -- --host 127.0.0.1 --strictPort",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "npm run typecheck && npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{ "label": "main", "title": "Sellix POS", "width": 1440, "height": 900, "minWidth": 1024, "minHeight": 700, "maximized": true }],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico", "icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png"],
+    "shortDescription": "Offline restaurant, retail and laundry POS",
+    "windows": {
+      "webviewInstallMode": { "type": "offlineInstaller" },
+      "nsis": { "installMode": "currentUser", "displayLanguageSelector": false, "installerHooks": "installer-hooks.nsh" }
+    }
+  }
+}

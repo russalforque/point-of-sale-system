@@ -27,6 +27,14 @@ export type ReportTransactionRow = {
 }
 
 export type ReportExportData = {
+  title?: string
+  paymentCountLabel?: string
+  itemSectionTitle?: string
+  itemLabel?: string
+  itemValueLabel?: string
+  transactionSectionTitle?: string
+  documentLabel?: string
+  additionalTables?: { title: string; headers: string[]; rows: string[][] }[]
   storeName: string
   /** e.g. "7 days · Sep 9 – Sep 15" */
   periodLabel: string
@@ -368,7 +376,7 @@ export function buildReportPdf(data: ReportExportData): Uint8Array {
   pdf.y -= 4
   pdf.text(MARGIN, pdf.y, data.storeName || 'Store', { size: 10, font: 'bold', color: GREEN, maxWidth: CONTENT_W })
   pdf.y -= 24
-  pdf.text(MARGIN, pdf.y, 'Sales report', { size: 22, font: 'bold' })
+  pdf.text(MARGIN, pdf.y, data.title ?? 'Sales report', { size: 22, font: 'bold' })
   pdf.y -= 18
   pdf.text(MARGIN, pdf.y, data.periodLabel, { size: 10, color: MUTED, maxWidth: CONTENT_W })
   if (data.filtersLabel) {
@@ -409,37 +417,37 @@ export function buildReportPdf(data: ReportExportData): Uint8Array {
   pdf.table(
     [
       { header: 'Method', width: 215 },
-      { header: 'Sales', width: 100, align: 'right' },
+      { header: data.paymentCountLabel ?? 'Sales', width: 100, align: 'right' },
       { header: 'Share', width: 100, align: 'right' },
       { header: `Amount (${data.currency})`, width: 100.28, align: 'right' },
     ],
     data.paymentMethods.map((entry) => ({
       cells: [entry.label, String(entry.count), `${shareOf(entry.amount, methodTotal).toFixed(0)}%`, amount(entry.amount)],
     })),
-    'No completed sales in this period.',
+    'No payments in this period.',
   )
 
   /* Top products */
-  pdf.sectionTitle('Top products')
+  pdf.sectionTitle(data.itemSectionTitle ?? 'Top products')
   pdf.table(
     [
       { header: '#', width: 25 },
-      { header: 'Product', width: 290 },
-      { header: 'Qty sold', width: 100, align: 'right' },
-      { header: `Revenue (${data.currency})`, width: 100.28, align: 'right' },
+      { header: data.itemLabel ?? 'Product', width: 290 },
+      { header: 'Quantity', width: 100, align: 'right' },
+      { header: `${data.itemValueLabel ?? 'Revenue'} (${data.currency})`, width: 100.28, align: 'right' },
     ],
     data.topProducts.map((product, index) => ({
       cells: [String(index + 1), product.name, product.quantity.toLocaleString('en-US'), amount(product.revenue)],
     })),
-    'No products sold in this period.',
+    'No items in this period.',
   )
 
   /* Transactions */
-  pdf.sectionTitle(`Transactions (${data.transactions.length})`)
+  pdf.sectionTitle(`${data.transactionSectionTitle ?? 'Transactions'} (${data.transactions.length})`)
   pdf.table(
     [
       { header: 'Date', width: 92 },
-      { header: 'Invoice', width: 88 },
+      { header: data.documentLabel ?? 'Invoice', width: 88 },
       { header: 'Customer', width: 120 },
       { header: 'Payment', width: 70 },
       { header: 'Status', width: 55 },
@@ -455,9 +463,14 @@ export function buildReportPdf(data: ReportExportData): Uint8Array {
     'No transactions in this period.',
   )
 
+  for (const table of data.additionalTables ?? []) {
+    pdf.sectionTitle(table.title)
+    pdf.table(table.headers.map(header => ({ header, width: CONTENT_W / table.headers.length })), table.rows.map(cells => ({ cells })), 'No records.')
+  }
+
   /* Footer on every page */
   const total = pdf.pages.length
-  const footerLeft = `${data.storeName || 'Store'} · Sales report · ${data.periodLabel}`
+  const footerLeft = `${data.storeName || 'Store'} · ${data.title ?? 'Sales report'} · ${data.periodLabel}`
   for (let index = 0; index < total; index++) {
     pdf.usePage(index)
     pdf.line(MARGIN, MARGIN + 14, MARGIN + CONTENT_W, MARGIN + 14, RULE, 0.6)

@@ -1,11 +1,9 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { Link } from 'react-router-dom'
-
+import { useEffect, useId, useRef, useState } from 'react'
+import { ArrowDownLeft, ArrowRight, ArrowUpRight, Banknote, Check, CheckCheck, ChevronRight, CircleCheck, Clock3, CreditCard, History, LogOut, RefreshCw, Wallet } from 'lucide-react'
 import { shiftApi } from '../../api/shiftApi'
-import { DesktopPage, SecondaryButton } from '../../components/ui/DesktopKit'
-import { ArrowDown, ArrowUp, ChevronRight, Refresh } from '../../components/ui/Icons'
+import { Button, ButtonLink } from '../../components/ui/Button'
 import { Modal } from '../../components/ui/Modal'
-import { Avatar, PrimaryButton, TextButton, TextField } from '../../components/ui/MobileKit'
+import { TextField } from '../../components/ui/MobileKit'
 import { ErrorState, Spinner } from '../../components/ui/States'
 import { ReasonField } from '../../components/ui/WorkPage'
 import { useAuth } from '../../context/AuthContext'
@@ -14,846 +12,187 @@ import { useToast } from '../../context/ToastContext'
 import { useAsync } from '../../hooks/useAsync'
 import { useDismissOnBack } from '../../hooks/useDismissOnBack'
 import type { CashMovement, Shift, ShiftSummary } from '../../types'
-import { getErrorMessage } from '../../utils/errors'
-import { formatDayLabel, formatDuration, formatMoney, formatTime } from '../../utils/format'
-import { ShiftDetails, VarianceTag, shiftTimeLine } from './shiftHistory'
+import { ApiError, getErrorMessage } from '../../utils/errors'
+import { roundMoney } from '../../utils/amount'
+import { formatDateTime, formatDuration, formatMoney, formatTime } from '../../utils/format'
+import { ShiftDetails, VarianceTag } from './shiftHistory'
+import { useMyShift } from './useMyShift'
+import './my-shift.css'
 
 type Money = (value: number) => string
-
+const QUICK_FLOATS = [0, 500, 1000, 2000, 5000]
 const CASH_IN_REASONS = ['Float top-up', 'Change fund']
 const CASH_OUT_REASONS = ['Bank deposit', 'Supplier payment', 'Petty cash']
-/** One-tap starting floats; the field still takes any amount. */
-const QUICK_FLOATS = [500, 1000, 2000, 3000, 5000]
 
-const CARD = 'rounded-3xl bg-white p-5 ring-1 ring-slate-100 @xl:p-6'
-
-/** Re-renders every 30s so "On shift · 2h 40m" keeps ticking while the page is open. */
-function useTicker(intervalMs = 30_000) {
-  const [, setTick] = useState(0)
-  useEffect(() => {
-    const id = window.setInterval(() => setTick((tick) => tick + 1), intervalMs)
-    return () => window.clearInterval(id)
-  }, [intervalMs])
+function StaffAvatar({ name }: { name: string }) {
+  return <span className="ms-avatar" aria-hidden="true">{name.trim().split(/\s+/).slice(0, 2).map(part => part[0]).join('').toUpperCase() || '?'}</span>
 }
 
-function startedLabel(shift: Shift): string {
-  const day = formatDayLabel(shift.startedAt)
-  return `${day === 'Today' ? '' : `${day}, `}${formatTime(shift.startedAt)}`
-}
-
-/**
- * The cashier's register session. Tablet landscape gets a two-column drawer dashboard
- * (drawer + actions on the left, sales and the cash log on the right); portrait tablets
- * and phones stack the same cards. Layout follows the page's own width (container
- * queries), so it also adapts when the sidebar is expanded.
- */
 export function ShiftPage() {
-  const { can } = useAuth()
+  const { can, user } = useAuth()
   const { settings } = useSettings()
-  const money: Money = (value) => formatMoney(value, settings.currencySymbol)
-  useTicker()
-
-  const active = useAsync(() => shiftApi.getActive(), [])
-  const shift = active.data
-  const drawer = useAsync(() => (shift ? shiftApi.summary() : Promise.resolve(null)), [shift?.id])
-  const movements = useAsync(() => (shift ? shiftApi.movements(shift.id) : Promise.resolve([] as CashMovement[])), [shift?.id])
-
+  const money: Money = value => formatMoney(value, settings.currencySymbol)
+  const { snapshot, loading, error, reload, commit } = useMyShift()
   const [lastClosed, setLastClosed] = useState<Shift | null>(null)
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null)
-
+  const [, tick] = useState(0)
   useEffect(() => {
-    if (drawer.data) setUpdatedAt(new Date().toISOString())
-  }, [drawer.data])
-
-  const refreshing = drawer.loading || movements.loading
-  const refresh = () => {
-    void active.reload()
-    void drawer.reload()
-    void movements.reload()
-  }
-
-  const firstLoad = active.loading && !shift && !active.error
-
-  return (
-    <DesktopPage
-      title="My Shift"
-      subtitle={
-        shift
-          ? `Started ${startedLabel(shift)}${updatedAt ? ` · updated ${formatTime(updatedAt)}` : ''}`
-          : 'Count your drawer to open a register session.'
-      }
-      actions={
-        <>
-          {shift && (
-            <SecondaryButton onClick={refresh} disabled={refreshing} aria-label="Refresh drawer totals">
-              <Refresh size={14} className={`text-slate-500 ${refreshing ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">Refresh</span>
-            </SecondaryButton>
-          )}
-          {can('shifts.manage') && (
-            <Link
-              to="/shift-history"
-              className="inline-flex h-11 items-center gap-2 rounded-full px-4 text-sm font-medium text-[#1F5E3B] transition hover:bg-[#E6F1EA] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
-            >
-              Shift history
-              <ChevronRight size={11} />
-            </Link>
-          )}
-        </>
-      }
-    >
-      <div className="@container mt-6">
-        {firstLoad && (
-          <div className="py-20">
-            <Spinner />
-          </div>
-        )}
-
-        {!active.loading && active.error && !shift && <ErrorState message={active.error} onRetry={() => void active.reload()} />}
-
-        {shift && (
-          <ActiveShift
-            shift={shift}
-            money={money}
-            summary={drawer.data?.summary ?? null}
-            summaryError={drawer.error}
-            onRetrySummary={() => void drawer.reload()}
-            movements={movements.data}
-            movementsLoading={movements.loading}
-            movementsError={movements.error}
-            onRetryMovements={() => void movements.reload()}
-            onCashMoved={() => {
-              void drawer.reload()
-              void movements.reload()
-            }}
-            onClosed={(closed) => {
-              setLastClosed(closed)
-              active.setData(null)
-            }}
-          />
-        )}
-
-        {!active.loading && !active.error && !shift && (
-          <NoShift
-            money={money}
-            lastClosed={lastClosed}
-            onStarted={(started) => {
-              setLastClosed(null)
-              active.setData(started)
-            }}
-          />
-        )}
-      </div>
-    </DesktopPage>
-  )
-}
-
-/* ------------------------------------------------------------------
-   OPEN SHIFT
------------------------------------------------------------------- */
-
-function ActiveShift({
-  shift,
-  money,
-  summary,
-  summaryError,
-  onRetrySummary,
-  movements,
-  movementsLoading,
-  movementsError,
-  onRetryMovements,
-  onCashMoved,
-  onClosed,
-}: {
-  shift: Shift
-  money: Money
-  summary: ShiftSummary | null
-  summaryError: string | null
-  onRetrySummary: () => void
-  movements: CashMovement[] | null
-  movementsLoading: boolean
-  movementsError: string | null
-  onRetryMovements: () => void
-  onCashMoved: () => void
-  onClosed: (closed: Shift) => void
-}) {
-  const { can } = useAuth()
-  const canMoveCash = can('cash.movement')
-  const [movementType, setMovementType] = useState<'in' | 'out' | null>(null)
-  const [ending, setEnding] = useState(false)
-
-  return (
-    <div className="grid grid-cols-1 gap-5 @4xl:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] @4xl:items-start">
-      {/* Drawer: the number the cashier is accountable for, how it's made up, and what to do next */}
-      <section aria-labelledby="drawer-title" className={CARD}>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 id="drawer-title" className="text-base font-semibold">
-            Cash drawer
-          </h2>
-          <span className="inline-flex h-7 items-center gap-1.5 rounded-full bg-[#E6F1EA] px-2.5 text-xs font-semibold text-[#1F5E3B]">
-            <span aria-hidden="true" className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#1F5E3B] opacity-40 motion-reduce:hidden" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-[#1F5E3B]" />
-            </span>
-            On shift · {formatDuration(shift.startedAt)}
-          </span>
-        </div>
-
-        <div className="mt-4 rounded-2xl bg-[#F2F8F4] px-5 py-5">
-          <p className="text-sm font-medium text-[#1F5E3B]">Expected in drawer</p>
-          <p className="mt-1.5 truncate text-[40px] font-bold leading-none tracking-[-0.02em] tabular-nums">
-            {summary ? money(summary.expectedCash) : summaryError ? '—' : <span className="text-slate-300">…</span>}
-          </p>
-          <p className="mt-2 text-sm text-slate-600">Your count should match this when you end the shift.</p>
-        </div>
-
-        {summaryError && (
-          <RetryBanner
-            message={summary ? 'Couldn’t refresh. Showing the last totals.' : 'Couldn’t load the drawer totals.'}
-            onRetry={onRetrySummary}
-          />
-        )}
-
-        {summary && <DrawerLedger summary={summary} money={money} className="mt-4" />}
-
-        <div className={`mt-5 grid gap-2 ${canMoveCash ? 'grid-cols-2 @xl:grid-cols-[1fr_1fr_minmax(0,1.4fr)]' : ''}`}>
-          {canMoveCash && (
-            <>
-              <CashButton direction="in" onClick={() => setMovementType('in')} />
-              <CashButton direction="out" onClick={() => setMovementType('out')} />
-            </>
-          )}
-          <PrimaryButton onClick={() => setEnding(true)} className={canMoveCash ? 'col-span-2 @xl:col-span-1' : 'w-full'}>
-            End shift
-          </PrimaryButton>
-        </div>
-      </section>
-
-      <div className="grid grid-cols-1 gap-5">
-        <SalesCard summary={summary} money={money} />
-        <MovementsCard
-          movements={movements}
-          loading={movementsLoading}
-          error={movementsError}
-          onRetry={onRetryMovements}
-          money={money}
-        />
-      </div>
-
-      {movementType && (
-        <CashMovementDialog
-          type={movementType}
-          available={summary?.expectedCash ?? null}
-          money={money}
-          onClose={() => setMovementType(null)}
-          onSaved={() => {
-            setMovementType(null)
-            onCashMoved()
-          }}
-        />
-      )}
-
-      {ending && <EndShiftDialog shift={shift} money={money} onClose={() => setEnding(false)} onEnded={onClosed} />}
-    </div>
-  )
-}
-
-function CashButton({ direction, onClick }: { direction: 'in' | 'out'; onClick: () => void }) {
-  const isIn = direction === 'in'
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex h-14 items-center justify-center gap-2 whitespace-nowrap rounded-2xl bg-[#F3F5F4] px-3 text-[15px] font-medium transition hover:bg-[#E9EEEB] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B]"
-    >
-      <span
-        aria-hidden="true"
-        className={`flex h-7 w-7 items-center justify-center rounded-full ${isIn ? 'bg-[#E6F1EA] text-[#1F5E3B]' : 'bg-rose-50 text-rose-600'}`}
-      >
-        {isIn ? <ArrowDown size={12} /> : <ArrowUp size={12} />}
-      </span>
-      {isIn ? 'Cash in' : 'Cash out'}
-    </button>
-  )
-}
-
-/** Starting cash, then each change to it. Rows with nothing in them stay (muted) so the list never jumps around. */
-function DrawerLedger({ summary, money, className = '' }: { summary: ShiftSummary; money: Money; className?: string }) {
-  return (
-    <dl className={`divide-y divide-slate-100 ${className}`}>
-      <LedgerRow label="Starting cash" value={summary.startingCash} money={money} />
-      <LedgerRow label="Cash sales" sign="+" value={summary.cashSales} money={money} />
-      <LedgerRow label="Cash refunds" sign="−" value={summary.cashRefunds} money={money} />
-      <LedgerRow label="Cash in" sign="+" value={summary.cashIn} money={money} />
-      <LedgerRow label="Cash out" sign="−" value={summary.cashOut} money={money} />
-    </dl>
-  )
-}
-
-function LedgerRow({ label, value, sign, money }: { label: string; value: number; sign?: '+' | '−'; money: Money }) {
-  const empty = sign !== undefined && value === 0
-  return (
-    <div className="flex min-h-11 items-center justify-between gap-4 py-2 text-[15px]">
-      <dt className="flex items-center gap-2 text-slate-500">
-        <span aria-hidden="true" className="w-3 text-center font-medium text-slate-400">
-          {sign}
-        </span>
-        {label}
-      </dt>
-      <dd className={`tabular-nums ${empty ? 'text-slate-300' : 'text-[#091413]'}`}>
-        {sign && !empty && <span className="sr-only">{sign === '+' ? 'plus' : 'minus'} </span>}
-        {money(value)}
-      </dd>
-    </div>
-  )
-}
-
-function SalesCard({ summary, money }: { summary: ShiftSummary | null; money: Money }) {
-  const total = summary ? summary.cashSales + summary.nonCashSales : 0
-  const cashShare = total > 0 && summary ? Math.round((summary.cashSales / total) * 100) : 0
-
-  return (
-    <section aria-labelledby="sales-title" className={CARD}>
-      <h2 id="sales-title" className="text-base font-semibold">
-        Sales this shift
-      </h2>
-      <p className="mt-2 truncate text-[28px] font-bold leading-none tracking-[-0.02em] tabular-nums">
-        {summary ? money(total) : '—'}
-      </p>
-
-      {summary && total > 0 ? (
-        <>
-          <div
-            className="mt-4 flex h-2.5 overflow-hidden rounded-full bg-slate-100"
-            role="img"
-            aria-label={`${cashShare}% cash, ${100 - cashShare}% card, GCash and other`}
-          >
-            <span className="h-full rounded-full bg-[#1F5E3B]" style={{ width: `${cashShare}%` }} />
-            {cashShare > 0 && cashShare < 100 && <span className="w-0.5 shrink-0" />}
-            <span className="h-full flex-1 rounded-full bg-[#9DC3AC]" />
-          </div>
-          <dl className="mt-3 grid grid-cols-2 gap-3">
-            <SalesSplit dot="bg-[#1F5E3B]" label="Cash" value={money(summary.cashSales)} share={cashShare} />
-            <SalesSplit dot="bg-[#9DC3AC]" label="Card, GCash & other" value={money(summary.nonCashSales)} share={100 - cashShare} />
-          </dl>
-          <p className="mt-3 text-xs text-slate-500">Only cash sales go into the drawer.</p>
-        </>
-      ) : (
-        <p className="mt-2 text-sm text-slate-500">{summary ? 'No sales yet this shift.' : 'Totals appear once the drawer loads.'}</p>
-      )}
-    </section>
-  )
-}
-
-function SalesSplit({ dot, label, value, share }: { dot: string; label: string; value: string; share: number }) {
-  return (
-    <div className="min-w-0">
-      <dt className="flex items-center gap-1.5 truncate text-xs text-slate-500">
-        <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
-        {label}
-      </dt>
-      <dd className="mt-0.5 truncate text-[15px] font-medium tabular-nums">
-        {value} <span className="text-xs font-normal text-slate-400">{share}%</span>
-      </dd>
-    </div>
-  )
-}
-
-function MovementsCard({
-  movements,
-  loading,
-  error,
-  onRetry,
-  money,
-}: {
-  movements: CashMovement[] | null
-  loading: boolean
-  error: string | null
-  onRetry: () => void
-  money: Money
-}) {
-  const list = movements ?? []
-  const net = list.reduce((sum, movement) => sum + (movement.type === 'Cash in' ? movement.amount : -movement.amount), 0)
-
-  return (
-    <section aria-labelledby="movements-title" className={CARD}>
-      <div className="flex items-baseline justify-between gap-3">
-        <h2 id="movements-title" className="text-base font-semibold">
-          Cash in & out
-          {list.length > 0 && <span className="ml-1.5 text-sm font-normal text-slate-400">{list.length}</span>}
-        </h2>
-        {list.length > 0 && (
-          <p className="shrink-0 text-sm tabular-nums text-slate-500">
-            Net{' '}
-            <span className={`font-medium ${net < 0 ? 'text-rose-700' : net > 0 ? 'text-[#1F5E3B]' : 'text-[#091413]'}`}>
-              {net > 0 ? '+' : net < 0 ? '−' : ''}
-              {money(Math.abs(net))}
-            </span>
-          </p>
-        )}
-      </div>
-
-      {loading && !movements && (
-        <div className="py-8">
-          <Spinner />
-        </div>
-      )}
-
-      {error && (movements ? <RetryBanner message="Couldn’t refresh the cash log." onRetry={onRetry} /> : <div className="mt-3"><ErrorState message={error} onRetry={onRetry} /></div>)}
-
-      {movements && list.length === 0 && (
-        <div className="mt-3 rounded-2xl bg-[#F6F8F7] px-4 py-5 text-center">
-          <p className="text-sm font-medium">Nothing added or taken out yet</p>
-          <p className="mx-auto mt-1 max-w-xs text-xs text-slate-500">
-            Use Cash in for float top-ups, and Cash out for bank deposits or payouts.
-          </p>
-        </div>
-      )}
-
-      {list.length > 0 && (
-        <ul className="mt-2 divide-y divide-slate-100">
-          {list.map((movement) => {
-            const isIn = movement.type === 'Cash in'
-            return (
-              <li key={movement.id} className="flex min-h-14 items-center gap-3 py-2.5">
-                <span
-                  aria-hidden="true"
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
-                    isIn ? 'bg-[#E6F1EA] text-[#1F5E3B]' : 'bg-rose-50 text-rose-600'
-                  }`}
-                >
-                  {isIn ? <ArrowDown size={12} /> : <ArrowUp size={12} />}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[15px]">{movement.reason}</p>
-                  <p className="truncate text-xs text-slate-500">
-                    {formatTime(movement.createdAt)} · {movement.createdBy}
-                  </p>
-                </div>
-                <p className={`shrink-0 text-[15px] font-medium tabular-nums ${isIn ? 'text-[#1F5E3B]' : 'text-rose-700'}`}>
-                  <span className="sr-only">{movement.type} </span>
-                  {isIn ? '+' : '−'}
-                  {money(movement.amount)}
-                </p>
-              </li>
-            )
-          })}
-        </ul>
-      )}
-    </section>
-  )
-}
-
-function RetryBanner({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return (
-    <div role="alert" className="mt-3 flex items-center gap-3 rounded-2xl bg-rose-50 py-1 pl-4 pr-1 text-sm text-rose-700">
-      <span className="min-w-0 flex-1">{message}</span>
-      <button type="button" onClick={onRetry} className="h-11 shrink-0 rounded-full px-4 font-medium hover:bg-rose-100">
-        Retry
-      </button>
-    </div>
-  )
-}
-
-/* ------------------------------------------------------------------
-   NO OPEN SHIFT
------------------------------------------------------------------- */
-
-function NoShift({ money, lastClosed, onStarted }: { money: Money; lastClosed: Shift | null; onStarted: (shift: Shift) => void }) {
-  return (
-    <div className="grid grid-cols-1 gap-5 @4xl:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] @4xl:items-start">
-      {/* Right after closing, the result is what the cashier wants to see first */}
-      {lastClosed && <ClosedShiftCard shift={lastClosed} money={money} />}
-      <StartShiftCard money={money} compact={!!lastClosed} onStarted={onStarted} />
-      {!lastClosed && <HowShiftsWork />}
-    </div>
-  )
-}
-
-function StartShiftCard({ money, compact, onStarted }: { money: Money; compact: boolean; onStarted: (shift: Shift) => void }) {
-  const { user } = useAuth()
-  const { notify } = useToast()
-  const { settings } = useSettings()
-  const [startingCash, setStartingCash] = useState('')
-  const [starting, setStarting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  // Focusing the field on a touch screen throws the keyboard over the quick amounts.
-  const [autoFocus] = useState(() => !compact && window.matchMedia?.('(pointer: fine)').matches)
-
-  async function start() {
-    if (starting) return
-    const amount = Number(startingCash)
-    if (!startingCash.trim() || !Number.isFinite(amount) || amount < 0) {
-      setError('Enter the starting cash amount.')
-      return
-    }
-    setError(null)
-    setStarting(true)
-    try {
-      const started = await shiftApi.start({ startingCash: amount })
-      notify(`Shift started with ${money(amount)} in the drawer.`)
-      onStarted(started)
-    } catch (err) {
-      setError(getErrorMessage(err))
-      setStarting(false)
-    }
-  }
-
-  return (
-    <section aria-labelledby="start-title" className={CARD}>
-      <div className="flex items-center gap-3">
-        {user && <Avatar name={user.fullName} />}
-        <div className="min-w-0">
-          <h2 id="start-title" className="text-base font-semibold">
-            {compact ? 'Start the next shift' : 'Start your shift'}
-          </h2>
-          <p className="truncate text-sm text-slate-500">{user?.fullName ?? 'Count the cash in your drawer first.'}</p>
-        </div>
-      </div>
-
-      <form
-        className="mt-5 space-y-4"
-        onSubmit={(event) => {
-          event.preventDefault()
-          void start()
-        }}
-      >
-        <TextField
-          label="Starting cash"
-          prefix={settings.currencySymbol}
-          amount
-          value={startingCash}
-          onChange={(value) => {
-            setStartingCash(value)
-            setError(null)
-          }}
-          error={error ?? undefined}
-          hint="The cash in the drawer before your first sale."
-          autoFocus={autoFocus}
-          placeholder="0.00"
-          disabled={starting}
-        />
-
-        <div role="group" aria-label="Quick amounts" className="flex flex-wrap gap-2">
-          {QUICK_FLOATS.map((value) => {
-            const selected = startingCash !== '' && Number(startingCash) === value
-            return (
-              <button
-                key={value}
-                type="button"
-                aria-pressed={selected}
-                disabled={starting}
-                onClick={() => {
-                  setStartingCash(String(value))
-                  setError(null)
-                }}
-                className={`h-11 rounded-full px-4 text-sm font-medium tabular-nums transition active:scale-95 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1F5E3B] ${
-                  selected ? 'bg-[#1F5E3B] text-white' : 'bg-[#F3F5F4] text-[#091413] hover:bg-[#E9EEEB]'
-                }`}
-              >
-                {settings.currencySymbol}
-                {value.toLocaleString()}
-              </button>
-            )
-          })}
-        </div>
-
-        <PrimaryButton type="submit" disabled={starting} className="w-full">
-          {starting ? 'Starting…' : 'Start shift'}
-        </PrimaryButton>
-      </form>
-    </section>
-  )
+    const timer = window.setInterval(() => tick(value => value + 1), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const shift = snapshot?.shift
+  return <div className="my-shift-page">
+    <header className="ms-header"><div><p className="ms-eyebrow"><span />YOUR REGISTER SESSION</p><h1>My shift</h1><p>{shift ? 'Keep track of your drawer, recorded payments and cash movements.' : 'Count your starting cash and get your register ready.'}</p></div>
+      <div className="ms-header-actions"><Button variant="secondary" aria-label="Refresh my shift" disabled={loading} onClick={() => void reload()}><RefreshCw size={16} aria-hidden="true" className={loading ? 'ms-spin' : ''} />Refresh</Button>{can('shifts.manage') && <ButtonLink to="/shift-history" variant="secondary"><History size={16} aria-hidden="true" />Shift history<ArrowRight size={15} aria-hidden="true" /></ButtonLink>}</div>
+    </header>
+    {loading && !snapshot && <div className="ms-loading"><Spinner label="Loading your shift…" /></div>}
+    {error && !snapshot && <ErrorState message={error} onRetry={() => void reload()} />}
+    {error && snapshot && <RetryBanner message="Couldn’t refresh your shift. Showing the last loaded information; refresh before making changes." onRetry={() => void reload()} disabled={loading} />}
+    {snapshot && (shift ? <ActiveShift shift={shift} summary={snapshot.summary} summaryError={snapshot.summaryError} movements={snapshot.movements} movementsError={snapshot.movementsError} updatedAt={snapshot.updatedAt} loading={loading} blocked={loading || !!error} money={money} onRefresh={() => void reload()} onCashMoved={() => void reload()} onClosed={closed => { setLastClosed(closed); commit(null) }} />
+      : <div className="ms-start-layout">{lastClosed ? <ClosedShiftCard shift={lastClosed} money={money} /> : <section className="ms-welcome" aria-labelledby="ms-welcome-title"><span className="ms-welcome-icon"><Wallet size={30} aria-hidden="true" /></span><span className="ms-status is-idle">No active shift</span><h2 id="ms-welcome-title">Start with a counted drawer.</h2><p>Your shift keeps starting cash, payments and cash movements together, so closing is easier to check.</p><ol className="ms-start-steps">{[{ title: 'Count your starting cash', body: 'Include every bill and coin already in the drawer.' }, { title: settings.businessType === 'laundry' ? 'Take payments as usual' : 'Make sales as usual', body: 'Cash payments and cash movements update your expected drawer cash.' }, { title: 'Count again before closing', body: 'Review any shortage or overage, then confirm the closing count.' }].map((step, index) => <li key={step.title}><span aria-hidden="true">{index + 1}</span><div><strong>{step.title}</strong><p>{step.body}</p></div></li>)}</ol></section>}
+        <StartShiftCard name={user?.fullName ?? 'Signed-in employee'} money={money} compact={!!lastClosed} disabled={loading || !!error} onStarted={started => { setLastClosed(null); commit(started) }} />
+      </div>)}
+  </div>
 }
 
 function ClosedShiftCard({ shift, money }: { shift: Shift; money: Money }) {
-  return (
-    <section aria-labelledby="closed-title" className={CARD}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 id="closed-title" className="text-base font-semibold">
-            Shift closed
-          </h2>
-          <p className="mt-0.5 text-sm text-slate-500">
-            {formatDayLabel(shift.startedAt)} · {shiftTimeLine(shift)}
-          </p>
-        </div>
-        <VarianceTag shift={shift} money={money} />
-      </div>
-      <div className="mt-5">
-        <ShiftDetails shift={shift} money={money} />
-      </div>
-    </section>
-  )
+  return <section className="ms-card ms-closed" aria-labelledby="ms-closed-title"><header className="ms-card-heading"><span className="ms-card-icon"><CircleCheck size={19} aria-hidden="true" /></span><div><h2 id="ms-closed-title">Shift closed</h2><p>Shift #{shift.id} · {formatDateTime(shift.endedAt)}</p></div><VarianceTag shift={shift} money={money} /></header><p className="ms-close-success">Your closing count has been saved.</p><dl className="ms-closed-summary"><div><dt>Expected cash</dt><dd>{shift.expectedCash === null ? '—' : money(shift.expectedCash)}</dd></div><div><dt>Counted cash</dt><dd>{shift.actualCash === null ? '—' : money(shift.actualCash)}</dd></div></dl><details className="ms-closed-details"><summary>View closing breakdown<ChevronRight size={16} aria-hidden="true" /></summary><ShiftDetails shift={shift} money={money} /></details></section>
 }
 
-const STEPS: { title: string; body: string }[] = [
-  { title: 'Count your starting cash', body: 'Enter what’s in the drawer before your first sale.' },
-  { title: 'Sell as usual', body: 'Cash sales, refunds and cash in or out keep the expected cash up to date.' },
-  { title: 'Count and close', body: 'At the end, count the drawer. Any shortage or overage is recorded.' },
-]
-
-function HowShiftsWork() {
-  return (
-    <section aria-labelledby="how-title" className={CARD}>
-      <h2 id="how-title" className="text-base font-semibold">
-        How a shift works
-      </h2>
-      <ol className="mt-4 space-y-4">
-        {STEPS.map((step, index) => (
-          <li key={step.title} className="flex gap-3">
-            <span
-              aria-hidden="true"
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#E6F1EA] text-xs font-semibold text-[#1F5E3B]"
-            >
-              {index + 1}
-            </span>
-            <div className="min-w-0 pt-0.5">
-              <p className="text-sm font-medium">{step.title}</p>
-              <p className="mt-0.5 text-sm text-slate-500">{step.body}</p>
-            </div>
-          </li>
-        ))}
-      </ol>
-    </section>
-  )
-}
-
-/* ------------------------------------------------------------------
-   DIALOGS
------------------------------------------------------------------- */
-
-function CashMovementDialog({
-  type,
-  available,
-  money,
-  onClose,
-  onSaved,
-}: {
-  type: 'in' | 'out'
-  /** Cash expected in the drawer, shown as the most that can be taken out. */
-  available: number | null
-  money: Money
-  onClose: () => void
-  onSaved: () => void
+function ActiveShift({ shift, summary, summaryError, movements, movementsError, updatedAt, loading, blocked, money, onRefresh, onCashMoved, onClosed }: {
+  shift: Shift; summary: ShiftSummary | null; summaryError: string | null; movements: CashMovement[] | null; movementsError: string | null; updatedAt: string | null; loading: boolean; blocked: boolean; money: Money; onRefresh: () => void; onCashMoved: () => void; onClosed: (shift: Shift) => void
 }) {
+  const { can } = useAuth()
+  const [movementType, setMovementType] = useState<'in' | 'out' | null>(null)
+  const [ending, setEnding] = useState(false)
+  const actionsDisabled = blocked || !summary || !!summaryError
+  const total = summary ? roundMoney(summary.cashSales + summary.nonCashSales) : null
+  const cashShare = total && total > 0 && summary ? Math.min(100, Math.max(0, summary.cashSales / total * 100)) : 0
+  return <>
+    <section className="ms-session" aria-label="Active shift"><div className="ms-session-person"><StaffAvatar name={shift.employeeName} /><div><strong>{shift.employeeName}</strong><p>Shift #{shift.id} · Started <time dateTime={shift.startedAt}>{formatDateTime(shift.startedAt)}</time></p></div></div><div className="ms-session-status"><span className="ms-status"><span />Shift open</span><span><Clock3 size={14} aria-hidden="true" />{formatDuration(shift.startedAt)}</span></div></section>
+    <div className="ms-active-layout">
+      <section className="ms-card ms-drawer" aria-labelledby="ms-drawer-title" aria-busy={loading}>
+        <header className="ms-card-heading"><span className="ms-card-icon"><Wallet size={19} aria-hidden="true" /></span><div><h2 id="ms-drawer-title">Cash drawer</h2><p>{updatedAt ? `Totals updated ${formatTime(updatedAt)}` : 'Preparing your drawer totals'}</p></div></header>
+        <div className="ms-drawer-focus"><span>Expected in drawer</span><strong>{summary ? money(summary.expectedCash) : '—'}</strong><p>The cash that should be in your drawer right now.</p></div>
+        {summaryError && <RetryBanner message={summary ? 'Couldn’t refresh. Showing the last drawer totals.' : 'Couldn’t load your drawer totals.'} disabled={loading} onRetry={onRefresh} />}
+        <div className="ms-drawer-actions" role="group" aria-label="Drawer actions">{can('cash.movement') && <><Button variant="secondary" disabled={actionsDisabled} onClick={() => setMovementType('in')}><ArrowDownLeft size={17} aria-hidden="true" />Cash in</Button><Button variant="secondary" disabled={actionsDisabled} onClick={() => setMovementType('out')}><ArrowUpRight size={17} aria-hidden="true" />Cash out</Button></>}<Button disabled={actionsDisabled} onClick={() => setEnding(true)} className="ms-end-button"><LogOut size={17} aria-hidden="true" />End shift</Button></div>
+        <div className="ms-section-caption"><h3>How your drawer adds up</h3><span>Cash only</span></div>
+        {summary ? <DrawerLedger summary={summary} money={money} /> : !summaryError && <Spinner label="Loading drawer totals…" />}
+        <p className="ms-footnote">Non-cash payments are recorded separately and do not increase the cash in your drawer.</p>
+      </section>
+      <section className="ms-card ms-payments" aria-labelledby="ms-payments-title" aria-busy={loading}><header className="ms-card-heading"><span className="ms-card-icon"><CreditCard size={19} aria-hidden="true" /></span><div><h2 id="ms-payments-title">Payments this shift</h2><p>Cash and non-cash payments recorded</p></div></header><strong className="ms-payment-total">{total === null ? '—' : money(total)}</strong>
+        {summary && <><div className="ms-payment-track" role="img" aria-label={total ? `${cashShare.toFixed(1)}% cash, ${(100 - cashShare).toFixed(1)}% non-cash` : 'No payments recorded'}><span style={{ width: `${cashShare}%` }} /></div><dl className="ms-payment-split"><div><dt><span />Cash</dt><dd>{money(summary.cashSales)}</dd><small>{total ? `${cashShare.toFixed(1)}% of payments` : 'No cash payments yet'}</small></div><div><dt><span />Non-cash</dt><dd>{money(summary.nonCashSales)}</dd><small>{total ? `${(100 - cashShare).toFixed(1)}% of payments` : 'No non-cash payments yet'}</small></div></dl></>}
+        <p className="ms-footnote">{summaryError ? 'Payment totals could not be refreshed. Retry from Cash drawer.' : summary && total === 0 ? 'Payments appear here as you collect them during your shift.' : 'Cash refunds and drawer movements are shown in the cash breakdown.'}</p>
+      </section>
+      <MovementsCard movements={movements} loading={loading} error={movementsError} onRetry={onRefresh} money={money} />
+    </div>
+    {movementType && <CashMovementDialog shiftId={shift.id} type={movementType} available={summary?.expectedCash ?? null} money={money} onClose={() => setMovementType(null)} onSaved={onCashMoved} />}
+    {ending && <EndShiftDialog shift={shift} money={money} onClose={() => setEnding(false)} onEnded={onClosed} />}
+  </>
+}
+
+function DrawerLedger({ summary, money }: { summary: ShiftSummary; money: Money }) {
+  const rows: { label: string; value: number; sign?: string; total?: boolean }[] = [
+    { label: 'Starting cash', value: summary.startingCash }, { label: 'Cash payments', value: summary.cashSales, sign: '+' }, { label: 'Cash refunds', value: summary.cashRefunds, sign: '−' }, { label: 'Cash in', value: summary.cashIn, sign: '+' }, { label: 'Cash out', value: summary.cashOut, sign: '−' }, { label: 'Expected cash', value: summary.expectedCash, total: true },
+  ]
+  return <dl className="ms-ledger">{rows.map(row => <div key={row.label} className={row.total ? 'is-total' : row.sign && row.value === 0 ? 'is-empty' : ''}><dt>{row.sign && <span aria-hidden="true">{row.sign}</span>}{row.label}</dt><dd>{row.sign && row.value > 0 && <span className="sr-only">{row.sign === '+' ? 'plus' : 'minus'} </span>}{money(row.value)}</dd></div>)}</dl>
+}
+
+function MovementsCard({ movements, loading, error, onRetry, money }: { movements: CashMovement[] | null; loading: boolean; error: string | null; onRetry: () => void; money: Money }) {
+  const [filter, setFilter] = useState<'all' | 'in' | 'out'>('all')
+  const [expanded, setExpanded] = useState(false)
+  const list = movements ?? []
+  const filtered = list.filter(row => filter === 'all' || row.type === (filter === 'in' ? 'Cash in' : 'Cash out'))
+  const visible = expanded ? filtered : filtered.slice(0, 8)
+  return <section className="ms-card ms-movements" aria-labelledby="ms-movements-title" aria-busy={loading}>
+    <header className="ms-card-heading"><span className="ms-card-icon"><History size={19} aria-hidden="true" /></span><div><h2 id="ms-movements-title">Cash activity</h2><p>Drawer top-ups and payouts, newest first</p></div>{movements && <span className="ms-count">{list.length} {list.length === 1 ? 'entry' : 'entries'}</span>}</header>
+    {list.length > 0 && <div className="ms-log-filters" role="group" aria-label="Cash activity filters">{([{ key: 'all', label: 'All activity' }, { key: 'in', label: 'Cash in' }, { key: 'out', label: 'Cash out' }] as const).map(option => <button key={option.key} type="button" aria-pressed={filter === option.key} onClick={() => { setFilter(option.key); setExpanded(false) }}>{option.label}</button>)}</div>}
+    {error && <RetryBanner message={movements ? 'Couldn’t refresh the cash log. Showing the last loaded entries.' : 'Couldn’t load the cash log.'} disabled={loading} onRetry={onRetry} />}
+    {loading && !movements && <Spinner label="Loading cash activity…" />}
+    {movements && !filtered.length && <div className="ms-log-empty"><Banknote size={27} aria-hidden="true" /><h3>{list.length ? `No ${filter === 'in' ? 'cash in' : 'cash out'} entries yet` : 'No cash movements yet'}</h3><p>Use Cash in for drawer top-ups and Cash out for deposits or payouts. Payments are tracked separately.</p></div>}
+    {visible.length > 0 && <ul className="ms-log-list">{visible.map(movement => <li key={movement.id}><span className={`ms-movement-icon ${movement.type === 'Cash out' ? 'is-out' : ''}`} aria-hidden="true">{movement.type === 'Cash in' ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}</span><div><strong>{movement.reason}</strong><p>{movement.type} · <time dateTime={movement.createdAt}>{formatTime(movement.createdAt)}</time> · {movement.createdBy}</p></div><span className={movement.type === 'Cash out' ? 'is-out' : ''}>{movement.type === 'Cash in' ? '+' : '−'}{money(movement.amount)}</span></li>)}</ul>}
+    {filtered.length > 8 && <Button variant="ghost" className="ms-show-log" onClick={() => setExpanded(!expanded)}>{expanded ? 'Show fewer entries' : `Show all ${filtered.length} entries`}</Button>}
+  </section>
+}
+
+function RetryBanner({ message, onRetry, disabled }: { message: string; onRetry: () => void; disabled?: boolean }) {
+  return <div className="ms-retry" role="alert"><span>{message}</span><Button variant="ghost" onClick={onRetry} disabled={disabled}>Retry</Button></div>
+}
+
+function StartShiftCard({ name, money, compact, disabled, onStarted }: { name: string; money: Money; compact: boolean; disabled: boolean; onStarted: (shift: Shift) => void }) {
   const { notify } = useToast()
   const { settings } = useSettings()
   const [amount, setAmount] = useState('')
-  const [reason, setReason] = useState('')
-  const [amountError, setAmountError] = useState<string | null>(null)
-  const [reasonError, setReasonError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  // Android back closes the dialog instead of leaving the page.
-  const { close } = useDismissOnBack('cashMovementOpen', onClose, busy)
-
-  async function save() {
-    if (busy) return
-    const value = Number(amount)
-    let invalid = false
-    if (!amount || !Number.isFinite(value) || value <= 0) {
-      setAmountError('Enter an amount above zero.')
-      invalid = true
-    }
-    if (reason.trim().length < 3) {
-      setReasonError('Enter a reason.')
-      invalid = true
-    }
-    if (invalid) return
-
-    setBusy(true)
-    try {
-      await shiftApi.addCashMovement({ type, amount: value, reason })
-      notify(`${type === 'in' ? 'Cash in' : 'Cash out'} of ${formatMoney(value, settings.currencySymbol)} recorded.`)
-      close()
-      onSaved()
-    } catch (err) {
-      setAmountError(getErrorMessage(err))
-      setBusy(false)
-    }
+  const [error, setError] = useState<string | null>(null)
+  const lock = useRef(false)
+  async function start() {
+    if (lock.current || disabled) return
+    const value = roundMoney(Number(amount))
+    if (!amount.trim() || !Number.isFinite(value) || value < 0) { setError('Enter a valid starting cash amount. Use 0 for an empty drawer.'); return }
+    lock.current = true; setBusy(true); setError(null)
+    try { const shift = await shiftApi.start({ startingCash: value }); notify(`Shift started with ${money(value)} in the drawer.`); onStarted(shift) }
+    catch (error) { setError(getErrorMessage(error)) }
+    finally { lock.current = false; setBusy(false) }
   }
-
-  return (
-    <Modal
-      title={type === 'in' ? 'Cash in' : 'Cash out'}
-      description={type === 'in' ? 'Cash added to the drawer.' : 'Cash taken out of the drawer.'}
-      onClose={close}
-      preventClose={busy}
-      size="sm"
-      footer={
-        <div className="flex w-full items-center justify-end gap-2">
-          <TextButton onClick={close} disabled={busy} className="h-12">
-            Cancel
-          </TextButton>
-          <PrimaryButton onClick={() => void save()} disabled={busy} className="h-12 flex-none px-8">
-            {busy ? 'Saving…' : 'Save'}
-          </PrimaryButton>
-        </div>
-      }
-    >
-      <form
-        className="space-y-4"
-        onSubmit={(event) => {
-          event.preventDefault()
-          void save()
-        }}
-      >
-        <TextField
-          label="Amount"
-          prefix={settings.currencySymbol}
-          amount
-          autoFocus
-          placeholder="0.00"
-          value={amount}
-          onChange={(value) => {
-            setAmount(value)
-            setAmountError(null)
-          }}
-          error={amountError ?? undefined}
-          hint={type === 'out' && available !== null ? `The drawer should have ${money(available)}.` : undefined}
-        />
-        <ReasonField
-          value={reason}
-          onChange={(value) => {
-            setReason(value)
-            setReasonError(null)
-          }}
-          suggestions={type === 'in' ? CASH_IN_REASONS : CASH_OUT_REASONS}
-          error={reasonError}
-          disabled={busy}
-        />
-      </form>
-    </Modal>
-  )
+  return <section className="ms-card ms-start-card" aria-labelledby="ms-start-title"><header className="ms-card-heading"><StaffAvatar name={name} /><div><h2 id="ms-start-title">{compact ? 'Start the next shift' : 'Open your drawer'}</h2><p>{name}</p></div></header><form noValidate onSubmit={event => { event.preventDefault(); void start() }}><fieldset disabled={busy || disabled} className="ms-form-fields"><legend className="sr-only">Starting cash details</legend><div className="ms-money-field"><TextField label="Starting cash" prefix={settings.currencySymbol} amount value={amount} onChange={value => { setAmount(value); setError(null) }} error={error ?? undefined} hint="The cash already in the drawer before taking payments." placeholder="0.00" /></div><div className="ms-quick-heading">Quick amounts</div><div className="ms-quick-amounts" role="group" aria-label="Quick starting cash amounts">{QUICK_FLOATS.map(value => <button type="button" key={value} aria-pressed={!!amount.trim() && Number(amount) === value} onClick={() => { setAmount(String(value)); setError(null) }}>{value === 0 ? 'Empty drawer' : money(value)}</button>)}</div><p className="ms-start-note"><CheckCheck size={16} aria-hidden="true" />Count the drawer first. Your starting amount is saved with this shift.</p><Button type="submit" className="ms-start-button"><Wallet size={18} aria-hidden="true" />{busy ? 'Starting…' : 'Start shift'}<ArrowRight size={17} aria-hidden="true" /></Button></fieldset></form></section>
 }
 
-function EndShiftDialog({
-  shift,
-  money,
-  onClose,
-  onEnded,
-}: {
-  shift: Shift
-  money: Money
-  onClose: () => void
-  onEnded: (closed: Shift) => void
-}) {
+async function checkActiveShift(id: number) {
+  if ((await shiftApi.getActive())?.id !== id) throw new ApiError('Your active shift changed. Close this dialog and refresh My shift.', 409)
+}
+
+function CashMovementDialog({ shiftId, type, available, money, onClose, onSaved }: { shiftId: number; type: 'in' | 'out'; available: number | null; money: Money; onClose: () => void; onSaved: () => void }) {
   const { notify } = useToast()
   const { settings } = useSettings()
-  const { data: preview, loading, error, reload } = useAsync(() => shiftApi.summary(), [shift.id])
-
-  const [actualCash, setActualCash] = useState('')
+  const formId = useId()
+  const [amount, setAmount] = useState(''), [reason, setReason] = useState('')
+  const [amountError, setAmountError] = useState<string | null>(null), [reasonError, setReasonError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [formError, setFormError] = useState<string | null>(null)
-  const { close } = useDismissOnBack('endShiftOpen', onClose, busy)
-
-  const actualValue = actualCash.trim() ? Number(actualCash) : null
-  const expected = preview?.summary.expectedCash ?? null
-  const difference = expected !== null && actualValue !== null && Number.isFinite(actualValue) ? actualValue - expected : null
-
-  async function confirmEnd() {
-    if (busy) return
-    if (actualValue === null || !Number.isFinite(actualValue) || actualValue < 0) {
-      setFormError('Enter the cash you counted.')
-      return
-    }
-    setFormError(null)
-    setBusy(true)
-    try {
-      const closed = await shiftApi.end({ actualCash: actualValue })
-      notify('Shift closed.')
-      close()
-      onEnded(closed)
-    } catch (err) {
-      setFormError(getErrorMessage(err))
-      setBusy(false)
-    }
+  const lock = useRef(false)
+  const { close } = useDismissOnBack('cashMovementOpen', onClose, busy)
+  const value = amount.trim() ? roundMoney(Number(amount)) : null
+  const projected = available !== null && value !== null && Number.isFinite(value) && value > 0 ? roundMoney(available + (type === 'in' ? value : -value)) : null
+  async function save() {
+    if (lock.current) return
+    const amountInvalid = value === null || !Number.isFinite(value) || value <= 0 || (type === 'out' && available !== null && value > available)
+    setAmountError(amountInvalid ? value !== null && available !== null && type === 'out' && value > available ? `Cash out cannot exceed ${money(available)}.` : 'Enter an amount above zero.' : null)
+    setReasonError(reason.trim().length < 3 ? 'Enter a reason with at least 3 characters.' : null)
+    if (amountInvalid || reason.trim().length < 3) return
+    lock.current = true; setBusy(true)
+    try { await checkActiveShift(shiftId); await shiftApi.addCashMovement({ type, amount: value!, reason: reason.trim() }); notify(`${type === 'in' ? 'Cash in' : 'Cash out'} of ${money(value!)} recorded.`); close(); onSaved() }
+    catch (error) { setAmountError(getErrorMessage(error)); lock.current = false; setBusy(false) }
   }
+  return <Modal title={type === 'in' ? 'Cash in' : 'Cash out'} description={type === 'in' ? 'Record cash added to your drawer.' : 'Record a deposit or payout from your drawer.'} mobileFullScreen panelClassName="ms-dialog" preventClose={busy} onClose={close} footer={<><Button variant="secondary" onClick={close} disabled={busy}>Cancel</Button><Button form={formId} type="submit" disabled={busy}>{busy ? 'Saving…' : type === 'in' ? 'Save cash in' : 'Save cash out'}</Button></>}>
+    <form id={formId} noValidate onSubmit={event => { event.preventDefault(); void save() }}><fieldset disabled={busy} className="ms-form-fields"><legend className="sr-only">Cash movement details</legend><div className="ms-dialog-balance"><span>Expected in drawer</span><strong>{available === null ? '—' : money(available)}</strong></div><TextField label="Amount" amount prefix={settings.currencySymbol} placeholder="0.00" value={amount} onChange={value => { setAmount(value); setAmountError(null) }} error={amountError ?? undefined} hint={type === 'out' ? 'Enter the amount you are taking out.' : 'Enter the amount you are adding.'} /><ReasonField value={reason} onChange={value => { setReason(value); setReasonError(null) }} suggestions={type === 'in' ? CASH_IN_REASONS : CASH_OUT_REASONS} error={reasonError} disabled={busy} />{projected !== null && projected >= 0 && <div className="ms-projection" role="status"><span>Expected after this entry</span><strong>{money(projected)}</strong></div>}</fieldset></form>
+  </Modal>
+}
 
-  return (
-    <Modal
-      title="End shift"
-      description={`Started ${startedLabel(shift)} · ${formatDuration(shift.startedAt)}`}
-      onClose={close}
-      preventClose={busy}
-      size="md"
-      footer={
-        <div className="flex w-full items-center justify-end gap-2">
-          <TextButton onClick={close} disabled={busy} className="h-12">
-            Keep shift open
-          </TextButton>
-          <PrimaryButton onClick={() => void confirmEnd()} disabled={busy || !preview} className="h-12 flex-none px-8">
-            {busy ? 'Closing…' : 'Close shift'}
-          </PrimaryButton>
-        </div>
-      }
-    >
-      {loading && !preview && (
-        <div className="py-10">
-          <Spinner />
-        </div>
-      )}
-
-      {!loading && error && <ErrorState message={error} onRetry={() => void reload()} />}
-
-      {preview && (
-        <form
-          className="space-y-4"
-          onSubmit={(event) => {
-            event.preventDefault()
-            void confirmEnd()
-          }}
-        >
-          <div className="rounded-2xl bg-[#F2F8F4] px-4 py-4">
-            <p className="text-sm font-medium text-[#1F5E3B]">Expected in drawer</p>
-            <p className="mt-1 text-[28px] font-bold leading-none tracking-[-0.02em] tabular-nums">{money(preview.summary.expectedCash)}</p>
-          </div>
-
-          <TextField
-            label="Cash you counted"
-            prefix={settings.currencySymbol}
-            amount
-            value={actualCash}
-            onChange={(value) => {
-              setActualCash(value)
-              setFormError(null)
-            }}
-            error={formError ?? undefined}
-            hint="Count every bill and coin in the drawer."
-            autoFocus
-            placeholder="0.00"
-            disabled={busy}
-          />
-
-          {difference !== null && <VarianceCallout difference={difference} money={money} />}
-
-          <details className="group rounded-2xl bg-[#F6F8F7] px-4">
-            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-slate-600 [&::-webkit-details-marker]:hidden">
-              How expected cash is worked out
-              <ChevronRight size={11} className="text-slate-400 transition-transform group-open:rotate-90" />
-            </summary>
-            <DrawerLedger summary={preview.summary} money={money} className="border-t border-slate-200/70 pb-1" />
-          </details>
-        </form>
-      )}
-    </Modal>
-  )
+function EndShiftDialog({ shift, money, onClose, onEnded }: { shift: Shift; money: Money; onClose: () => void; onEnded: (shift: Shift) => void }) {
+  const { notify } = useToast()
+  const { settings } = useSettings()
+  const formId = useId()
+  const { data: preview, loading, error, reload } = useAsync(async () => { const result = await shiftApi.summary(); if (result.shift.id !== shift.id) throw new ApiError('Your active shift changed. Close this dialog and refresh My shift.', 409); return result }, [shift.id])
+  const [amount, setAmount] = useState(''), [busy, setBusy] = useState(false), [formError, setFormError] = useState<string | null>(null)
+  const lock = useRef(false)
+  const { close } = useDismissOnBack('endShiftOpen', onClose, busy)
+  const actual = amount.trim() ? roundMoney(Number(amount)) : null
+  const difference = preview && actual !== null && Number.isFinite(actual) ? roundMoney(actual - preview.summary.expectedCash) : null
+  async function confirmEnd() {
+    if (lock.current || loading || error || !preview) return
+    if (actual === null || !Number.isFinite(actual) || actual < 0) { setFormError('Enter the cash you counted. Use 0 for an empty drawer.'); return }
+    lock.current = true; setBusy(true); setFormError(null)
+    try { await checkActiveShift(shift.id); const closed = await shiftApi.end({ actualCash: actual }); notify('Shift closed.'); close(); onEnded(closed) }
+    catch (error) { setFormError(getErrorMessage(error)); lock.current = false; setBusy(false) }
+  }
+  return <Modal title="End shift" description={`Shift #${shift.id} · ${shift.employeeName} · ${formatDuration(shift.startedAt)}`} mobileFullScreen panelClassName="ms-dialog ms-close-dialog" onClose={close} preventClose={busy} footer={<><Button variant="secondary" onClick={close} disabled={busy}>Keep shift open</Button><Button form={formId} type="submit" disabled={busy || loading || !!error || !preview}><Check size={17} aria-hidden="true" />{busy ? 'Closing…' : 'Close shift'}</Button></>}>
+    {loading && !preview && <Spinner label="Preparing your closing count…" />}{error && <ErrorState message={error} onRetry={() => void reload()} />}
+    {preview && !error && <form id={formId} noValidate onSubmit={event => { event.preventDefault(); void confirmEnd() }}><fieldset disabled={busy || loading} className="ms-form-fields"><legend className="sr-only">Closing cash count</legend><p className="ms-close-notice"><Banknote size={18} aria-hidden="true" />Count every bill and coin in the drawer before confirming.</p><div className="ms-dialog-balance"><span>Expected in drawer</span><strong>{money(preview.summary.expectedCash)}</strong></div><TextField label="Cash you counted" prefix={settings.currencySymbol} amount value={amount} onChange={value => { setAmount(value); setFormError(null) }} error={formError ?? undefined} hint="Enter your actual count, including the starting cash." placeholder="0.00" />{difference !== null && <VarianceCallout difference={difference} money={money} />}<details className="ms-close-ledger"><summary>How expected cash is calculated<ChevronRight size={15} aria-hidden="true" /></summary><DrawerLedger summary={preview.summary} money={money} /></details><p className="ms-footnote">Closing saves the cash count and any difference to shift history.</p></fieldset></form>}
+  </Modal>
 }
 
 function VarianceCallout({ difference, money }: { difference: number; money: Money }) {
   const balanced = Math.abs(difference) < 0.005
-  const tone = balanced ? 'bg-[#F2F8F4] text-[#1F5E3B]' : difference > 0 ? 'bg-amber-50 text-amber-800' : 'bg-rose-50 text-rose-700'
-  let title: ReactNode = 'Drawer balanced'
-  if (!balanced) title = difference > 0 ? `Over by ${money(difference)}` : `Short by ${money(Math.abs(difference))}`
-
-  return (
-    <div role="status" aria-live="polite" className={`rounded-2xl px-4 py-3 ${tone}`}>
-      <p className="text-[15px] font-semibold tabular-nums">{title}</p>
-      <p className="mt-0.5 text-sm opacity-90">
-        {balanced ? 'Your count matches the expected cash.' : 'Recount if you can. You can still close — the difference is saved to Shift History.'}
-      </p>
-    </div>
-  )
+  return <div role="status" className={`ms-variance ${balanced ? 'is-balanced' : difference > 0 ? 'is-over' : 'is-short'}`}><CircleCheck size={19} aria-hidden="true" /><div><strong>{balanced ? 'Drawer balanced' : `${difference > 0 ? 'Over' : 'Short'} by ${money(Math.abs(difference))}`}</strong><p>{balanced ? 'Your count matches the expected cash.' : 'Recount if needed. You can still close; this difference will be saved.'}</p></div></div>
 }
 
 export default ShiftPage

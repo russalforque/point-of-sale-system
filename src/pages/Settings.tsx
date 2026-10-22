@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Capacitor } from '@capacitor/core'
+import { hasLocalDatabase } from '../services/platform'
 
 import { authApi } from '../api/authApi'
 import { settingsApi, type SettingsPayload } from '../api/settingsApi'
@@ -19,6 +19,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { getErrorMessage } from '../utils/errors'
 import { ROLE_LABELS, type Role } from '../utils/permissions'
 import { MobileSettings } from './mobile/MobileSettings'
+import { BusinessSettings } from '../components/settings/BusinessSettings'
 
 const MIN_PASSWORD = 8
 
@@ -26,8 +27,7 @@ type StoreErrors = Partial<Record<'storeName' | 'email' | 'currencySymbol' | 'ta
 
 export function SettingsPage() {
   const isMobile = useIsMobile()
-  if (isMobile) return <MobileSettings />
-  return <DesktopSettingsPage />
+  return <><BusinessSettings />{isMobile ? <MobileSettings /> : <DesktopSettingsPage />}</>
 }
 
 function toPayload(data: SettingsPayload): SettingsPayload {
@@ -59,7 +59,8 @@ function DesktopSettingsPage() {
   const { notify } = useToast()
   const { user, logout, can } = useAuth()
   const canManageSettings = can('settings.manage')
-  const { reload: reloadSettings } = useSettings()
+  const { reload: reloadSettings, settings: currentSettings } = useSettings()
+  const isLaundry = currentSettings.businessType === 'laundry'
   const navigate = useNavigate()
   const store = useAsync(() => settingsApi.get(), [])
 
@@ -75,7 +76,7 @@ function DesktopSettingsPage() {
   const [confirmLogout, setConfirmLogout] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
 
-  const passwordChangeSupported = Capacitor.isNativePlatform()
+  const passwordChangeSupported = hasLocalDatabase()
 
   useEffect(() => {
     if (!store.data) return
@@ -187,7 +188,7 @@ function DesktopSettingsPage() {
                 </div>
               </SectionCard>
 
-              <SectionCard title="Currency & tax">
+              <SectionCard title={isLaundry ? 'Currency' : 'Currency & tax'}>
                 <div className="grid gap-4 sm:grid-cols-3">
                   <TextField
                     label="Currency code"
@@ -204,7 +205,7 @@ function DesktopSettingsPage() {
                     placeholder="₱"
                     maxLength={3}
                   />
-                  <TextField
+                  {!isLaundry && <TextField
                     label="Tax rate"
                     type="number"
                     inputMode="decimal"
@@ -219,9 +220,9 @@ function DesktopSettingsPage() {
                     }}
                     error={errors.taxRate}
                     trailing={<span className="px-3 text-sm text-slate-400">%</span>}
-                  />
+                  />}
                 </div>
-                <p className="mt-2 text-xs text-slate-500">Tax is added to every sale. Use 0 if your prices already include tax.</p>
+                <p className="mt-2 text-xs text-slate-500">{isLaundry ? 'Laundry services use the final prices configured in Services. Include applicable tax in those prices.' : 'Tax is added to every sale. Use 0 if your prices already include tax.'}</p>
               </SectionCard>
 
               <SectionCard title="Receipt">
@@ -260,7 +261,7 @@ function DesktopSettingsPage() {
 
           <SectionCard
             title="Password"
-            description={passwordChangeSupported ? 'Change the password you use to sign in.' : 'Password changes are only available in the Android app.'}
+            description={passwordChangeSupported ? 'Change the password you use to sign in.' : 'Password changes are only available in the Windows or Android app.'}
           >
             <fieldset disabled={!passwordChangeSupported || passwordBusy} className="min-w-0">
               <div className="grid gap-4 sm:grid-cols-2">
@@ -325,7 +326,7 @@ function DesktopSettingsPage() {
             </button>
           </section>
 
-          {form && (
+          {form && !isLaundry && (
             <section className="rounded-2xl bg-white p-5 ring-1 ring-slate-100">
               <h2 className="text-sm font-semibold">Receipt preview</h2>
               <div className="mt-3 rounded-xl bg-[#F6F8F7] p-4 font-mono text-xs text-slate-700">

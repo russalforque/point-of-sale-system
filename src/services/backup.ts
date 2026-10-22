@@ -1,10 +1,12 @@
 import { registerPlugin } from '@capacitor/core'
 
 import { SCHEMA_VERSION } from '../database/database'
-import { initDatabase, releaseDatabase } from '../database/sqlite'
+import { initDatabase, suspendForRestore, resumeAfterFailedRestore } from '../database/sqlite'
 import { ApiError } from '../utils/errors'
 import { clearSession, getStoredUser } from '../utils/session'
 import { logAudit } from './audit'
+import { desktopInvoke, isDesktop } from './platform'
+import { requirePermission } from './authz'
 
 /**
  * A restore replaces the database, so its audit entry is written into the restored copy on the
@@ -100,10 +102,16 @@ async function snapshotDatabase(): Promise<void> {
 }
 
 export const backupService = {
-  getInfo: () => native(() => SellixBackup.getInfo()),
+  getInfo: () => isDesktop() ? desktopInvoke<BackupInfo>('backup', { operation: 'info' }) : native(() => SellixBackup.getInfo()),
 
   /** Returns null when the user closes the file picker. */
   async createBackup(): Promise<BackupResult | null> {
+    await requirePermission('backup.manage')
+    if (isDesktop()) {
+      const result = await desktopInvoke<BackupResult | null>('backup', { operation: 'create', schemaVersion: SCHEMA_VERSION })
+      if (result) await logAudit('backup', `Backup saved as ${result.name}`)
+      return result
+    }
     const location = await native(() => SellixBackup.pickBackupLocation({ fileName: backupFileName() }))
     if (location.cancelled) return null
 
@@ -115,17 +123,20 @@ export const backupService = {
 
   /** Lets the user pick a file and fully validates it. Nothing is replaced yet. Null when cancelled. */
   async pickRestore(): Promise<RestoreCandidate | null> {
+    await requirePermission('backup.manage')
+    if (isDesktop()) return desktopInvoke('backup', { operation: 'pick', schemaVersion: SCHEMA_VERSION })
     const picked = await native(() => SellixBackup.pickRestoreFile({ maxSchemaVersion: SCHEMA_VERSION }))
     return picked.cancelled ? null : picked
   },
 
-  discardRestore: () => native(() => SellixBackup.discardRestore()),
+  discardRestore: () => isDesktop() ? desktopInvoke<void>('backup', { operation: 'discard' }) : native(() => SellixBackup.discardRestore()),
 
   /**
    * Replaces the live database with the validated backup, then reloads the app so every screen,
    * context and the SQLite connection start fresh (startApp re-runs schema migrations and seeding).
    */
   async applyRestore(candidate?: RestoreCandidate): Promise<void> {
+    await requirePermission('backup.manage')
     const db = await initDatabase()
     const active = await db.isTransactionActive()
     if (active.result) {
@@ -134,15 +145,17 @@ export const backupService = {
 
     // The file must not be replaced under an open connection - stop here if closing fails.
     try {
-      await releaseDatabase()
+      await suspendForRestore()
     } catch {
       throw new ApiError('Couldn’t close the database to restore. Restart the app and try again.', 0)
     }
 
     try {
-      await native(() => SellixBackup.applyRestore())
+      if (isDesktop()) await desktopInvoke('backup', { operation: 'apply' })
+      else await native(() => SellixBackup.applyRestore())
     } catch (err) {
       // Current data is untouched; reconnect so the app keeps working.
+      resumeAfterFailedRestore()
       await initDatabase().catch(() => undefined)
       throw err
     }

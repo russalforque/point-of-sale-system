@@ -1,4 +1,5 @@
 import { Capacitor } from '@capacitor/core'
+import { isDesktop } from '../services/platform'
 import { useEffect, useRef, useState } from 'react'
 
 import { connectSavedPrinter, getPrinterService, printerErrorMessage } from '../services/printer'
@@ -26,6 +27,7 @@ export const CONNECTION_STATUS_LABELS: Record<PrinterConnectionStatus, string> =
 export const CONNECTION_TYPE_LABELS: Record<PrinterConnectionType, string> = {
   bluetooth: 'Bluetooth',
   usb: 'USB',
+  windows: 'Windows queue',
 }
 
 export const AVAILABILITY_MESSAGES: Record<Exclude<PrinterAvailability, 'ready'>, string> = {
@@ -57,9 +59,10 @@ export function usePrinterSettings() {
   const { settings } = useSettings()
   const service = getPrinterService()
   const canUseUsb = Capacitor.getPlatform() === 'android'
+  const windows = isDesktop()
 
   const [config, setConfig] = useState<PrinterConfig>(() => getPrinterConfig())
-  const [mode, setMode] = useState<PrinterConnectionType>(() => (canUseUsb ? getPrinterConfig().connectionType : 'bluetooth'))
+  const [mode, setMode] = useState<PrinterConnectionType>(() => windows ? 'windows' : (canUseUsb ? getPrinterConfig().connectionType : 'bluetooth'))
   const [status, setStatus] = useState<PrinterConnectionStatus>(service.getStatus())
   const [connectedPrinter, setConnectedPrinter] = useState<DiscoveredPrinter | null>(service.getConnectedPrinter())
   const [bluetoothPrinters, setBluetoothPrinters] = useState<DiscoveredPrinter[]>(() => {
@@ -69,6 +72,7 @@ export function usePrinterSettings() {
       : []
   })
   const [usbPrinters, setUsbPrinters] = useState<DiscoveredPrinter[]>([])
+  const [windowsPrinters, setWindowsPrinters] = useState<DiscoveredPrinter[]>([])
   const [availability, setAvailability] = useState<PrinterAvailability | null>(null)
   const [scanning, setScanning] = useState(false)
   const [hasScanned, setHasScanned] = useState(false)
@@ -89,13 +93,14 @@ export function usePrinterSettings() {
     const unsubscribeStatus = service.onStatusChange((nextStatus, printer) => {
       setStatus(nextStatus)
       setConnectedPrinter(printer)
-      if (printer && printer.type !== 'usb') setBluetoothPrinters((prev) => upsertPrinter(prev, printer))
+      if (printer && (printer.type ?? 'bluetooth') === 'bluetooth') setBluetoothPrinters((prev) => upsertPrinter(prev, printer))
     })
     const unsubscribeUsb = service.onUsbDevicesChanged(() => {
       if (modeRef.current === 'usb') void refreshUsb()
     })
 
-    if (modeRef.current === 'usb') void refreshUsb(true)
+    if (windows) void refreshWindows(true)
+    else if (modeRef.current === 'usb') void refreshUsb(true)
     else void refreshBluetooth(true)
 
     return () => {
@@ -116,6 +121,20 @@ export function usePrinterSettings() {
   function updateConfig(patch: Partial<PrinterConfig>) {
     setConfig(updatePrinterConfig(patch))
     setSavedFlash(true)
+  }
+
+  async function refreshWindows(reconnect = false): Promise<DiscoveredPrinter[]> {
+    setLoadingUsb(true)
+    try {
+      const list = await service.listWindowsPrinters?.() ?? []
+      setWindowsPrinters(list)
+      const saved = getPrinterConfig()
+      if (reconnect && saved.connectionType === 'windows' && list.some(printer => printer.id === saved.deviceId)) void connectSavedPrinter()
+      return list
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : printerErrorMessage(error) })
+      return []
+    } finally { setLoadingUsb(false) }
   }
 
   /** Asks for Bluetooth permission if needed, lists paired printers and silently reconnects the saved one. */
@@ -229,6 +248,14 @@ export function usePrinterSettings() {
 
   /** "Connect Printer": reconnects the saved printer for this connection type, otherwise looks for one. */
   async function connectPrinter() {
+    if (windows) {
+      const list = await refreshWindows()
+      const saved = getPrinterConfig()
+      const target = list.find(printer => printer.id === saved.deviceId)
+      if (target) await connect(target)
+      else setMessage({ tone: 'info', text: 'Choose an ESC/POS thermal printer from the installed Windows queues below.' })
+      return
+    }
     const saved = getPrinterConfig()
 
     if (mode === 'usb') {
@@ -286,6 +313,9 @@ export function usePrinterSettings() {
   const isConnected = status === 'connected' && connectedPrinter !== null
 
   return {
+    windows,
+    windowsPrinters,
+    refreshWindows,
     canUseUsb,
     config,
     mode,

@@ -122,6 +122,7 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
   const approval = useApproval()
   const [approving, setApproving] = useState(false)
   const [busy, setBusy] = useState(false)
+  const saleInFlight = useRef(false)
   const [receipt, setReceipt] = useState<Sale | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [showItems, setShowItems] = useState(false)
@@ -318,6 +319,7 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
   ------------------------------------------------------------------ */
 
   async function completeSale() {
+    if (receipt) return
     if (busy || approving) return
 
     if (needsSeniorId) {
@@ -362,10 +364,14 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
     const paidWithCash = payments.some((tender) => tender.method === CASH_PAYMENT_METHOD)
 
     setErrorMessage(null)
+    if (saleInFlight.current) return
+    saleInFlight.current = true
     setBusy(true)
 
     try {
       const sale = await salesApi.create({
+        requestId: checkout.requestId,
+        notes: checkout.notes,
         customerId: checkout.customerId,
         discount: totals.manualDiscount,
         discountType: checkout.discountType,
@@ -379,23 +385,23 @@ export function PaymentModal({ onClose }: { onClose: () => void }) {
 
       setReceipt(sale)
       clearCheckout()
-      void sendReceiptToPrinter(sale, settings).then(
-        () => maybeAutoOpenDrawer(paidWithCash),
+      void sendReceiptToPrinter(sale, settings).catch(
         // The sale is already committed to SQLite - a print failure never undoes it.
         (err) => notify(`Payment completed, but receipt printing failed. ${printerErrorMessage(err)}`, 'error'),
-      )
+      ).then(() => maybeAutoOpenDrawer(paidWithCash, sale.id))
     } catch (err) {
       setErrorMessage(getErrorMessage(err))
     } finally {
+      saleInFlight.current = false
       setBusy(false)
     }
   }
 
   /** Sales with any cash tender, and only when printer settings have auto-open enabled. */
-  function maybeAutoOpenDrawer(paidWithCash: boolean) {
+  function maybeAutoOpenDrawer(paidWithCash: boolean, saleId: number) {
     if (!paidWithCash) return
     if (!getPrinterConfig().autoOpenDrawerOnCash) return
-    void openDrawer().catch((err) => notify(printerErrorMessage(err), 'error'))
+    void openDrawer({ saleId }).catch((err) => notify(printerErrorMessage(err), 'error'))
   }
 
   function printReceipt() {

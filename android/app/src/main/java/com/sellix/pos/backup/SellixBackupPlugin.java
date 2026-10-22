@@ -85,6 +85,8 @@ public class SellixBackupPlugin extends Plugin {
     private static final int IV_LENGTH = 16;
     private static final int MAC_LENGTH = 32;
     private static final int HEADER_LENGTH = MAGIC.length + 1 + IV_LENGTH;
+    private static final long MAX_BACKUP_BYTES = 512L * 1024 * 1024;
+    private static final long MAX_METADATA_BYTES = 64 * 1024;
     private static final String ENTRY_METADATA = "metadata.json";
     private static final String ENTRY_DATABASE = "sellix.db";
     private static final String KEY_SECRET = "sellix-pos/backup/v1/7c1f9e2a-43d8-4b6e-a0f5-2d9b8e61c4a7";
@@ -207,7 +209,10 @@ public class SellixBackupPlugin extends Plugin {
                 if (!snapshot.exists() || snapshot.length() == 0) {
                     throw new BackupException(E_NO_SNAPSHOT, "The database snapshot could not be created.");
                 }
-                validateDatabase(snapshot);
+                if (snapshot.length() > MAX_BACKUP_BYTES) {
+                    throw new BackupException(E_STORAGE, "This database exceeds the 512 MB backup limit.");
+                }
+                validateDatabase(snapshot, schemaVersion);
 
                 String createdAt = isoNow();
                 JSONObject metadata = new JSONObject();
@@ -225,7 +230,7 @@ public class SellixBackupPlugin extends Plugin {
 
                 // Verify what actually landed in storage, not what we meant to write.
                 readSellix(uri, verifyFile(), Integer.MAX_VALUE);
-                validateDatabase(verifyFile());
+                validateDatabase(verifyFile(), schemaVersion);
 
                 String name = displayName(uri);
                 getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -282,7 +287,7 @@ public class SellixBackupPlugin extends Plugin {
             try {
                 deleteDatabaseFiles(stagedFile());
                 JSONObject metadata = readSellix(uri, stagedFile(), maxSchemaVersion);
-                long[] counts = validateDatabase(stagedFile());
+                long[] counts = validateDatabase(stagedFile(), maxSchemaVersion);
 
                 JSObject out = new JSObject();
                 out.put("cancelled", false);
@@ -401,7 +406,7 @@ public class SellixBackupPlugin extends Plugin {
         // SAF streams can't seek, and the MAC must be checked before decrypting, so work from a local copy.
         try (InputStream in = resolver.openInputStream(uri); OutputStream out = new FileOutputStream(incoming)) {
             if (in == null) throw new IOException("Could not open the selected file.");
-            copy(in, out);
+            BackupStreams.copyLimited(in, out, MAX_BACKUP_BYTES);
         }
 
         long total = incoming.length();
@@ -453,15 +458,17 @@ public class SellixBackupPlugin extends Plugin {
             try (ZipInputStream zip = new ZipInputStream(new CipherInputStream(body, cipher))) {
                 ZipEntry entry;
                 while ((entry = zip.getNextEntry()) != null) {
-                    if (ENTRY_METADATA.equals(entry.getName())) {
+                    if (ENTRY_METADATA.equals(entry.getName()) && metadata == null) {
                         ByteArrayOutputStream json = new ByteArrayOutputStream();
-                        copy(zip, json);
+                        BackupStreams.copyLimited(zip, json, MAX_METADATA_BYTES);
                         metadata = new JSONObject(json.toString("UTF-8"));
-                    } else if (ENTRY_DATABASE.equals(entry.getName())) {
+                    } else if (ENTRY_DATABASE.equals(entry.getName()) && !hasDatabase) {
                         try (OutputStream out = new FileOutputStream(dbOut)) {
-                            copy(zip, out);
+                            BackupStreams.copyLimited(zip, out, MAX_BACKUP_BYTES);
                         }
                         hasDatabase = true;
+                    } else {
+                        throw new BackupException(E_CORRUPTED, "This backup contains unexpected or duplicate entries.");
                     }
                 }
             }
@@ -488,7 +495,7 @@ public class SellixBackupPlugin extends Plugin {
      * Opens a private (never the live) database copy, runs integrity_check and confirms it has
      * the Sellix tables. Returns { products, sales } row counts.
      */
-    private long[] validateDatabase(File file) throws BackupException {
+    private long[] validateDatabase(File file, int maxSchemaVersion) throws BackupException {
         SQLiteDatabase db = null;
         try {
             // Read-write so a WAL-mode header can be handled; this is our own throwaway copy.
@@ -496,6 +503,20 @@ public class SellixBackupPlugin extends Plugin {
             try (Cursor c = db.rawQuery("PRAGMA integrity_check", null)) {
                 if (!c.moveToFirst() || !"ok".equalsIgnoreCase(c.getString(0))) {
                     throw new BackupException(E_CORRUPTED, "The database in this backup is damaged and can't be restored.");
+                }
+            }
+            try (Cursor c = db.rawQuery("PRAGMA foreign_key_check", null)) {
+                if (c.moveToFirst()) {
+                    throw new BackupException(E_CORRUPTED, "The database in this backup contains inconsistent records and can't be restored.");
+                }
+            }
+            try (Cursor marker = db.rawQuery("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sellix_schema'", null)) {
+                if (marker.moveToFirst()) {
+                    try (Cursor version = db.rawQuery("SELECT COALESCE(MAX(version),0) FROM sellix_schema", null)) {
+                        if (version.moveToFirst() && version.getLong(0) > maxSchemaVersion) {
+                            throw new BackupException(E_NEWER_SCHEMA, "This database requires a newer version of Sellix. Update the app, then try again.");
+                        }
+                    }
                 }
             }
             for (String table : REQUIRED_TABLES) {

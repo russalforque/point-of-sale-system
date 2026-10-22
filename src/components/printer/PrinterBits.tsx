@@ -69,7 +69,7 @@ export function DeviceList({
                 isConnected ? 'bg-[#1F5E3B] text-white' : 'bg-[#F3F5F4] text-slate-500'
               }`}
             >
-              {printer.type === 'usb' ? <UsbIcon /> : <BluetoothIcon />}
+              {printer.type === 'windows' ? <PrinterIcon /> : printer.type === 'usb' ? <UsbIcon /> : <BluetoothIcon />}
             </span>
             <div className="min-w-0 flex-1">
               <p className="truncate text-[15px] font-medium">{printer.name}</p>

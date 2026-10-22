@@ -21,7 +21,7 @@ import {
 import type { PrinterConnectionType } from '../services/printer'
 import { MobilePrinterSettings } from './mobile/MobilePrinterSettings'
 
-const clampByte = (value: string) => Math.min(255, Math.max(0, Math.floor(Number(value) || 0)))
+const clampMilliseconds = (value: string) => Math.min(510, Math.max(0, Math.floor(Number(value) || 0)))
 
 export function PrinterSettingsPage() {
   const isMobile = useIsMobile()
@@ -43,7 +43,7 @@ function DesktopPrinterSettingsPage() {
   const bluetoothBlocked = mode === 'bluetooth' && p.availability !== null && p.availability !== 'ready'
 
   return (
-    <DesktopPage title="Receipt printer" subtitle="Bluetooth or USB · 58 mm thermal" maxWidth="max-w-5xl">
+    <DesktopPage title="Receipt printer" subtitle={p.windows ? 'Windows printer queue · ESC/POS · 58 mm or 80 mm' : 'Bluetooth or USB · 58 mm or 80 mm thermal'} maxWidth="max-w-5xl">
       {bluetoothBlocked && p.availability !== null && p.availability !== 'ready' && (
         <div role="alert" className="mt-6 flex items-center gap-3 rounded-2xl bg-amber-50 px-5 py-3">
           <p className="min-w-0 flex-1 text-sm text-amber-900">{AVAILABILITY_MESSAGES[p.availability]}</p>
@@ -115,9 +115,9 @@ function DesktopPrinterSettingsPage() {
                   )
                 })}
               </div>
-            ) : (
+            ) : !p.windows ? (
               <p className="mt-4 text-xs text-slate-500">USB printing is available in the Sellix Android app.</p>
-            )}
+            ) : <p className="mt-4 text-xs text-slate-500">Queue availability does not confirm the printer has paper or that a receipt has physically printed.</p>}
 
             <MessageBanner message={p.message} />
 
@@ -159,7 +159,15 @@ function DesktopPrinterSettingsPage() {
           </section>
 
           {/* DEVICES */}
-          {mode === 'bluetooth' ? (
+          {p.windows ? (
+            <SectionCard title="Installed Windows printers"
+              description="Install the manufacturer's Windows driver first. Select a thermal printer that accepts RAW ESC/POS. Compatible Bluetooth printers appear here after driver setup; BLE-only devices need their own supported protocol."
+              action={<button type="button" disabled={p.loadingUsb} onClick={() => void p.refreshWindows()} className="h-9 px-3 text-sm font-medium text-[#1F5E3B]">Refresh</button>}>
+              <DeviceList printers={sortPrinters(p.windowsPrinters)} savedId={config.deviceId} connectedId={connectedId} busyDeviceId={p.busyDeviceId}
+                disabled={isConnecting} emptyText="No printer queues found. Add your printer in Windows Settings, then refresh."
+                onConnect={printer => void p.connect(printer)} />
+            </SectionCard>
+          ) : mode === 'bluetooth' ? (
             <>
               <SectionCard
                 title="Paired printers"
@@ -285,7 +293,7 @@ function DesktopPrinterSettingsPage() {
                 </svg>
               </summary>
               <div className="px-4 pb-4">
-                <p className="text-xs text-slate-500">Only change these if your drawer doesn’t open. The standard is pin 0, 25 ms on, 250 ms off.</p>
+                <p className="text-xs text-slate-500">Only change these if your drawer doesn’t open. The standard is pin 0, 50 ms on, 500 ms off.</p>
                 <div className="mt-3 grid grid-cols-3 gap-2">
                   <NumberBox label="Pin">
                     <select
@@ -301,9 +309,9 @@ function DesktopPrinterSettingsPage() {
                     <input
                       type="number"
                       min={0}
-                      max={255}
+                      max={510}
                       value={config.drawerOnMs}
-                      onChange={(e) => p.updateConfig({ drawerOnMs: clampByte(e.target.value) })}
+                      onChange={(e) => p.updateConfig({ drawerOnMs: clampMilliseconds(e.target.value) })}
                       className="h-11 w-full rounded-xl border-0 bg-[#F3F5F4] px-3 text-sm tabular-nums outline-none focus:ring-2 focus:ring-[#1F5E3B]"
                     />
                   </NumberBox>
@@ -311,16 +319,16 @@ function DesktopPrinterSettingsPage() {
                     <input
                       type="number"
                       min={0}
-                      max={255}
+                      max={510}
                       value={config.drawerOffMs}
-                      onChange={(e) => p.updateConfig({ drawerOffMs: clampByte(e.target.value) })}
+                      onChange={(e) => p.updateConfig({ drawerOffMs: clampMilliseconds(e.target.value) })}
                       className="h-11 w-full rounded-xl border-0 bg-[#F3F5F4] px-3 text-sm tabular-nums outline-none focus:ring-2 focus:ring-[#1F5E3B]"
                     />
                   </NumberBox>
                 </div>
                 <button
                   type="button"
-                  onClick={() => p.updateConfig({ drawerPin: 0, drawerOnMs: 25, drawerOffMs: 250 })}
+                  onClick={() => p.updateConfig({ drawerPin: 0, drawerOnMs: 50, drawerOffMs: 500 })}
                   className="mt-3 h-9 rounded-full px-3 text-sm font-medium text-[#1F5E3B] hover:bg-[#F2F8F4]"
                 >
                   Reset to standard
